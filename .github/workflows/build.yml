@@ -1,0 +1,96 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: [README.md, CHANGELOG.md, LICENSE, INSTALL.txt, .gitignore]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Resolve version
+        id: version
+        run: echo "version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = \"(.*)\"/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Check if this version is already released
+        id: tag
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract changelog section
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          awk -v v="${{ steps.version.outputs.version }}" '
+            $0 ~ "^## \\[" v "\\]" {f=1; next}
+            f && /^## \[/ {exit}
+            f {print}
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || { echo "no changelog section for ${{ steps.version.outputs.version }}"; exit 1; }
+
+      - name: Assemble release bundle
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          bundle="iprolaunch-v${{ steps.version.outputs.version }}"
+          mkdir -p "$bundle"
+          cp target/release/iprolaunch "$bundle/"
+          cp config/config.example.toml "$bundle/"
+          cat > "$bundle/INSTALL.txt" <<'EOF'
+          iprolaunch — quick start
+          =========================
+
+          1. Copy `iprolaunch` to somewhere on your $PATH (e.g. ~/.local/bin).
+          2. Requires `umu-run` (umu-launcher) installed separately and on $PATH.
+          3. Config is generated automatically on first run at:
+               ~/.config/iprolaunch/config.toml
+             `config.example.toml` in this archive shows the shipped defaults —
+             not required, just a reference; edit the generated file directly.
+          4. Run a game once to add it to the library:
+               iprolaunch run /path/to/game.exe
+             Then list it:
+               iprolaunch library list
+             And quick-launch it by name (e.g. for a Steam shortcut):
+               iprolaunch "<name-from-library-list>"
+
+          Repo: https://github.com/<owner>/iprolaunch
+          EOF
+          tar -czf "$bundle.tar.gz" "$bundle"
+
+      - name: Draft release
+        if: steps.tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          tag_name: v${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          files: iprolaunch-v${{ steps.version.outputs.version }}.tar.gz

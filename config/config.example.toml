@@ -1,0 +1,16 @@
+[defaults]
+proton = "system"
+prefix_mode = "single"
+prefix_path = "~/.local/share/iprolaunch/prefix"
+prefixes_root = "~/.local/share/iprolaunch/prefixes"
+windows-version = "win10"
+
+[logging]
+mode = "single"
+path = ""
+keep = 3
+record = "errors"
+auto_open = true
+
+[env]
+
