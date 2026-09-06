@@ -116,6 +116,12 @@ pub struct Config {
     pub gamedb: GameDb,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// One line per DLL: `dllname = "n,b"` (Wine's own mode syntax — `n`
+    /// native, `b` builtin, comma-separated fallback order, or `d`
+    /// disabled). Joined with `;` into a single `WINEDLLOVERRIDES` value at
+    /// launch — see `Effective::winedlloverride` / `launch::run`.
+    #[serde(default)]
+    pub winedlloverride: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -157,9 +163,14 @@ impl Config {
     pub fn effective(&self, profile: Option<&Profile>) -> Effective {
         let d = &self.defaults;
         let l = &self.logging;
-        let (pd, pl, penv) = match profile {
-            Some(p) => (Some(&p.defaults), Some(&p.logging), Some(&p.env)),
-            None => (None, None, None),
+        let (pd, pl, penv, pwdo) = match profile {
+            Some(p) => (
+                Some(&p.defaults),
+                Some(&p.logging),
+                Some(&p.env),
+                Some(&p.winedlloverride),
+            ),
+            None => (None, None, None, None),
         };
 
         let proton = pd
@@ -187,6 +198,11 @@ impl Config {
             env.extend(penv.clone());
         }
 
+        let mut winedlloverride = self.winedlloverride.clone();
+        if let Some(pwdo) = pwdo {
+            winedlloverride.extend(pwdo.clone());
+        }
+
         Effective {
             proton,
             prefix_mode: d.prefix_mode,
@@ -198,6 +214,7 @@ impl Config {
             record,
             auto_open,
             env,
+            winedlloverride,
         }
     }
 }
@@ -216,6 +233,7 @@ pub struct Effective {
     pub record: RecordMode,
     pub auto_open: bool,
     pub env: BTreeMap<String, String>,
+    pub winedlloverride: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -260,6 +278,10 @@ pub struct Profile {
     pub logging: ProfileLogging,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Per-DLL override for this game, merged over the global table (same
+    /// per-key precedence as `env`) — see `Config::winedlloverride`.
+    #[serde(default)]
+    pub winedlloverride: BTreeMap<String, String>,
 }
 
 impl Profile {
@@ -357,6 +379,7 @@ mod tests {
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
             env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
         };
         profile.env.insert("DXVK_HUD".into(), "fps".into());
         assert_eq!(
@@ -378,6 +401,7 @@ mod tests {
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
             env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
         };
         profile.mark_launched_now();
         let stamp = profile.last_launched.expect("mark_launched_now sets it");
