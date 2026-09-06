@@ -222,6 +222,8 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
         .map(|(i, field)| {
             let value = match field {
                 ProfileField::TargetPath => profile.target_path.clone(),
+                ProfileField::Slug => slug.to_string(),
+                ProfileField::Name => profile.name.clone(),
                 ProfileField::Title => profile
                     .title
                     .clone()
@@ -451,8 +453,17 @@ Profile editor (Library, after 'e'):
   Esc                      back to the Library list
   A blank text field / the picker's \"inherit\" choice clears that override
   back to the global default. Changes save to that profile.toml immediately.
-  target-path is the exception: it's mandatory, checked against the real
-  filesystem on save, and rejected (left unchanged) if the exe isn't there.
+  target-path/slug/name are exceptions, not overrides:
+    - target-path is mandatory, checked against the real filesystem on
+      save, and rejected (left unchanged) if the exe isn't there.
+    - slug is the profile's folder name — edit just the base text; renames
+      the folder on disk, auto-appending \"-N\" only if that exact text is
+      already taken by another profile (never something you type yourself).
+    - name is what the Library list shows — edit just the base text (its
+      \"#N\" is stripped for editing and never shown in the box); saving
+      auto-fills the lowest \"#N\" not already used by another profile's
+      same base, reusing a gap left by a deleted/renamed one rather than
+      always growing past the historical max.
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or
@@ -517,6 +528,14 @@ fn draw_text_input_popup(
         }
         TextInputPurpose::ProfileField(_, ProfileField::TargetPath) => {
             "Edit target-path (Enter = save, checked against disk — Esc = cancel)".to_string()
+        }
+        TextInputPurpose::ProfileField(_, ProfileField::Slug) => {
+            "Edit slug — folder name (Enter = save & rename on disk, auto-disambiguated if taken, Esc = cancel)"
+                .to_string()
+        }
+        TextInputPurpose::ProfileField(_, ProfileField::Name) => {
+            "Edit name — \"#N\" is auto-managed, don't type it (Enter = save, Esc = cancel)"
+                .to_string()
         }
         TextInputPurpose::ProfileField(_, field) => {
             format!(

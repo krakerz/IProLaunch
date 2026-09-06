@@ -88,11 +88,21 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
 }
 
 fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
+    if field == ProfileField::Slug {
+        // Shown as-is (not stripped of any historical "-N" disambiguator)
+        // — unlike `#` in `Name`, `-` legitimately appears in real slugs
+        // (e.g. "elden-ring"), so there's no reliable way to tell "part of
+        // the name" from "an auto-added suffix" just by looking at the
+        // stored string. The user edits the full text; whatever they save
+        // gets freshly disambiguated against other profiles if needed.
+        return slug.to_string();
+    }
     let Some(profile) = app.profile(slug) else {
         return String::new();
     };
     match field {
         ProfileField::TargetPath => profile.target_path.clone(),
+        ProfileField::Name => name_base(&profile.name).to_string(),
         ProfileField::Title => profile.title.clone().unwrap_or_default(),
         ProfileField::Args => profile.args.join(" "),
         ProfileField::PrefixPath => profile.defaults.prefix_path.clone().unwrap_or_default(),
@@ -105,6 +115,109 @@ fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
             .map_or(String::new(), |k| k.to_string()),
         _ => String::new(),
     }
+}
+
+/// The part of a display name before its last literal `#` — safe to split
+/// on since `#` is this app's own disambiguator marker, never otherwise
+/// used in a name (unlike `-` in a slug, which can't be split the same
+/// way — see `current_text_value`'s `Slug` case).
+fn name_base(name: &str) -> &str {
+    name.rsplit_once('#').map_or(name, |(base, _)| base)
+}
+
+/// Smallest `n >= 1` such that no *other* profile is already named
+/// `"{base}#{n}"` — mirrors `launch::ensure_profile`'s own disambiguation
+/// loop (fills the lowest free slot rather than always growing past the
+/// historical max, so a gap left by a deleted/renamed profile gets reused).
+fn next_available_name(
+    base: &str,
+    profiles: &[(String, crate::config::Profile)],
+    exclude_slug: &str,
+) -> String {
+    let mut n = 1;
+    let mut candidate = format!("{base}#{n}");
+    while profiles
+        .iter()
+        .any(|(s, p)| s != exclude_slug && p.name == candidate)
+    {
+        n += 1;
+        candidate = format!("{base}#{n}");
+    }
+    candidate
+}
+
+/// Smallest available slug starting from `sanitized` itself (no suffix),
+/// then `sanitized-2`, `sanitized-3`, ... — the same scheme
+/// `launch::ensure_profile` uses when creating a brand-new profile.
+fn next_available_slug(
+    sanitized: &str,
+    profiles: &[(String, crate::config::Profile)],
+    exclude_slug: &str,
+) -> String {
+    let mut n = 1;
+    let mut candidate = sanitized.to_string();
+    while profiles
+        .iter()
+        .any(|(s, _)| s != exclude_slug && s == &candidate)
+    {
+        n += 1;
+        candidate = format!("{sanitized}-{n}");
+    }
+    candidate
+}
+
+/// Renames a profile's folder on disk (`profiles/<slug>/` →
+/// `profiles/<new-slug>/`) — safe to do independently of anything else:
+/// `prefix::resolve` recomputes a per-exe prefix's own directory fresh
+/// from the exe path every time, never from the profile's folder slug, so
+/// this never touches (or orphans) an existing Wine prefix. Sanitizes and
+/// disambiguates the requested text the same way a brand-new profile's
+/// slug is derived (see `next_available_slug`), then moves the directory
+/// and updates every place this session tracks the old slug (`app.profiles`,
+/// and `app.profile_editor` if it's this very profile being edited) so the
+/// editor keeps working on the same profile under its new name.
+fn rename_slug(app: &mut App, slug: &str, requested: &str) {
+    let sanitized = crate::prefix::sanitize(requested);
+    if sanitized.is_empty() {
+        app.status = Some("slug can't be blank — left unchanged.".to_string());
+        return;
+    }
+    let candidate = next_available_slug(&sanitized, &app.profiles, slug);
+    if candidate == slug {
+        return; // nothing to rename
+    }
+
+    let dir = match crate::config::Profile::profiles_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            app.status = Some(format!("couldn't resolve profiles dir: {err:#}"));
+            return;
+        }
+    };
+    let old_dir = dir.join(slug);
+    let new_dir = dir.join(&candidate);
+    if new_dir.exists() {
+        app.status = Some(format!(
+            "\"{candidate}\" already exists on disk — left unchanged."
+        ));
+        return;
+    }
+    if let Err(err) = std::fs::rename(&old_dir, &new_dir) {
+        app.status = Some(format!("couldn't rename profile folder: {err}"));
+        return;
+    }
+
+    if let Some(entry) = app.profiles.iter_mut().find(|(s, _)| s == slug) {
+        entry.0 = candidate.clone();
+    }
+    if app.profile_editor.as_deref() == Some(slug) {
+        app.profile_editor = Some(candidate.clone());
+    }
+    app.status = Some(if candidate == sanitized {
+        format!("Renamed to \"{candidate}\".")
+    } else {
+        format!("Renamed to \"{candidate}\" (\"{sanitized}\" was already taken).")
+    });
 }
 
 /// Applies a confirmed text-input popup value to the profile field it was
@@ -136,6 +249,21 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
             return;
         }
     }
+    if field == ProfileField::Slug {
+        rename_slug(app, slug, &trimmed);
+        return;
+    }
+    // The auto-grown "#N" needs an immutable scan of every other profile,
+    // so it's computed here, before `profile_mut`'s mutable borrow below.
+    let computed_name = if field == ProfileField::Name {
+        if trimmed.is_empty() {
+            app.status = Some("name can't be blank — left unchanged.".to_string());
+            return;
+        }
+        Some(next_available_name(&trimmed, &app.profiles, slug))
+    } else {
+        None
+    };
 
     let Some(profile) = app.profile_mut(slug) else {
         app.status = Some(format!("couldn't find profile \"{slug}\""));
@@ -143,6 +271,9 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
     };
     match field {
         ProfileField::TargetPath => profile.target_path = trimmed.clone(),
+        ProfileField::Name => {
+            profile.name = computed_name.expect("computed above for the Name field");
+        }
         ProfileField::Title => profile.title = (!trimmed.is_empty()).then(|| trimmed.clone()),
         ProfileField::Args => {
             profile.args = trimmed.split_whitespace().map(str::to_string).collect();
@@ -154,9 +285,11 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
             profile.defaults.windows_version = (!trimmed.is_empty()).then(|| trimmed.clone());
         }
         ProfileField::LogKeep => profile.logging.keep = trimmed.parse::<u32>().ok(),
-        // Never actually reached via a text popup — these fields open a
-        // different mode (`ProtonPicker`/`MapEditor`/`Cycle`) instead.
-        ProfileField::Proton
+        // `Slug` returns early above. The rest are never actually reached
+        // via a text popup — they open a different mode
+        // (`ProtonPicker`/`MapEditor`/`Cycle`) instead.
+        ProfileField::Slug
+        | ProfileField::Proton
         | ProfileField::LogRecord
         | ProfileField::LogAutoOpen
         | ProfileField::EnvTable
@@ -292,5 +425,64 @@ mod tests {
         );
         // Untouched — still `None` (the default), never reached `save_profile`.
         assert_eq!(app.profile("game-1").unwrap().logging.keep, None);
+    }
+
+    fn profile_named(name: &str) -> Profile {
+        Profile {
+            name: name.to_string(),
+            target_path: "/tmp/game.exe".to_string(),
+            title: None,
+            last_launched: None,
+            args: Vec::new(),
+            defaults: Default::default(),
+            logging: Default::default(),
+            env: Default::default(),
+            winedlloverride: Default::default(),
+        }
+    }
+
+    #[test]
+    fn name_base_splits_on_the_last_hash() {
+        assert_eq!(name_base("game#1"), "game");
+        assert_eq!(name_base("no-hash-here"), "no-hash-here");
+        assert_eq!(name_base("weird#name#2"), "weird#name"); // last '#' only
+    }
+
+    #[test]
+    fn next_available_name_starts_at_1_when_nothing_collides() {
+        let profiles = vec![("a".to_string(), profile_named("other#1"))];
+        assert_eq!(next_available_name("game", &profiles, "a"), "game#1");
+    }
+
+    #[test]
+    fn next_available_name_fills_the_lowest_free_slot_not_just_the_max() {
+        // "game#1" was deleted/renamed away, only "game#2" remains — a
+        // rename into "game" should reclaim "game#1", not jump to "game#3".
+        let profiles = vec![("a".to_string(), profile_named("game#2"))];
+        assert_eq!(next_available_name("game", &profiles, "b"), "game#1");
+    }
+
+    #[test]
+    fn next_available_name_excludes_the_profile_being_renamed() {
+        // Renaming a profile to the name it already has shouldn't collide
+        // with itself.
+        let profiles = vec![("a".to_string(), profile_named("game#1"))];
+        assert_eq!(next_available_name("game", &profiles, "a"), "game#1");
+    }
+
+    #[test]
+    fn next_available_slug_starts_bare_then_grows_with_a_hyphen() {
+        let profiles = vec![("game".to_string(), profile_named("game#1"))];
+        assert_eq!(next_available_slug("game", &profiles, "other"), "game-2");
+        assert_eq!(
+            next_available_slug("newname", &profiles, "other"),
+            "newname"
+        );
+    }
+
+    #[test]
+    fn next_available_slug_excludes_the_profile_being_renamed() {
+        let profiles = vec![("game".to_string(), profile_named("game#1"))];
+        assert_eq!(next_available_slug("game", &profiles, "game"), "game");
     }
 }

@@ -172,14 +172,18 @@ pub enum IntegrateAction {
 }
 
 /// Which per-game override a Library "edit profile" row edits. Every field
-/// except `TargetPath` is an override — blank/`Enter` on the "inherit"
-/// choice clears it back to the global default rather than deleting the
-/// profile. `TargetPath` is the one mandatory field (a profile with no exe
-/// to launch is meaningless), so it's validated instead of "inherit"-able —
-/// see `profile_editor::apply_text_field`.
+/// except `TargetPath`/`Slug`/`Name` is an override — blank/`Enter` on the
+/// "inherit" choice clears it back to the global default rather than
+/// deleting the profile. `TargetPath` is the one mandatory field (a profile
+/// with no exe to launch is meaningless); `Slug` and `Name` are identifiers
+/// with app-managed uniqueness (a folder rename and an auto-grown `#N`
+/// respectively) — all three are validated/computed instead of
+/// "inherit"-able — see `profile_editor::apply_text_field`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileField {
     TargetPath,
+    Slug,
+    Name,
     Title,
     Args,
     Proton,
@@ -193,8 +197,10 @@ pub enum ProfileField {
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 11] = [
+    pub const ALL: [ProfileField; 13] = [
         ProfileField::TargetPath,
+        ProfileField::Slug,
+        ProfileField::Name,
         ProfileField::Title,
         ProfileField::Args,
         ProfileField::Proton,
@@ -210,6 +216,8 @@ impl ProfileField {
     pub fn label(self) -> &'static str {
         match self {
             ProfileField::TargetPath => "target-path (exe location)",
+            ProfileField::Slug => "slug (folder name)",
+            ProfileField::Name => "name (#N auto-managed)",
             ProfileField::Title => "title (for GAMEID matching)",
             ProfileField::Args => "args (space-separated)",
             ProfileField::Proton => "defaults.proton override",
@@ -224,16 +232,19 @@ impl ProfileField {
     }
 
     /// Same shape as `ConfigField::kind`, except every non-table field here
-    /// (other than `TargetPath`) is an `Option` in the underlying
-    /// `Profile` — blank text / a dedicated "inherit" choice means "no
-    /// override", not "empty string"/"zero". `LogKeep` is a `Text` field
-    /// (not `Number`) specifically so blank can mean "inherit" — a plain
-    /// number field has no clean way to represent that.
+    /// (other than `TargetPath`/`Slug`/`Name`) is an `Option` in the
+    /// underlying `Profile` — blank text / a dedicated "inherit" choice
+    /// means "no override", not "empty string"/"zero". `LogKeep` is a
+    /// `Text` field (not `Number`) specifically so blank can mean
+    /// "inherit" — a plain number field has no clean way to represent
+    /// that.
     pub fn kind(self) -> FieldKind {
         match self {
             ProfileField::Proton => FieldKind::ProtonPicker,
             ProfileField::LogRecord | ProfileField::LogAutoOpen => FieldKind::Cycle,
             ProfileField::TargetPath
+            | ProfileField::Slug
+            | ProfileField::Name
             | ProfileField::Title
             | ProfileField::Args
             | ProfileField::PrefixPath

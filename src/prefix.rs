@@ -2,21 +2,29 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{Effective, PrefixMode, expand_home};
 
+/// Lowercases, collapses non-alphanumerics to `-`, and trims leading/
+/// trailing `-` — the sanitization rule for anything used as a folder
+/// slug, whether derived from an exe path (`slug_from_exe`) or typed
+/// directly by the user (`tui::profile_editor`'s slug rename).
+pub fn sanitize(text: &str) -> String {
+    let mut s: String = text
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    while s.contains("--") {
+        s = s.replace("--", "-");
+    }
+    s.trim_matches('-').to_string()
+}
+
 /// Derives the folder slug used for both per-exe prefixes and profile storage:
 /// lowercased exe stem, non-alphanumerics collapsed to `-`. Collision handling
 /// (two different exes stemming to the same slug) is the caller's job — this
 /// is pure derivation, not disk lookup.
 pub fn slug_from_exe(target: &Path) -> String {
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("app");
-    let mut slug: String = stem
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    while slug.contains("--") {
-        slug = slug.replace("--", "-");
-    }
-    slug.trim_matches('-').to_string()
+    sanitize(stem)
 }
 
 pub fn resolve(effective: &Effective, target: &Path) -> PathBuf {

@@ -44,13 +44,17 @@ entry.
 - A full TUI (run `iprolaunch` with no arguments) — running-games/quick-kill,
   a game library (launch, add by path with a follow-up title prompt,
   refresh, and a per-game profile editor — target-path (validated against
-  the real filesystem on save)/title/args/proton/prefix_path/windows-version/
-  logging/env/winedlloverride overrides, each independently settable back to
-  "inherit the global default" — plus delete, with a confirmation first), a
-  live config editor (including managing global `env`/`winedlloverride`
-  entries one at a time — add, edit, delete — and a separate desktop
-  integration table: status, binary location, setup, reapply, uninstall),
-  and help — for everything above without needing to remember the CLI
+  the real filesystem on save), slug (the folder name — renames it on disk)
+  and name (the library display name — its `#N` is app-managed, auto-filling
+  the lowest number not already taken by another profile) are edited as
+  just their base text; title/args/proton/prefix_path/windows-version/
+  logging/env/winedlloverride are overrides, each independently settable
+  back to "inherit the global default" — plus delete, with a confirmation
+  first), a live config editor (including managing global
+  `env`/`winedlloverride` entries one at a time — add, edit, delete — and a
+  separate desktop integration table: status, binary location, setup,
+  reapply, uninstall), and help — for everything above without needing to
+  remember the CLI
   subcommands. On a small terminal, a selected row or popup title too long
   to fit scrolls (marquee-style) instead of getting clipped.
 - `iprolaunch integrate install` — registers IProLaunch as the default

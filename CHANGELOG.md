@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-09-06
+
+### Added
+- TUI profile editor: `slug` (the profile's folder name) and `name` (the
+  library display name) are now editable. Both are edited as just their
+  base text — `slug` renames the folder on disk, auto-appending `-N` only
+  if that exact text collides with another profile; `name`'s `#N` is
+  never typed, it's auto-filled to the lowest number not already used by
+  another profile with the same base (reusing a gap left by a
+  deleted/renamed profile, same as a brand-new profile's numbering
+  already did).
+- Release workflow's draft release body now ends with a "Full changelog"
+  link to `CHANGELOG.md` on the default branch.
+
 ## [1.9.1] — 2026-09-06
 
 ### Changed
