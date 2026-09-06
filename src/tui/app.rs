@@ -179,7 +179,7 @@ impl App {
     pub fn refresh_profiles(&mut self) {
         match Profile::load_all() {
             Ok(mut profiles) => {
-                profiles.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()));
+                profiles.sort_by_key(|p| p.1.name.to_lowercase());
                 self.profiles = profiles;
             }
             Err(err) => self.status = Some(format!("couldn't list library: {err:#}")),
