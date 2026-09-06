@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.19.3] — 2026-09-06
+
+### Fixed
+- Launching a second, different game in `single` prefix mode while one was already running could hang forever — now skips the redundant wait automatically.
+
 ## [1.19.2] — 2026-09-06
 
 ### Fixed
