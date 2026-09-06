@@ -84,7 +84,7 @@ fn kill_selected(app: &mut App) {
         return;
     };
     let name = entry.name.clone();
-    match running::terminate(&entry.prefix_path) {
+    match running::terminate(&entry.launch_id) {
         Ok(()) => app.status = Some(format!("Killed {name}.")),
         Err(err) => app.status = Some(format!("Failed to kill {name}: {err:#}")),
     }
@@ -98,8 +98,8 @@ mod tests {
     use crate::running::RunningEntry;
 
     // `kill_selected` -> `running::terminate` is safe to exercise directly:
-    // with a fake `prefix_path` that matches no real process, `terminate`
-    // just returns an `Err("nothing running against prefix ...")` (see
+    // with a fake `launch_id` that matches no real process, `terminate`
+    // just returns an `Err("nothing running against launch ...")` (see
     // `running.rs`) — no real process is ever touched. `refresh_running`
     // (called afterwards) only re-scans real state, which is read-only.
 
@@ -109,6 +109,7 @@ mod tests {
             name: name.to_string(),
             target_path: format!("/tmp/{name}.exe"),
             prefix_path: format!("/tmp/iprolaunch-test-nonexistent-prefix/{name}"),
+            launch_id: format!("iprolaunch-test-nonexistent-launch-{name}"),
             started_at: String::new(),
         }
     }
@@ -228,7 +229,7 @@ mod tests {
         assert_eq!(
             app.status.as_deref(),
             Some(
-                "Failed to kill Guildmaster: nothing running against prefix /tmp/iprolaunch-test-nonexistent-prefix/Guildmaster"
+                "Failed to kill Guildmaster: nothing running against launch iprolaunch-test-nonexistent-launch-Guildmaster"
             )
         );
     }
