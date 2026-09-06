@@ -56,6 +56,11 @@ jobs:
             f {print}
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md || { echo "no changelog section for ${{ steps.version.outputs.version }}"; exit 1; }
+          {
+            echo ""
+            echo "---"
+            echo "[Full changelog](${{ github.server_url }}/${{ github.repository }}/blob/main/CHANGELOG.md)"
+          } >> release-notes.md
 
       - name: Assemble release bundle
         if: steps.tag.outputs.exists == 'false'

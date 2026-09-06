@@ -52,7 +52,7 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
 
     let prefix_path = opts
         .prefix
-        .unwrap_or_else(|| prefix::resolve(&effective, &target));
+        .unwrap_or_else(|| prefix::resolve(&effective, &slug));
     fs::create_dir_all(&prefix_path)
         .with_context(|| format!("creating prefix dir {}", prefix_path.display()))?;
 

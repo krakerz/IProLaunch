@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-09-06
+
+### Changed
+- `defaults.prefix_mode`'s per-exe strategy is now **per-slug**: the prefix
+  directory is keyed by a profile's own (already-disambiguated) slug
+  instead of being re-derived from the exe path on every launch. This
+  fixes a real gap — two different exes that happened to share a file
+  stem (e.g. two unrelated `game.exe`s) previously got separate profiles
+  but silently shared the same Wine prefix; now each gets its own
+  (`game`, `game-2`, ...), matching their profiles. Existing
+  `config.toml`s with `prefix_mode = "per-exe"` keep loading (an alias),
+  and get rewritten to `"per-slug"` on next save.
+- TUI profile editor: renaming a profile's `slug` while
+  `prefix_mode = "per-slug"` now warns and asks for confirmation first if
+  a prefix directory already exists under the old slug — confirming
+  renames that directory to match, so the app always finds the right
+  prefix under the profile's current slug; declining leaves both
+  untouched. Skipped entirely (no prefix to move yet) if the game's never
+  been launched, or if prefix mode is `single`.
+
+## [1.10.0] — 2026-09-06
+
+### Added
+- TUI profile editor: `slug` (the profile's folder name) and `name` (the
+  library display name) are now editable. Both are edited as just their
+  base text — `slug` renames the folder on disk, auto-appending `-N` only
+  if that exact text collides with another profile; `name`'s `#N` is
+  never typed, it's auto-filled to the lowest number not already used by
+  another profile with the same base (reusing a gap left by a
+  deleted/renamed profile, same as a brand-new profile's numbering
+  already did).
+- Release workflow's draft release body now ends with a "Full changelog"
+  link to `CHANGELOG.md` on the default branch.
+
 ## [1.9.1] — 2026-09-06
 
 ### Changed

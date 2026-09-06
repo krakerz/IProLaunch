@@ -76,8 +76,16 @@ fn month_abbrev(m: time::Month) -> &'static str {
 #[serde(rename_all = "lowercase")]
 pub enum PrefixMode {
     Single,
-    #[serde(rename = "per-exe")]
-    PerExe,
+    /// One prefix per profile, keyed by that profile's own (already-
+    /// disambiguated) slug — see `prefix::resolve`. `alias` accepts an
+    /// existing `config.toml`'s `"per-exe"` (this variant's old name and
+    /// serialized form, before prefixes were keyed by slug instead of a
+    /// freshly re-derived-from-the-exe-path value that never got
+    /// disambiguated the way a profile's own slug does) so a config
+    /// written by an older build keeps loading; re-saving rewrites it to
+    /// `"per-slug"`.
+    #[serde(rename = "per-slug", alias = "per-exe")]
+    PerSlug,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,8 +233,8 @@ impl Config {
         let prefix_path = pd
             .and_then(|pd| pd.prefix_path.clone())
             .unwrap_or_else(|| d.prefix_path.clone());
-        // windows-version only means anything when each exe owns its own prefix.
-        let windows_version = if d.prefix_mode == PrefixMode::PerExe {
+        // windows-version only means anything when each profile owns its own prefix.
+        let windows_version = if d.prefix_mode == PrefixMode::PerSlug {
             pd.and_then(|pd| pd.windows_version.clone())
                 .or_else(|| Some(d.windows_version.clone()))
         } else {
@@ -272,7 +280,7 @@ pub struct Effective {
     pub prefix_mode: PrefixMode,
     pub prefix_path: String,
     pub prefixes_root: String,
-    /// `None` whenever `prefix_mode != PerExe` — see `Config::effective`.
+    /// `None` whenever `prefix_mode != PerSlug` — see `Config::effective`.
     pub windows_version: Option<String>,
     pub log_mode: LogMode,
     pub keep: u32,
@@ -402,15 +410,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_version_only_applies_in_per_exe_mode() {
+    fn windows_version_only_applies_in_per_slug_mode() {
         let mut cfg = Config::default();
         cfg.defaults.prefix_mode = PrefixMode::Single;
         assert_eq!(cfg.effective(None).windows_version, None);
 
-        cfg.defaults.prefix_mode = PrefixMode::PerExe;
+        cfg.defaults.prefix_mode = PrefixMode::PerSlug;
         assert_eq!(
             cfg.effective(None).windows_version,
             Some(cfg.defaults.windows_version.clone())
+        );
+    }
+
+    #[test]
+    fn per_slug_serializes_as_per_slug_but_still_reads_the_old_per_exe_value() {
+        #[derive(Serialize, Deserialize)]
+        struct Wrapper {
+            mode: PrefixMode,
+        }
+        let old: Wrapper = toml::from_str("mode = \"per-exe\"").unwrap();
+        assert_eq!(old.mode, PrefixMode::PerSlug);
+        let new: Wrapper = toml::from_str("mode = \"per-slug\"").unwrap();
+        assert_eq!(new.mode, PrefixMode::PerSlug);
+        assert_eq!(
+            toml::to_string(&Wrapper {
+                mode: PrefixMode::PerSlug
+            })
+            .unwrap()
+            .trim(),
+            "mode = \"per-slug\""
         );
     }
 

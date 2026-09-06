@@ -24,7 +24,9 @@ entry.
 - Global config for default Proton version, prefix mode, and environment
   variables, with per-game overrides.
 - Two prefix strategies: one shared prefix for everything, or one prefix
-  auto-created per exe.
+  auto-created per profile — keyed by the profile's own slug, so renaming a
+  profile's slug renames its prefix directory to match (the TUI warns and
+  confirms first, since it's a real directory move).
 - A game library: every exe you launch gets a profile automatically, listed
   by a friendly, editable name.
 - Quick launch by name — `iprolaunch <name>` — for pointing a Steam
@@ -44,13 +46,17 @@ entry.
 - A full TUI (run `iprolaunch` with no arguments) — running-games/quick-kill,
   a game library (launch, add by path with a follow-up title prompt,
   refresh, and a per-game profile editor — target-path (validated against
-  the real filesystem on save)/title/args/proton/prefix_path/windows-version/
-  logging/env/winedlloverride overrides, each independently settable back to
-  "inherit the global default" — plus delete, with a confirmation first), a
-  live config editor (including managing global `env`/`winedlloverride`
-  entries one at a time — add, edit, delete — and a separate desktop
-  integration table: status, binary location, setup, reapply, uninstall),
-  and help — for everything above without needing to remember the CLI
+  the real filesystem on save), slug (the folder name — renames it on disk)
+  and name (the library display name — its `#N` is app-managed, auto-filling
+  the lowest number not already taken by another profile) are edited as
+  just their base text; title/args/proton/prefix_path/windows-version/
+  logging/env/winedlloverride are overrides, each independently settable
+  back to "inherit the global default" — plus delete, with a confirmation
+  first), a live config editor (including managing global
+  `env`/`winedlloverride` entries one at a time — add, edit, delete — and a
+  separate desktop integration table: status, binary location, setup,
+  reapply, uninstall), and help — for everything above without needing to
+  remember the CLI
   subcommands. On a small terminal, a selected row or popup title too long
   to fit scrolls (marquee-style) instead of getting clipped.
 - `iprolaunch integrate install` — registers IProLaunch as the default
@@ -115,7 +121,7 @@ defaults). Per-game overrides live at
 `~/.config/iprolaunch/profiles/<slug>/profile.toml`, created automatically
 the first time you run that exe — edit it via the TUI's Library tab (`e` on
 a game) or by hand: override proton version, prefix path, Windows version
-(per-exe prefix mode only), logging, environment variables, DLL overrides
+(per-slug prefix mode only), logging, environment variables, DLL overrides
 (`[winedlloverride]`, e.g. `winhttp = "n,b"` — joined into a single
 `WINEDLLOVERRIDES` at launch), or extra launch args (`args = ["--dx11"]`,
 always forwarded to that exe, in addition to anything passed on the command

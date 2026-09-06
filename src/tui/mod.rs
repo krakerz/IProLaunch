@@ -76,6 +76,9 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         Mode::MapEditor { .. } => return config::map_editor_key(app, code),
         Mode::MapEntryInput { .. } => return config::map_entry_input_key(app, code),
         Mode::ConfirmDeleteProfile { .. } => return library::confirm_delete_key(app, code),
+        Mode::ConfirmRenameSlug { .. } => {
+            return profile_editor::confirm_rename_slug_key(app, code);
+        }
         Mode::Normal => {}
     }
 
