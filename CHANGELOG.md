@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [1.19.0] — 2026-09-06
+
+### Added
+- TUI gamepad navigation: a real controller (a Steam Deck's, via Steam
+  Input's Gamepad layout on a non-Steam-game shortcut, or any plain
+  USB/Bluetooth pad) now works alongside the keyboard, read directly via
+  the new `gilrs` dependency (evdev on Linux, no SDL2). D-pad moves,
+  A/B/X/Y confirm/cancel/kill-or-delete/help, LB/RB switch tabs, L3/R3
+  refresh/winetricks, RT confirms a delete/rename/winetricks prompt (kept
+  deliberately separate from A, so mashing confirm can never delete
+  anything by accident), Select searches, Start quits. Implemented as a
+  translation layer only (`tui::gamepad::translate`, a `gilrs::Button` ->
+  `crossterm::event::KeyCode`) — every existing key handler needed zero
+  changes, since a translated gamepad press is indistinguishable from a
+  real keystroke by the time it reaches them. Every shortcut legend
+  (Running/Library titles, the idle status-bar hint) switches to the
+  matching button captions the instant a gamepad is used, and back the
+  moment a real key is pressed, via a new `App::input_kind` flag.
+
 ## [1.18.0] — 2026-09-06
 
 ### Added

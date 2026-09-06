@@ -36,7 +36,7 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         }
         KeyCode::Char('r') => refresh(app),
         KeyCode::Char('e') => edit_selected(app),
-        KeyCode::Char('d') => prompt_delete_selected(app),
+        KeyCode::Char('d') | KeyCode::Delete => prompt_delete_selected(app),
         KeyCode::Char('f') => start_filter(app),
         KeyCode::Char('c') => copy_quick_launch(app),
         KeyCode::Char('p') => prompt_winetricks(app),

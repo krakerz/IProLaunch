@@ -390,12 +390,29 @@ impl MapField {
     }
 }
 
+/// Which input source produced the most recent keypress the TUI handled —
+/// tracked purely so the shortcut legends can show the right captions
+/// (`Enter` vs. the gamepad button that was actually pressed). Everything
+/// else about handling a gamepad button is identical to a keyboard key: see
+/// `gamepad::translate`, which turns a `gilrs` button press into the same
+/// `crossterm::event::KeyCode` a keyboard would produce, so `on_key`'s
+/// dispatch never needs to know which source it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputKind {
+    #[default]
+    Keyboard,
+    Gamepad,
+}
+
 pub struct App {
     pub cfg: Config,
     pub tab: Tab,
     pub mode: Mode,
     pub should_quit: bool,
     pub status: Option<String>,
+    /// Updated on every handled keypress, keyboard or gamepad — see
+    /// `InputKind`.
+    pub input_kind: InputKind,
 
     pub running: Vec<RunningEntry>,
     pub running_selected: usize,
@@ -462,6 +479,7 @@ impl App {
             mode: Mode::Normal,
             should_quit: false,
             status: None,
+            input_kind: InputKind::default(),
             running: Vec::new(),
             running_selected: 0,
             running_filter: None,

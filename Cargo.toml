@@ -1,6 +1,6 @@
 [package]
 name = "iprolaunch"
-version = "1.18.0"
+version = "1.19.0"
 edition = "2024"
 
 [[bin]]
@@ -22,3 +22,4 @@ ratatui = "0.29"
 crossterm = "0.28"
 ureq = "3.4.0"
 csv = "1.4.0"
+gilrs = "0.11.2"
