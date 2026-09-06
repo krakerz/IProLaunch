@@ -5,7 +5,7 @@ use std::process::Stdio;
 
 use anyhow::{Context, Result};
 
-use crate::config::{Effective, LogMode, RecordMode};
+use crate::config::{Effective, LogMode, Profile, RecordMode};
 
 /// One launch's log file, from creation through the keep/discard decision.
 pub struct LogSession {
@@ -16,15 +16,29 @@ pub struct LogSession {
     keep: u32,
 }
 
+/// Where one launch's log file lives, before it's actually created — kept
+/// separate from `LogSession::start` (which follows this up with
+/// `fs::create_dir_all`) so the directory *choice* is unit-testable without
+/// touching disk: `Profile::profiles_dir()` itself is a pure computation
+/// (just `project_dirs()` + a join), no I/O, so calling it in a test is
+/// safe — only actually creating the directory would touch the real
+/// `~/.config/iprolaunch/` tree.
+fn session_dir(effective: &Effective, log_dir: &Path, slug: &str) -> Result<PathBuf> {
+    Ok(match effective.log_mode {
+        LogMode::Each => Profile::profiles_dir()?.join(slug).join("logs"),
+        LogMode::Single => log_dir.to_path_buf(),
+    })
+}
+
 impl LogSession {
     /// Opens a fresh log file for one launch. Caller must check
     /// `effective.record != RecordMode::Off` before calling this — `Off` means
     /// don't create a session (and stdout/stderr should pass through instead).
+    /// `log_dir` (from `Config::log_dir`) is only used for `LogMode::Single`
+    /// — `Each` ignores it entirely and writes inside the profile's own
+    /// folder instead (see `LogMode::Each`'s doc comment).
     pub fn start(effective: &Effective, log_dir: &Path, slug: &str) -> Result<Self> {
-        let dir = match effective.log_mode {
-            LogMode::Each => log_dir.join(slug),
-            LogMode::Single => log_dir.to_path_buf(),
-        };
+        let dir = session_dir(effective, log_dir, slug)?;
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
         let stamp = timestamp();
@@ -134,5 +148,43 @@ mod tests {
     fn effective_defaults_are_sane() {
         let cfg = Config::default();
         assert_eq!(cfg.defaults.prefix_mode, PrefixMode::Single);
+    }
+
+    fn test_effective(log_mode: LogMode) -> Effective {
+        Effective {
+            proton: "system".to_string(),
+            prefix_mode: PrefixMode::Single,
+            prefix_path: "~/unused".to_string(),
+            prefixes_root: "~/unused".to_string(),
+            windows_version: None,
+            log_mode,
+            keep: 3,
+            record: RecordMode::Errors,
+            auto_open: false,
+            env: Default::default(),
+            winedlloverride: Default::default(),
+        }
+    }
+
+    #[test]
+    fn single_mode_uses_the_given_log_dir_as_is() {
+        let effective = test_effective(LogMode::Single);
+        let dir = session_dir(&effective, Path::new("/tmp/custom-logs"), "game-1").unwrap();
+        assert_eq!(dir, Path::new("/tmp/custom-logs"));
+    }
+
+    #[test]
+    fn each_mode_ignores_log_dir_and_uses_the_profile_folder_instead() {
+        // Safe to call `session_dir` (and so `Profile::profiles_dir`) here —
+        // it's a pure path computation, no `fs::create_dir_all` — unlike
+        // `LogSession::start`, which isn't exercised in this test.
+        let effective = test_effective(LogMode::Each);
+        let dir = session_dir(&effective, Path::new("/tmp/custom-logs"), "game-1").unwrap();
+        assert!(
+            dir.ends_with("profiles/game-1/logs"),
+            "expected a .../profiles/game-1/logs path, got {}",
+            dir.display()
+        );
+        assert!(!dir.starts_with("/tmp/custom-logs"));
     }
 }

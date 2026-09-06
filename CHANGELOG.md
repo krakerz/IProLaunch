@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-09-06
+
+### Changed
+- `logging.mode = "each"` now saves a profile's logs inside that profile's
+  own folder (`~/.config/iprolaunch/profiles/<slug>/logs/`) instead of a
+  shared `logs/<slug>/` split off from the global logs directory.
+  `logging.mode = "single"` is unchanged (still the shared
+  `~/.config/iprolaunch/logs/`, or `logging.path` if set). Existing logs
+  under the old `logs/<slug>/` layout are left in place — not migrated —
+  and new `each`-mode logs go straight to the new location.
+
 ## [1.11.0] — 2026-09-06
 
 ### Changed

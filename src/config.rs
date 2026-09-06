@@ -91,7 +91,13 @@ pub enum PrefixMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogMode {
+    /// All profiles' logs in one shared place — `logging.path` if set,
+    /// else `~/.config/iprolaunch/logs/` (see `Config::log_dir`).
     Single,
+    /// Each profile's logs live inside that profile's own folder
+    /// (`~/.config/iprolaunch/profiles/<slug>/logs/`) — not under a shared
+    /// logs root at all, and not affected by `logging.path` (that only
+    /// applies to `Single`) — see `logging::LogSession::start`.
     Each,
 }
 

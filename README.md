@@ -32,7 +32,9 @@ entry.
 - Quick launch by name — `iprolaunch <name>` — for pointing a Steam
   shortcut straight at one game.
 - Per-launch logging with configurable retention, and an option to keep only
-  the logs from failed runs.
+  the logs from failed runs. Two layouts: one shared logs folder for
+  everything (`single`), or each profile's logs inside that profile's own
+  folder (`each`) — never a shared `logs/<profile>` split between the two.
 - `proton list` / `config init` to detect installed Proton builds and pick a
   default interactively — checks every common install location (native and
   Flatpak Steam, official Steam-installed builds, and distro-packaged
