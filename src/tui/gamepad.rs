@@ -17,12 +17,24 @@
 //! contract — Steam Input can freely remap any physical input on the pad to
 //! any of these virtual buttons (or straight to a keyboard key, bypassing
 //! this module entirely) without touching iprolaunch at all.
+//!
+//! `GamepadSource::poll` also periodically retries `Gilrs::new()` while no
+//! gamepad is visible — see its own doc comment for the real, reported
+//! Steam Deck Game Mode race this works around.
+
+use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
 use gilrs::{Button, Event, EventType, Gilrs};
 
+/// How often `poll` retries `Gilrs::new()` while no gamepad is currently
+/// visible — see `should_retry_init`'s doc comment for why this exists.
+const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
 pub struct GamepadSource {
     gilrs: Option<Gilrs>,
+    /// When `gilrs` was last (re)created — throttles `should_retry_init`.
+    last_init_attempt: Instant,
 }
 
 impl GamepadSource {
@@ -34,13 +46,38 @@ impl GamepadSource {
     pub fn new() -> Self {
         Self {
             gilrs: Gilrs::new().ok(),
+            last_init_attempt: Instant::now(),
         }
     }
 
     /// Drains every pending gamepad event and returns the `KeyCode`s they
     /// map to, in order. Called once per event-loop tick, right after the
     /// keyboard poll — non-blocking either way.
+    ///
+    /// Also retries a fresh `Gilrs::new()` roughly every `RETRY_INTERVAL`
+    /// while no gamepad is currently visible (see `should_retry_init`) —
+    /// a real, reported Steam Deck Game Mode issue: Steam Input's virtual
+    /// controller device (its "Gamepad" layout on a non-Steam-game
+    /// shortcut) is sometimes invisible to a *freshly opened* udev session
+    /// right after Steam Input tears it down and recreates it for a
+    /// different app/game — a documented SteamOS-side timing race in
+    /// applying the new device's access ACL (the closest confirmed real
+    /// analog: `gvalkov/python-evdev#171`, a virtual uinput device losing
+    /// its per-user ACL entry right after creation on SteamOS/ChimeraOS —
+    /// not a gilrs bug, and not something iprolaunch can fix at the
+    /// source). A one-shot `Gilrs::new()` at TUI startup can lose that
+    /// race and never notice the controller for the rest of the session —
+    /// exactly the reported symptom, where quitting and reopening
+    /// iprolaunch again (a fresh `Gilrs::new()`, retried a bit later by
+    /// hand) sometimes fixed it. This does the same retry automatically.
     pub fn poll(&mut self) -> Vec<KeyCode> {
+        if should_retry_init(self.has_gamepad(), self.last_init_attempt.elapsed()) {
+            self.last_init_attempt = Instant::now();
+            if let Ok(fresh) = Gilrs::new() {
+                self.gilrs = Some(fresh);
+            }
+        }
+
         let Some(gilrs) = &mut self.gilrs else {
             return Vec::new();
         };
@@ -54,6 +91,22 @@ impl GamepadSource {
         }
         codes
     }
+
+    fn has_gamepad(&self) -> bool {
+        self.gilrs
+            .as_ref()
+            .is_some_and(|g| g.gamepads().next().is_some())
+    }
+}
+
+/// Pure gating decision for `GamepadSource::poll`'s retry, kept separate so
+/// it's unit-testable without a real `Gilrs`/udev session: only retry when
+/// no gamepad is currently connected, and only once `RETRY_INTERVAL` has
+/// actually elapsed since the last attempt (never on every single tick —
+/// recreating `Gilrs` isn't free, and there's nothing to gain from retrying
+/// faster than the real-world race it's working around resolves itself).
+fn should_retry_init(has_gamepad: bool, since_last_attempt: Duration) -> bool {
+    !has_gamepad && since_last_attempt >= RETRY_INTERVAL
 }
 
 /// The actual button map. Chosen to cover navigation plus the single most
@@ -133,5 +186,21 @@ mod tests {
         assert_eq!(translate(Button::C), None);
         assert_eq!(translate(Button::Z), None);
         assert_eq!(translate(Button::Unknown), None);
+    }
+
+    #[test]
+    fn should_retry_init_never_fires_while_a_gamepad_is_already_connected() {
+        assert!(!should_retry_init(true, Duration::from_secs(999)));
+    }
+
+    #[test]
+    fn should_retry_init_waits_for_the_full_interval() {
+        assert!(!should_retry_init(false, Duration::from_millis(500)));
+        assert!(!should_retry_init(
+            false,
+            RETRY_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(should_retry_init(false, RETRY_INTERVAL));
+        assert!(should_retry_init(false, Duration::from_secs(999)));
     }
 }
