@@ -23,6 +23,14 @@ that's a natural fit for a Steam (Deck or desktop) non-Steam-game entry.
   shortcut straight at one game.
 - Per-launch logging with configurable retention, and an option to keep only
   the logs from failed runs.
+- `proton list` / `config init` to detect installed Proton builds and pick a
+  default interactively.
+- Automatic GAMEID matching against the community
+  [umu-database](https://umu.openwinecomponents.org), refreshed periodically
+  in the background — so protonfixes has a real shot at finding a fix instead
+  of always falling back to a generic default.
+- `Ctrl+C` during a launch, and `running list` / `running kill`, both
+  reliably stop the whole sandboxed game tree, not just `iprolaunch` itself.
 
 ## Installation
 
@@ -53,6 +61,14 @@ iprolaunch library list
 # Quick-launch by name or slug (what a Steam shortcut should point at)
 iprolaunch "eldenring#1"
 
+# See what's currently running, and stop one
+iprolaunch running list
+iprolaunch running kill "eldenring#1"
+
+# Detect installed Proton builds and pick a default
+iprolaunch proton list
+iprolaunch config init
+
 # Inspect the resolved config
 iprolaunch config show
 ```
@@ -63,7 +79,10 @@ defaults). Per-game overrides live at
 `~/.config/iprolaunch/profiles/<slug>/profile.toml`, created automatically
 the first time you run that exe; edit it by hand to override proton
 version, prefix path, Windows version (per-exe prefix mode only), logging,
-or environment variables for that one game.
+or environment variables for that one game — or set `title` to the game's
+real name (e.g. `"Grand Theft Auto V"`) so it can be matched against the
+umu-database for a GAMEID, which is what lets `umu-run`'s automatic
+protonfixes actually find a fix instead of a generic default.
 
 ## FAQ
 
@@ -73,6 +92,12 @@ or environment variables for that one game.
 **Can I still add a game to Steam as a non-Steam game?** Yes — that's the
 point of the quick-launch form. Point the shortcut at
 `iprolaunch <name-or-slug>` instead of the exe directly.
+
+**Does it need internet access?** Only to auto-fetch the umu-database
+(re-checked every 7 days by default, configurable via `gamedb`'s
+`update_interval_days`) and, separately, whatever `umu-run` itself needs to
+download a Proton build. Neither blocks a launch if the network's
+unavailable — the launch just proceeds without a GAMEID match.
 
 ## Status
 

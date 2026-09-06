@@ -19,6 +19,13 @@ pub fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Local wall-clock time, falling back to UTC if the local offset can't be
+/// determined (`time`'s detection can fail on some platforms/thread states).
+pub fn now_local() -> time::OffsetDateTime {
+    let now = time::OffsetDateTime::now_utc();
+    now.to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PrefixMode {
@@ -87,10 +94,26 @@ impl Default for Logging {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameDb {
+    /// Days between automatic re-downloads of the umu-database CSV.
+    pub update_interval_days: u32,
+}
+
+impl Default for GameDb {
+    fn default() -> Self {
+        Self {
+            update_interval_days: 7,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     pub defaults: Defaults,
     pub logging: Logging,
+    #[serde(default)]
+    pub gamedb: GameDb,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 }
@@ -221,8 +244,16 @@ pub struct Profile {
     pub name: String,
     #[serde(rename = "target-path")]
     pub target_path: String,
+    /// The game's real title, for umu-database GAMEID lookup (see
+    /// `gamedb::lookup_gameid`) — deliberately separate from `name`, which is
+    /// often an auto-generated slug like `eldenring#1`, not a matchable
+    /// title. Blank/absent falls back to the exe's file stem, a weaker
+    /// signal that rarely matches a proper multi-word title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `DD-MM-YYYY, HH-MM-SS`, local time — see `Profile::mark_launched_now`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_launched: Option<time::OffsetDateTime>,
+    pub last_launched: Option<String>,
     #[serde(default)]
     pub defaults: ProfileDefaults,
     #[serde(default)]
@@ -234,6 +265,23 @@ pub struct Profile {
 impl Profile {
     pub fn profiles_dir() -> Result<PathBuf> {
         Ok(project_dirs()?.config_dir().join("profiles"))
+    }
+
+    /// Sets `last_launched` to now (local time), formatted
+    /// `DD-MM-YYYY, HH-MM-SS`. A plain formatted string rather than TOML's
+    /// native datetime type, so the profile file reads in the user's
+    /// preferred layout at a glance.
+    pub fn mark_launched_now(&mut self) {
+        let now = now_local();
+        self.last_launched = Some(format!(
+            "{:02}-{:02}-{}, {:02}-{:02}-{:02}",
+            now.day(),
+            u8::from(now.month()),
+            now.year(),
+            now.hour(),
+            now.minute(),
+            now.second()
+        ));
     }
 
     pub fn load(slug: &str) -> Result<Self> {
@@ -304,6 +352,7 @@ mod tests {
         let mut profile = Profile {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
+            title: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -316,6 +365,38 @@ mod tests {
                 .get("DXVK_HUD")
                 .map(String::as_str),
             Some("fps")
+        );
+    }
+
+    #[test]
+    fn mark_launched_now_formats_dd_mm_yyyy_hh_mm_ss() {
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+        };
+        profile.mark_launched_now();
+        let stamp = profile.last_launched.expect("mark_launched_now sets it");
+
+        let (date, time) = stamp.split_once(", ").expect("`DD-MM-YYYY, HH-MM-SS`");
+        let date_parts: Vec<&str> = date.split('-').collect();
+        let time_parts: Vec<&str> = time.split('-').collect();
+        assert_eq!(date_parts.len(), 3, "date should be DD-MM-YYYY: {stamp}");
+        assert_eq!(time_parts.len(), 3, "time should be HH-MM-SS: {stamp}");
+        assert_eq!(date_parts[0].len(), 2, "day should be zero-padded: {stamp}");
+        assert_eq!(
+            date_parts[1].len(),
+            2,
+            "month should be zero-padded: {stamp}"
+        );
+        assert_eq!(date_parts[2].len(), 4, "year should be 4 digits: {stamp}");
+        assert!(
+            time_parts.iter().all(|p| p.len() == 2),
+            "HH/MM/SS should be zero-padded: {stamp}"
         );
     }
 }

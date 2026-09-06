@@ -69,7 +69,7 @@ impl LogSession {
 }
 
 fn timestamp() -> String {
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::config::now_local();
     now.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| now.unix_timestamp().to_string())
         .replace(':', "-")

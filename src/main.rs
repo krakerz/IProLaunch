@@ -1,13 +1,16 @@
 mod config;
+mod gamedb;
 mod launch;
 mod logging;
 mod prefix;
+mod proton;
 mod running;
 mod tui;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use config::{Config, Profile};
@@ -54,6 +57,11 @@ enum Command {
         #[command(subcommand)]
         action: RunningAction,
     },
+    /// Inspect installed Proton builds.
+    Proton {
+        #[command(subcommand)]
+        action: ProtonAction,
+    },
     /// `iprolaunch <name-or-slug> [args...]` — quick-launch a library entry by
     /// its display name or slug, no `run` prefix needed. Exists so a Steam
     /// (Deck or desktop) non-Steam-game shortcut can point straight at
@@ -66,6 +74,14 @@ enum Command {
 enum ConfigAction {
     /// Print the resolved global config (creating it with defaults if absent).
     Show,
+    /// Interactively pick a default Proton build from what's installed.
+    Init,
+}
+
+#[derive(Subcommand)]
+enum ProtonAction {
+    /// List detected Proton builds.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -172,6 +188,49 @@ fn kill_running(target: &str) -> Result<()> {
     }
 }
 
+/// Prints detected Proton builds numbered for picking, prompts on stdin, and
+/// saves the choice as `defaults.proton`. Empty input leaves it unchanged.
+fn config_init(mut cfg: Config) -> Result<()> {
+    let builds = proton::scan()?;
+
+    println!("Detected Proton builds:");
+    println!("  0) system  (let umu-run auto-manage UMU-Proton)");
+    for (i, b) in builds.iter().enumerate() {
+        println!("  {})  {}  [{}]", i + 1, b.display_name, b.id);
+    }
+    print!(
+        "Pick a default Proton build [currently: {}]: ",
+        cfg.defaults.proton
+    );
+    std::io::stdout().flush().ok();
+
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .context("reading choice")?;
+    let choice = input.trim();
+    if choice.is_empty() {
+        println!("Unchanged.");
+        return Ok(());
+    }
+
+    let index: usize = choice
+        .parse()
+        .context("expected a number from the list above")?;
+    cfg.defaults.proton = if index == 0 {
+        "system".to_string()
+    } else {
+        builds
+            .get(index - 1)
+            .with_context(|| format!("no such option: {index}"))?
+            .id
+            .clone()
+    };
+    cfg.save()?;
+    println!("Saved default proton = \"{}\"", cfg.defaults.proton);
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load_or_init()?;
@@ -199,6 +258,9 @@ fn main() -> Result<()> {
             println!("{}", toml::to_string_pretty(&cfg)?);
             Ok(())
         }
+        Some(Command::Config {
+            action: ConfigAction::Init,
+        }) => config_init(cfg),
         Some(Command::Library {
             action: LibraryAction::List,
         }) => {
@@ -226,6 +288,18 @@ fn main() -> Result<()> {
         Some(Command::Running {
             action: RunningAction::Kill { target },
         }) => kill_running(&target),
+        Some(Command::Proton {
+            action: ProtonAction::List,
+        }) => {
+            let builds = proton::scan()?;
+            if builds.is_empty() {
+                println!("No installed Proton builds detected.");
+            }
+            for b in builds {
+                println!("{}  [{}]", b.display_name, b.id);
+            }
+            Ok(())
+        }
         Some(Command::Quick(mut args)) => {
             if args.is_empty() {
                 anyhow::bail!("usage: iprolaunch <name-or-slug> [args...]");

@@ -12,5 +12,8 @@ keep = 3
 record = "errors"
 auto_open = true
 
+[gamedb]
+update_interval_days = 7
+
 [env]
 

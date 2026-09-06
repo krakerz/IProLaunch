@@ -1,6 +1,6 @@
 [package]
 name = "iprolaunch"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [[bin]]
@@ -16,6 +16,9 @@ directories = "5"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+time = { version = "0.3", features = ["formatting", "parsing", "serde", "local-offset"] }
+signal-hook = "0.3"
 ratatui = "0.29"
 crossterm = "0.28"
+ureq = "3.4.0"
+csv = "1.4.0"

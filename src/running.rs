@@ -37,7 +37,7 @@ pub fn record(pid: u32, name: &str, target_path: &Path, prefix_path: &Path) -> R
         name: name.to_string(),
         target_path: target_path.to_string_lossy().into_owned(),
         prefix_path: prefix_path.to_string_lossy().into_owned(),
-        started_at: time::OffsetDateTime::now_utc()
+        started_at: crate::config::now_local()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
     };
@@ -167,6 +167,9 @@ mod tests {
         let prefix = format!("/tmp/iprolaunch-test-prefix-{}", std::process::id());
         let mut exact = spawn_with_prefix(&prefix);
         let mut nested = spawn_with_prefix(&format!("{prefix}/pfx"));
+        // Give /proc a moment to reflect the freshly-spawned processes (same
+        // race `terminate_kills_every_matching_pid` below guards against).
+        std::thread::sleep(std::time::Duration::from_millis(200));
 
         let found = matching_pids(&prefix);
         assert!(found.contains(&exact.id()));
