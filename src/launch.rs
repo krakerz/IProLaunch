@@ -69,7 +69,8 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     // GAMEID defaults to "umu-default" when unset.
     let mut command = Command::new("umu-run");
     command.arg(&target);
-    command.args(&opts.args);
+    command.args(&profile.args); // profile's own defaults first, e.g. `--dx11`
+    command.args(&opts.args); // then CLI/quick-launch args, supplementing rather than replacing
     command.env("WINEPREFIX", &prefix_path);
     if !effective.proton.is_empty() && effective.proton != "system" {
         command.env("PROTONPATH", &effective.proton);
@@ -158,6 +159,7 @@ fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
         logging: Default::default(),
         env: Default::default(),
         winedlloverride: Default::default(),
+        args: Default::default(),
     };
     profile.save(&slug)?;
     Ok((slug, profile))
@@ -271,7 +273,15 @@ fn install_signal_forwarding(prefix_path: &Path) {
     }
 }
 
+/// No-op when there's no controlling terminal (e.g. launched detached from a
+/// desktop file's double-click, which is the default — see `integrate`):
+/// spawning a pager with nothing to attach to would just fail or hang. The
+/// log file is still on disk either way, inspectable later via the TUI/CLI.
 fn open_in_pager(path: &Path) {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
     let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".into());
     let _ = Command::new(pager).arg(path).status();
 }

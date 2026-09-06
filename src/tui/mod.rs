@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod library;
+mod profile_editor;
 mod running;
 mod ui;
 
@@ -72,6 +73,9 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     match &app.mode {
         Mode::TextInput { .. } => return handle_text_input(app, code, terminal),
         Mode::ProtonPicker { .. } => return handle_proton_picker(app, code),
+        Mode::MapEditor { .. } => return config::map_editor_key(app, code),
+        Mode::MapEntryInput { .. } => return config::map_entry_input_key(app, code),
+        Mode::ConfirmDeleteProfile { .. } => return library::confirm_delete_key(app, code),
         Mode::Normal => {}
     }
 
@@ -86,7 +90,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         _ => match app.tab {
             app::Tab::Running => running::on_key(app, code),
             app::Tab::Library => library::on_key(app, code, terminal),
-            app::Tab::Config => config::on_key(app, code),
+            app::Tab::Config => config::on_key(app, code, terminal),
             app::Tab::Help => {}
         },
     }
@@ -123,29 +127,63 @@ fn handle_text_input(app: &mut App, code: KeyCode, terminal: &mut Term) {
             library::launch_path(app, terminal, &buffer, &label);
         }
         TextInputPurpose::ConfigField(field) => config::apply_text_field(app, field, buffer),
+        TextInputPurpose::ProfileTitle(slug) => library::apply_profile_title(app, &slug, buffer),
+        TextInputPurpose::ProfileField(slug, field) => {
+            profile_editor::apply_text_field(app, &slug, field, buffer)
+        }
     }
+}
+
+/// `builds.len()` plus 1 for the always-present "system" entry, plus one
+/// more for "inherit" when picking a profile override (see
+/// `ui::draw_proton_picker_popup`, which renders the same extra row).
+fn proton_picker_len(
+    builds: &[crate::proton::ProtonBuild],
+    target: &app::ProtonPickerTarget,
+) -> usize {
+    builds.len()
+        + if matches!(target, app::ProtonPickerTarget::Profile(_)) {
+            2
+        } else {
+            1
+        }
 }
 
 fn handle_proton_picker(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => app.mode = Mode::Normal,
         KeyCode::Up => {
-            if let Mode::ProtonPicker { builds, selected } = &mut app.mode {
-                *selected = app::move_selection(*selected, builds.len() + 1, -1);
+            if let Mode::ProtonPicker {
+                builds,
+                selected,
+                target,
+            } = &mut app.mode
+            {
+                let len = proton_picker_len(builds, target);
+                *selected = app::move_selection(*selected, len, -1);
             }
         }
         KeyCode::Down => {
-            if let Mode::ProtonPicker { builds, selected } = &mut app.mode {
-                *selected = app::move_selection(*selected, builds.len() + 1, 1);
+            if let Mode::ProtonPicker {
+                builds,
+                selected,
+                target,
+            } = &mut app.mode
+            {
+                let len = proton_picker_len(builds, target);
+                *selected = app::move_selection(*selected, len, 1);
             }
         }
         KeyCode::Enter => {
-            let Mode::ProtonPicker { builds, selected } =
-                std::mem::replace(&mut app.mode, Mode::Normal)
+            let Mode::ProtonPicker {
+                builds,
+                selected,
+                target,
+            } = std::mem::replace(&mut app.mode, Mode::Normal)
             else {
                 return;
             };
-            config::apply_proton_choice(app, &builds, selected);
+            config::apply_proton_choice(app, &builds, selected, &target);
         }
         _ => {}
     }

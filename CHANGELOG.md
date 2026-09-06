@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-09-06
+
+### Added
+- TUI: full per-game profile editor, from the Library tab. `e` on a
+  selected game opens it — title, args, and overrides for proton,
+  prefix_path, windows-version, logging.keep/record/auto_open, and
+  env/winedlloverride, each independently settable back to "inherit the
+  global default". Reuses the same picker/map-editor machinery as the
+  global Config tab.
+- TUI: Library also gets `r` (refresh the list from disk) and `d` (delete
+  the selected game's profile, with a y/N confirmation first — removes only
+  `profile.toml`, never the exe).
+- `Profile::last_launched` now formats its time as `HH:MM:SS` (colons)
+  instead of `HH-MM-SS` (hyphens) — `DD-MM-YYYY, HH:MM:SS` overall. The
+  library's display label was also clarified from "last:" to
+  "last launched:".
+
+## [1.5.0] — 2026-09-06
+
+### Added
+- TUI: after adding a game via Library's `a` (add-by-path), a follow-up
+  prompt asks for the game's real title (blank to skip) — the same thing
+  hand-editing `profile.toml` afterward was needed for, so a freshly-added
+  game can get a proper GAMEID match on its very first launch.
+- Friendlier error when `config.toml`/a profile's `profile.toml` fails to
+  parse: still shows the exact line/column from the TOML parser, but now
+  leads with a plain-English common-fix hint (quote your text values) and
+  an escape hatch (delete the file — `config init`/next launch regenerates
+  it) instead of only the raw parser diagnostic.
+
+### Notes
+- Confirmed `.bat` files already launch correctly through `iprolaunch run`
+  with zero code changes needed — `wine <path>.bat` runs it directly (no
+  `cmd.exe /c` wrapper required), and nothing in IProLaunch gates on file
+  extension.
+- Investigated switching `windows-version` from system winetricks to
+  `protontricks`: not viable for a non-Steam wrapper like this one —
+  `protontricks` operates on an `APPID` from your Steam library, which a
+  plain `iprolaunch`-launched exe never has.
+
+## [1.4.0] — 2026-09-06
+
+### Added
+- TUI: Config tab now has a "desktop integration" row, below the rest of
+  the config fields, that installs/uninstalls IProLaunch as the default
+  `.exe` handler in place — no need to drop to a shell for
+  `iprolaunch integrate install`/`uninstall` anymore.
+- `integrate install` now backs up whatever was the default handler for
+  each mimetype *before* it overwrites it; `integrate uninstall` restores
+  that prior default and then deletes the backup, so a later `install`
+  always captures fresh state instead of restoring stale data a second
+  time.
+
+### Fixed
+- `integrate uninstall` now actually restores whatever was the default
+  before `install` ran, instead of just clearing IProLaunch's own
+  registration and leaving the mimetype with no default at all.
+
+## [1.3.0] — 2026-09-06
+
+### Added
+- `iprolaunch integrate install`/`uninstall`: registers IProLaunch as the
+  default handler for Windows `.exe` files (`application/x-msdownload` /
+  `application/x-ms-dos-executable`) via `xdg-mime`, so double-clicking one
+  in a file manager runs it through IProLaunch — detached (no terminal
+  window) by default. `uninstall` only removes IProLaunch's own
+  registration; it does not restore whatever was the default before
+  `install` ran.
+
+## [1.2.0] — 2026-09-06
+
+### Added
+- TUI: manage global `env`/`winedlloverride` entries directly — `a` add,
+  `e` edit, `d` delete, each a simple name-then-value prompt (no need to
+  type `KEY=VALUE` syntax yourself)
+- Profile `args`: extra launch args always forwarded to that exe (e.g.
+  `args = ["--dx11"]`), supplementing rather than replacing anything passed
+  via `run ... -- extra` or quick-launch trailing args
+
+### Fixed
+- A detached launch (no controlling terminal) no longer risks a broken/
+  hanging pager when `auto_open` fires on failure — skipped when stdout
+  isn't a terminal, since the log file is still there to inspect afterward
+
 ## [1.1.0] — 2026-09-06
 
 ### Added

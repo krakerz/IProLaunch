@@ -1,5 +1,6 @@
 mod config;
 mod gamedb;
+mod integrate;
 mod launch;
 mod logging;
 mod prefix;
@@ -62,6 +63,13 @@ enum Command {
         #[command(subcommand)]
         action: ProtonAction,
     },
+    /// Register (or unregister) iprolaunch as the default handler for
+    /// Windows `.exe` files, so double-clicking one in a file manager runs
+    /// it through iprolaunch automatically.
+    Integrate {
+        #[command(subcommand)]
+        action: IntegrateAction,
+    },
     /// `iprolaunch <name-or-slug> [args...]` — quick-launch a library entry by
     /// its display name or slug, no `run` prefix needed. Exists so a Steam
     /// (Deck or desktop) non-Steam-game shortcut can point straight at
@@ -82,6 +90,14 @@ enum ConfigAction {
 enum ProtonAction {
     /// List detected Proton builds.
     List,
+}
+
+#[derive(Subcommand)]
+enum IntegrateAction {
+    /// Install the `.desktop` file and register it as the default handler.
+    Install,
+    /// Remove the `.desktop` file and default-handler registration.
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -300,6 +316,12 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some(Command::Integrate {
+            action: IntegrateAction::Install,
+        }) => integrate::install(),
+        Some(Command::Integrate {
+            action: IntegrateAction::Uninstall,
+        }) => integrate::uninstall(),
         Some(Command::Quick(mut args)) => {
             if args.is_empty() {
                 anyhow::bail!("usage: iprolaunch <name-or-slug> [args...]");

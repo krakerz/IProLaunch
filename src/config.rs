@@ -19,6 +19,32 @@ pub fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Context message for a TOML parse failure on the global `config.toml`.
+/// `toml`'s own error (attached below this by `.with_context`, as "Caused
+/// by") already points at the exact line/column with a caret and a
+/// diagnosis like `expected \`"\`, \`'\``, but that phrasing assumes TOML
+/// familiarity — this adds a plain-English common-fix hint and an escape
+/// hatch, found necessary after a real manually-edited `config.toml` (an
+/// unquoted string value) broke every subcommand with just the raw parser
+/// error (see project NOTES.md, 2026-09-06).
+fn config_parse_error_context(path: &std::path::Path) -> String {
+    format!(
+        "parsing {} — TOML syntax error (see below for the exact line). Common fix: text values need quotes, e.g. `KEY = \"value\"` not `KEY = value`. If you're stuck, delete this file and run `iprolaunch config init` to regenerate the defaults (this loses any manual edits in it)",
+        path.display()
+    )
+}
+
+/// Same as `config_parse_error_context`, but for a per-game `profile.toml` —
+/// `config init` only regenerates the global config, so the escape hatch
+/// here is just deleting the broken file (iprolaunch recreates a fresh,
+/// default profile for that exe the next time it's launched).
+fn profile_parse_error_context(path: &std::path::Path) -> String {
+    format!(
+        "parsing {} — TOML syntax error (see below for the exact line). Common fix: text values need quotes, e.g. `KEY = \"value\"` not `KEY = value`. If you're stuck, delete this file — iprolaunch recreates a fresh profile for that exe the next time you launch it (this loses any manual edits in it)",
+        path.display()
+    )
+}
+
 /// Local wall-clock time, falling back to UTC if the local offset can't be
 /// determined (`time`'s detection can fail on some platforms/thread states).
 pub fn now_local() -> time::OffsetDateTime {
@@ -139,7 +165,7 @@ impl Config {
         }
         let raw =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+        toml::from_str(&raw).with_context(|| config_parse_error_context(&path))
     }
 
     pub fn save(&self) -> Result<()> {
@@ -269,9 +295,18 @@ pub struct Profile {
     /// signal that rarely matches a proper multi-word title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// `DD-MM-YYYY, HH-MM-SS`, local time — see `Profile::mark_launched_now`.
+    /// `DD-MM-YYYY, HH:MM:SS`, local time — see `Profile::mark_launched_now`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_launched: Option<String>,
+    /// Extra args always forwarded to this exe (e.g. `["--dx11"]`), prepended
+    /// to whatever's passed on the command line (`run ... -- extra`, or
+    /// quick-launch trailing args) rather than replacing them. A `Vec`, not
+    /// one free-text string — an arg containing a space (e.g. a path) has no
+    /// ambiguity this way, unlike splitting a string on whitespace would.
+    /// No global equivalent (unlike `env`/`winedlloverride`): the same flags
+    /// rarely make sense across different games, so this is profile-only.
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default)]
     pub defaults: ProfileDefaults,
     #[serde(default)]
@@ -290,13 +325,13 @@ impl Profile {
     }
 
     /// Sets `last_launched` to now (local time), formatted
-    /// `DD-MM-YYYY, HH-MM-SS`. A plain formatted string rather than TOML's
+    /// `DD-MM-YYYY, HH:MM:SS`. A plain formatted string rather than TOML's
     /// native datetime type, so the profile file reads in the user's
     /// preferred layout at a glance.
     pub fn mark_launched_now(&mut self) {
         let now = now_local();
         self.last_launched = Some(format!(
-            "{:02}-{:02}-{}, {:02}-{:02}-{:02}",
+            "{:02}-{:02}-{}, {:02}:{:02}:{:02}",
             now.day(),
             u8::from(now.month()),
             now.year(),
@@ -310,7 +345,7 @@ impl Profile {
         let path = Self::profiles_dir()?.join(slug).join("profile.toml");
         let raw =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+        toml::from_str(&raw).with_context(|| profile_parse_error_context(&path))
     }
 
     pub fn save(&self, slug: &str) -> Result<()> {
@@ -380,6 +415,7 @@ mod tests {
             logging: ProfileLogging::default(),
             env: BTreeMap::new(),
             winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
         };
         profile.env.insert("DXVK_HUD".into(), "fps".into());
         assert_eq!(
@@ -402,15 +438,16 @@ mod tests {
             logging: ProfileLogging::default(),
             env: BTreeMap::new(),
             winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
         };
         profile.mark_launched_now();
         let stamp = profile.last_launched.expect("mark_launched_now sets it");
 
-        let (date, time) = stamp.split_once(", ").expect("`DD-MM-YYYY, HH-MM-SS`");
+        let (date, time) = stamp.split_once(", ").expect("`DD-MM-YYYY, HH:MM:SS`");
         let date_parts: Vec<&str> = date.split('-').collect();
-        let time_parts: Vec<&str> = time.split('-').collect();
+        let time_parts: Vec<&str> = time.split(':').collect();
         assert_eq!(date_parts.len(), 3, "date should be DD-MM-YYYY: {stamp}");
-        assert_eq!(time_parts.len(), 3, "time should be HH-MM-SS: {stamp}");
+        assert_eq!(time_parts.len(), 3, "time should be HH:MM:SS: {stamp}");
         assert_eq!(date_parts[0].len(), 2, "day should be zero-padded: {stamp}");
         assert_eq!(
             date_parts[1].len(),
