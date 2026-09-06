@@ -121,20 +121,41 @@ fn draw_running(frame: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
-    let items: Vec<ListItem> = app
-        .running
+    let indices = app.filtered_running_indices();
+    let title = filter_title(
+        &app.running_filter,
+        "Running (Enter/k = kill, r = refresh, f = search)",
+    );
+    if indices.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No match.").block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
+        return;
+    }
+    let items: Vec<ListItem> = indices
         .iter()
-        .map(|e| ListItem::new(format!("{}  [pid {}]  {}", e.name, e.pid, e.target_path)))
+        .map(|&i| {
+            let e = &app.running[i];
+            ListItem::new(format!("{}  [pid {}]  {}", e.name, e.pid, e.target_path))
+        })
         .collect();
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Running (Enter/k = kill, r = refresh)"),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(app.running_selected));
+}
+
+/// Shared by `draw_running`/`draw_library`: while a quick-search filter is
+/// active, the block's own title becomes the filter box itself (with a
+/// trailing `_` cursor, same convention as the standalone text-input
+/// popups) instead of the tab's normal key hint.
+fn filter_title(filter: &Option<String>, normal_title: &str) -> String {
+    match filter {
+        Some(text) => format!("Filter: {text}_  (Esc = clear)"),
+        None => normal_title.to_string(),
+    }
 }
 
 fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
@@ -150,13 +171,26 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     // row whether or not it's selected) — the space actually available for
     // list-item text inside the block.
     let inner_width = area.width.saturating_sub(4) as usize;
+    let title = filter_title(
+        &app.library_filter,
+        "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, f = search)",
+    );
+
+    let indices = app.filtered_profile_indices();
+    if indices.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No match.").block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
+        return;
+    }
 
     let tick = app.marquee_tick();
-    let items: Vec<ListItem> = app
-        .profiles
+    let items: Vec<ListItem> = indices
         .iter()
         .enumerate()
-        .map(|(i, (slug, p))| {
+        .map(|(display_index, &real_index)| {
+            let (slug, p) = &app.profiles[real_index];
             let last = p.last_launched.as_deref().unwrap_or("never");
             let left = format!(
                 "{}  [{slug}]  [{}]",
@@ -168,7 +202,9 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
                 .saturating_sub(left.chars().count() + right.chars().count())
                 .max(1);
             let combined = format!("{left}{:pad$}{right}", "");
-            let text = if i == app.library_selected && combined.chars().count() > inner_width {
+            let text = if display_index == app.library_selected
+                && combined.chars().count() > inner_width
+            {
                 marquee(&combined, inner_width, tick)
             } else {
                 combined
@@ -177,11 +213,7 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Library (Enter = launch, a = add, r = refresh, e = edit, d = delete)"),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(app.library_selected));
@@ -408,8 +440,7 @@ fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
                 IntegrateField::BinaryPath => crate::integrate::registered_binary_path()
                     .unwrap_or_else(|| "(not installed)".to_string()),
                 IntegrateField::Setup => {
-                    "Enter = register iprolaunch as the default .exe/.bat/.cmd/.msi handler"
-                        .to_string()
+                    "Enter = register as default handler, add to app menu, install icon".to_string()
                 }
                 IntegrateField::Reapply => {
                     "Enter = re-point the registration at this binary's current path".to_string()
@@ -465,6 +496,9 @@ Global:
 Running:
   Enter or k               kill the selected launch
   r                        refresh now (also refreshes automatically)
+  f                        quick-search — filters by name as you type;
+                           while searching, only Enter/Esc/Up/Down work
+                           (r/k become literal search characters instead)
 
 Library:
   Enter                    launch the selected game
@@ -472,7 +506,11 @@ Library:
   r                        refresh the list from disk
   e                        edit the selected game's profile overrides
   d                        delete the selected game's profile (confirms first)
-  Esc                      cancel while typing a path
+  f                        quick-search — filters by name as you type;
+                           while searching, only Enter/Esc/Up/Down work
+                           (a/r/e/d become literal search characters instead)
+  Esc                      cancel while typing a path, or clear an active
+                           quick-search
 
 Profile editor (Library, after 'e'):
   Enter                    edit (text fields), cycle (record/auto_open),
@@ -508,11 +546,13 @@ Config:
 
 Desktop integration (Config tab, bottom table):
   status / binary location  info only, not editable
-  setup                      register iprolaunch as the default .exe/.bat/.cmd/.msi handler
+  setup                      register iprolaunch as the default .exe/.bat/.cmd/.msi
+                             handler, add it to the app/start menu, and install its icon
   reapply                    re-point the registration at this binary's
                              current path, without touching the saved
                              backup of what the default was before setup
-  uninstall                  remove the registration and restore that backup
+  uninstall                  remove the registration, app-menu entry, and icon,
+                             and restore that backup
 
 env / winedlloverride entry list (global or per-profile):
   a                        add an entry (prompts for name, then value)
@@ -759,12 +799,14 @@ fn marquee_signature(app: &App) -> String {
         }
     };
     format!(
-        "{:?}|{}|{}|{}|{:?}|{mode_part}",
+        "{:?}|{}|{}|{}|{:?}|{:?}|{:?}|{mode_part}",
         app.tab,
         app.library_selected,
         app.config_selected,
         app.profile_field_selected,
         app.profile_editor,
+        app.library_filter,
+        app.running_filter,
     )
 }
 

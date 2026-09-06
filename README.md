@@ -21,53 +21,37 @@ entry.
 
 ## Features
 
-- Global config for default Proton version, prefix mode, and environment
-  variables, with per-game overrides.
-- Two prefix strategies: one shared prefix for everything, or one prefix
-  auto-created per profile — keyed by the profile's own slug, so renaming a
-  profile's slug renames its prefix directory to match (the TUI warns and
-  confirms first, since it's a real directory move).
-- A game library: every exe you launch gets a profile automatically, listed
-  by a friendly, editable name.
-- Quick launch by name — `iprolaunch <name>` — for pointing a Steam
-  shortcut straight at one game.
-- Per-launch logging with configurable retention, and an option to keep only
-  the logs from failed runs. Two layouts: one shared logs folder for
-  everything (`single`), or each profile's logs inside that profile's own
-  folder (`each`) — never a shared `logs/<profile>` split between the two.
-- `proton list` / `config init` to detect installed Proton builds and pick a
-  default interactively — checks every common install location (native and
-  Flatpak Steam, official Steam-installed builds, and distro-packaged
-  system-wide builds), not just `compatibilitytools.d`.
+- Global config (default Proton version, prefix mode, environment variables)
+  with per-game overrides.
+- Two prefix strategies: one shared prefix, or one auto-created per profile,
+  keyed by its slug (renaming a slug renames its prefix dir to match, with a
+  confirmation first).
+- A game library — every exe you launch gets an editable profile
+  automatically.
+- Quick launch by name or slug (`iprolaunch <name>`) — a natural fit for a
+  Steam shortcut.
+- Per-launch logging with configurable retention (optionally keeping only
+  failed runs), either one shared log folder or one per profile.
+- `proton list` / `config init` detect installed Proton builds across every
+  common location (native/Flatpak Steam, official Steam installs,
+  distro-packaged system builds), not just `compatibilitytools.d`.
 - Automatic GAMEID matching against the community
-  [umu-database](https://umu.openwinecomponents.org), refreshed periodically
-  in the background — so protonfixes has a real shot at finding a fix instead
-  of always falling back to a generic default.
-- `Ctrl+C` during a launch, and `running list` / `running kill`, both
-  reliably stop the whole sandboxed game tree, not just `iprolaunch` itself.
-- A full TUI (run `iprolaunch` with no arguments) — running-games/quick-kill,
-  a game library (launch, add by path with a follow-up title prompt,
-  refresh, and a per-game profile editor — target-path (validated against
-  the real filesystem on save), slug (the folder name — renames it on disk)
-  and name (the library display name — its `#N` is app-managed, auto-filling
-  the lowest number not already taken by another profile) are edited as
-  just their base text; title/args/proton/prefix_path/windows-version/
-  logging/env/winedlloverride are overrides, each independently settable
-  back to "inherit the global default" — plus delete, with a confirmation
-  first), a live config editor (including managing global
-  `env`/`winedlloverride` entries one at a time — add, edit, delete — and a
-  separate desktop integration table: status, binary location, setup,
-  reapply, uninstall), and help — for everything above without needing to
-  remember the CLI
-  subcommands. On a small terminal, a selected row or popup title too long
-  to fit scrolls (marquee-style) instead of getting clipped.
+  [umu-database](https://umu.openwinecomponents.org) so protonfixes has a
+  real shot at finding a fix instead of falling back to a generic default.
+- `Ctrl+C`, `running list` / `running kill` all reliably stop the *whole*
+  sandboxed game tree, not just `iprolaunch` itself.
+- A full TUI (`iprolaunch`, no arguments) — running games with quick-kill,
+  a library (launch/add/edit/delete, with per-game overrides each
+  independently resettable to "inherit the default"), a live config editor
+  (incl. env/winedlloverride management and desktop integration), and help —
+  covering everything above without needing to remember CLI subcommands.
+  Press `f` in Running/Library to quick-search by name; long text
+  marquee-scrolls instead of clipping on a small terminal.
 - `iprolaunch integrate install` — registers IProLaunch as the default
-  handler for Windows `.exe`, `.bat`/`.cmd`, and `.msi` files, so double-clicking
-  one in a file manager (Dolphin, Nautilus, Thunar, ...) runs it through
-  IProLaunch automatically.
-  `integrate uninstall` removes that registration and restores whatever was
-  the default before `install` ran. Both are also available from the TUI's
-  Config tab, below the rest of the config fields.
+  handler for `.exe`/`.bat`/`.cmd`/`.msi` files, adds it to the app/start
+  menu (KDE, GNOME, etc.) with its own icon, and backs up whatever was the
+  default before so `integrate uninstall` can restore it. Both are also
+  available from the TUI's Config tab.
 
 ## Installation
 
@@ -112,49 +96,38 @@ iprolaunch config init
 # Inspect the resolved config
 iprolaunch config show
 
-# Make double-clicking a .exe/.bat/.cmd/.msi in your file manager launch it via IProLaunch
+# Register as the default .exe/.bat/.cmd/.msi handler + app-menu entry
 iprolaunch integrate install
 iprolaunch integrate uninstall
 ```
 
 Global config lives at `~/.config/iprolaunch/config.toml` (created with
-defaults on first run — see `config/config.example.toml` for the shipped
-defaults). Per-game overrides live at
-`~/.config/iprolaunch/profiles/<slug>/profile.toml`, created automatically
-the first time you run that exe — edit it via the TUI's Library tab (`e` on
-a game) or by hand: override proton version, prefix path, Windows version
-(per-slug prefix mode only), logging, environment variables, DLL overrides
-(`[winedlloverride]`, e.g. `winhttp = "n,b"` — joined into a single
-`WINEDLLOVERRIDES` at launch), or extra launch args (`args = ["--dx11"]`,
-always forwarded to that exe, in addition to anything passed on the command
-line) for that one game — or set `title` to the game's real name (e.g.
-`"Grand Theft Auto V"`) so it can be matched against the umu-database for a
-GAMEID, which is what lets `umu-run`'s automatic protonfixes actually find a
-fix instead of a generic default.
+defaults on first run — see `config/config.example.toml`). Per-game
+overrides live at `~/.config/iprolaunch/profiles/<slug>/profile.toml`,
+created automatically on first run — edit via the TUI's Library tab (`e`) or
+by hand: proton version, prefix path, Windows version (per-slug prefix mode
+only), logging, environment variables, DLL overrides (`[winedlloverride]`,
+e.g. `winhttp = "n,b"`, joined into `WINEDLLOVERRIDES` at launch), extra args
+(`args = ["--dx11"]`, always forwarded), or `title` (the game's real name,
+matched against the umu-database for a GAMEID so protonfixes can find a fix).
 
 ## FAQ
 
 **Do I need Steam installed?** No — `iprolaunch` only needs `umu-run` on
 `$PATH`.
 
-**Can I still add a game to Steam as a non-Steam game?** Yes — that's the
-point of the quick-launch form. Point the shortcut at
-`iprolaunch <name-or-slug>` instead of the exe directly.
+**Can I still add a game to Steam as a non-Steam game?** Yes — point the
+shortcut at `iprolaunch <name-or-slug>` instead of the exe directly.
 
 **Does it need internet access?** Only to auto-fetch the umu-database
 (re-checked every 7 days by default, configurable via `gamedb`'s
-`update_interval_days`) and, separately, whatever `umu-run` itself needs to
-download a Proton build. Neither blocks a launch if the network's
-unavailable — the launch just proceeds without a GAMEID match.
+`update_interval_days`) and whatever `umu-run` itself needs to download a
+Proton build. Neither blocks a launch if the network's unavailable.
 
 **After `integrate uninstall`, `.exe` files open with something else again —
-is that a bug?** No — that's by design. `install` backs up whichever app was
-the default before it ran (per mimetype), and `uninstall` restores that
-backup, then deletes it — so if you `install` again later, it captures
-whatever's current at that point, not the stale pre-IProLaunch state. If
-nothing was set before `install`, `uninstall` leaves it unset too, and your
-file manager will prompt you to pick an app, same as if nothing had ever
-been set.
+is that a bug?** No — `install` backs up whichever app was the default
+before it ran, and `uninstall` restores it, then deletes the backup. If
+nothing was set before `install`, `uninstall` leaves it unset too.
 
 ---
 

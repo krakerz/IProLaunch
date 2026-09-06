@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <clipPath id="clip10">
+      <rect x="8" y="8" width="240" height="240" rx="40"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#clip10)">
+    <!-- quadpane background, flat cel colors (no gradients) -->
+    <rect x="8" y="8" width="120" height="120" fill="#2fd6c0"/>
+    <rect x="128" y="8" width="120" height="120" fill="#3fb6e0"/>
+    <rect x="8" y="128" width="120" height="120" fill="#2a6fb8"/>
+    <rect x="128" y="128" width="120" height="120" fill="#22406e"/>
+  </g>
+  <rect x="126" y="8" width="4" height="240" fill="#0f2233" fill-opacity="0.5"/>
+  <rect x="8" y="126" width="240" height="4" fill="#0f2233" fill-opacity="0.5"/>
+  <rect x="8" y="8" width="240" height="240" rx="40" fill="none" stroke="#0f2233" stroke-width="6"/>
+
+  <!-- marker-highlight accent bar behind the letters, for a bit of pop -->
+  <rect x="46" y="68" width="164" height="34" rx="16" fill="#ff5d9e" opacity="0.9" transform="rotate(-4 128 85)"/>
+
+  <!-- IPL blocky monogram, enlarged, flat white with a hard offset shadow (sticker style) -->
+  <g fill="#0f2233">
+    <rect x="59" y="53" width="20" height="76"/>
+    <rect x="93" y="53" width="20" height="76"/>
+    <rect x="93" y="53" width="48" height="36" rx="14"/>
+    <rect x="155" y="53" width="20" height="76"/>
+    <rect x="155" y="109" width="48" height="20"/>
+  </g>
+  <g fill="#ffffff">
+    <rect x="56" y="50" width="20" height="76"/>
+    <rect x="90" y="50" width="20" height="76"/>
+    <rect x="90" y="50" width="48" height="36" rx="14"/>
+    <rect x="152" y="50" width="20" height="76"/>
+    <rect x="152" y="106" width="48" height="20"/>
+  </g>
+
+  <!-- chibi rocket mascot, tilted for an ascending-diagonal pose; a little overlap with the letters is fine -->
+  <g transform="translate(0 14) rotate(22 128 165)">
+    <g stroke="#0f2233" stroke-width="4" stroke-linejoin="round">
+      <!-- flame: cool cyan/violet "energy" flame instead of fire, for an arcade feel -->
+      <path d="M112 196 L128 232 L144 196 Z" fill="#8a5cff"/>
+      <path d="M118 196 L128 218 L138 196 Z" fill="#c9b6ff"/>
+      <!-- fins -->
+      <path d="M104 176 L82 200 L104 194 Z" fill="#d6f3ff"/>
+      <path d="M152 176 L174 200 L152 194 Z" fill="#d6f3ff"/>
+      <!-- body -->
+      <path d="M128 88
+               C 148 96, 154 122, 154 150
+               C 154 168, 146 182, 128 190
+               C 110 182, 102 168, 102 150
+               C 102 122, 108 96, 128 88 Z" fill="#f2fbff"/>
+      <!-- plain window (no face) -->
+      <circle cx="128" cy="140" r="16" fill="#ff5d9e"/>
+    </g>
+
+    <!-- sparkles + speed lines, tilted along with the rocket -->
+    <g fill="#d6f3ff">
+      <path d="M70 118 L74 126 L82 130 L74 134 L70 142 L66 134 L58 130 L66 126 Z"/>
+      <path d="M186 100 L188 105 L193 107 L188 109 L186 114 L184 109 L179 107 L184 105 Z"/>
+    </g>
+    <g stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.8">
+      <line x1="70" y1="160" x2="86" y2="152"/>
+      <line x1="64" y1="176" x2="82" y2="170"/>
+    </g>
+  </g>
+</svg>

@@ -12,6 +12,9 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     if let Some(slug) = app.profile_editor.clone() {
         return super::profile_editor::on_key(app, code, slug);
     }
+    if app.library_filter.is_some() {
+        return filter_key(app, code, terminal);
+    }
 
     match code {
         KeyCode::Up => {
@@ -31,8 +34,68 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         KeyCode::Char('r') => refresh(app),
         KeyCode::Char('e') => edit_selected(app),
         KeyCode::Char('d') => prompt_delete_selected(app),
+        KeyCode::Char('f') => start_filter(app),
         KeyCode::Enter => launch_selected(app, terminal),
         _ => {}
+    }
+}
+
+fn start_filter(app: &mut App) {
+    app.library_filter = Some(String::new());
+    app.library_selected = 0;
+}
+
+/// The parts of quick-search editing that never need `terminal` — kept
+/// separate so they're unit-testable without a real `Term` (same pattern
+/// as `tui::edit_text_buffer`). Returns `true` if `code` was handled here
+/// (so the caller shouldn't fall through to the Enter-launches handling).
+fn edit_filter(app: &mut App, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Esc => {
+            app.library_filter = None;
+            app.library_selected = 0;
+            true
+        }
+        KeyCode::Backspace => {
+            if let Some(filter) = &mut app.library_filter {
+                filter.pop();
+            }
+            app.library_selected = 0;
+            true
+        }
+        KeyCode::Char(c) => {
+            if let Some(filter) = &mut app.library_filter {
+                filter.push(c);
+            }
+            app.library_selected = 0;
+            true
+        }
+        KeyCode::Up => {
+            let len = app.filtered_profile_indices().len();
+            app.library_selected = app::move_selection(app.library_selected, len, -1);
+            true
+        }
+        KeyCode::Down => {
+            let len = app.filtered_profile_indices().len();
+            app.library_selected = app::move_selection(app.library_selected, len, 1);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Keys while the quick-search box is active (`f` was pressed): typing
+/// edits the filter text directly (so `a`/`r`/`e`/`d` — this tab's own
+/// shortcuts — are unavailable while filtering, since they're needed as
+/// literal characters instead; `Esc` to leave filter mode restores them),
+/// Up/Down navigate the filtered subset, Enter still launches the
+/// selected one.
+fn filter_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
+    if edit_filter(app, code) {
+        return;
+    }
+    if code == KeyCode::Enter {
+        launch_selected(app, terminal);
     }
 }
 
@@ -41,18 +104,29 @@ fn refresh(app: &mut App) {
     app.status = Some("Refreshed.".to_string());
 }
 
+/// Every action below looks the currently-selected entry up through
+/// `filtered_profile_indices()` rather than indexing `app.profiles`
+/// directly with `library_selected` — when a filter is active,
+/// `library_selected` is a position in the *filtered* list, not the real
+/// one.
+fn selected_slug_and_profile(app: &App) -> Option<(String, Profile)> {
+    let indices = app.filtered_profile_indices();
+    let &real_index = indices.get(app.library_selected)?;
+    app.profiles.get(real_index).cloned()
+}
+
 fn edit_selected(app: &mut App) {
-    if let Some((slug, _)) = app.profiles.get(app.library_selected) {
-        app.profile_editor = Some(slug.clone());
+    if let Some((slug, _)) = selected_slug_and_profile(app) {
+        app.profile_editor = Some(slug);
         app.profile_field_selected = 0;
     }
 }
 
 fn prompt_delete_selected(app: &mut App) {
-    if let Some((slug, profile)) = app.profiles.get(app.library_selected) {
+    if let Some((slug, profile)) = selected_slug_and_profile(app) {
         app.mode = Mode::ConfirmDeleteProfile {
-            slug: slug.clone(),
-            name: profile.name.clone(),
+            slug,
+            name: profile.name,
         };
     }
 }
@@ -103,11 +177,11 @@ fn delete_profile(app: &mut App, slug: &str, name: &str) {
 }
 
 fn launch_selected(app: &mut App, terminal: &mut Term) {
-    let Some((_, profile)) = app.profiles.get(app.library_selected) else {
+    let Some((_, profile)) = selected_slug_and_profile(app) else {
         return;
     };
-    let target = profile.target_path.clone();
-    let name = profile.name.clone();
+    let target = profile.target_path;
+    let name = profile.name;
     launch_path(app, terminal, &target, &name);
 }
 
@@ -261,5 +335,96 @@ mod tests {
         let mut app = test_app_with_profile("game-1", "Game#1");
         refresh(&mut app);
         assert_eq!(app.status.as_deref(), Some("Refreshed."));
+    }
+
+    fn test_app_with_two_profiles() -> App {
+        let mut app = App::new(Config::default());
+        app.profiles = vec![
+            (
+                "eldenring".to_string(),
+                Profile {
+                    name: "eldenring#1".to_string(),
+                    target_path: "/tmp/eldenring.exe".to_string(),
+                    title: None,
+                    last_launched: None,
+                    args: Vec::new(),
+                    defaults: Default::default(),
+                    logging: Default::default(),
+                    env: Default::default(),
+                    winedlloverride: Default::default(),
+                },
+            ),
+            (
+                "ktsysview".to_string(),
+                Profile {
+                    name: "ktsysview#1".to_string(),
+                    target_path: "/tmp/ktsysview.exe".to_string(),
+                    title: None,
+                    last_launched: None,
+                    args: Vec::new(),
+                    defaults: Default::default(),
+                    logging: Default::default(),
+                    env: Default::default(),
+                    winedlloverride: Default::default(),
+                },
+            ),
+        ];
+        app
+    }
+
+    #[test]
+    fn f_starts_an_empty_filter_and_resets_selection() {
+        let mut app = test_app_with_two_profiles();
+        app.library_selected = 1;
+        start_filter(&mut app);
+        assert_eq!(app.library_filter.as_deref(), Some(""));
+        assert_eq!(app.library_selected, 0);
+    }
+
+    #[test]
+    fn typing_narrows_the_filtered_list_case_insensitively() {
+        let mut app = test_app_with_two_profiles();
+        start_filter(&mut app);
+        for c in "KT".chars() {
+            edit_filter(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.library_filter.as_deref(), Some("KT"));
+        let indices = app.filtered_profile_indices();
+        assert_eq!(indices, vec![1]); // only "ktsysview#1" matches
+    }
+
+    #[test]
+    fn backspace_removes_the_last_filter_character() {
+        let mut app = test_app_with_two_profiles();
+        start_filter(&mut app);
+        edit_filter(&mut app, KeyCode::Char('x'));
+        edit_filter(&mut app, KeyCode::Char('y'));
+        edit_filter(&mut app, KeyCode::Backspace);
+        assert_eq!(app.library_filter.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn esc_clears_the_filter_entirely() {
+        let mut app = test_app_with_two_profiles();
+        start_filter(&mut app);
+        edit_filter(&mut app, KeyCode::Char('k'));
+        edit_filter(&mut app, KeyCode::Esc);
+        assert_eq!(app.library_filter, None);
+        assert_eq!(app.library_selected, 0);
+    }
+
+    #[test]
+    fn up_down_navigate_within_the_filtered_subset_only() {
+        let mut app = test_app_with_two_profiles();
+        app.library_filter = Some("elden".to_string()); // only 1 match
+        edit_filter(&mut app, KeyCode::Down);
+        assert_eq!(app.library_selected, 0, "only one match — nowhere to go");
+    }
+
+    #[test]
+    fn unhandled_keys_fall_through_so_enter_can_still_launch() {
+        let mut app = test_app_with_two_profiles();
+        start_filter(&mut app);
+        assert!(!edit_filter(&mut app, KeyCode::Enter));
     }
 }

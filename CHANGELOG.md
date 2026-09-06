@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [1.14.0] — 2026-09-06
+
+### Added
+- `integrate install` now also adds IProLaunch to the app/start menu (KDE,
+  GNOME, etc.) as its own visible entry (separate from the existing
+  `.exe`/`.bat`/`.cmd`/`.msi` file-handler entry, which stays hidden from
+  menus — it only makes sense invoked with a real file), and installs a
+  real app icon (an embedded SVG + 256x256 PNG, installed into the standard
+  `~/.local/share/icons/hicolor` theme directories under the name
+  `iprolaunch`) referenced by both `.desktop` entries. `integrate uninstall`
+  removes both alongside the existing file-handler cleanup. No new runtime
+  dependency — the icon bytes are embedded in the binary at compile time via
+  `include_bytes!`, so a downloaded release binary installs the same icon a
+  locally-built one does.
+- Project icon/logo finalized: a flat, cel-shaded "IPL" mark with a tilted
+  chibi-rocket mascot over a four-pane background (`assets/icon.svg` /
+  `assets/icon.png`).
+
+## [1.13.0] — 2026-09-06
+
+### Added
+- TUI: press `f` in the Running or Library tab to quick-search — typing
+  narrows the visible list live by name (case-insensitive substring match).
+  Up/Down and Enter (kill in Running, launch in Library) act on whatever's
+  currently shown; `Esc` clears the search and restores the full list and
+  that tab's normal shortcuts (`r`/`k` for Running, `a`/`r`/`e`/`d` for
+  Library — those become literal search characters while a search is
+  active).
+
 ## [1.12.0] — 2026-09-06
 
 ### Changed
