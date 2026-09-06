@@ -141,6 +141,22 @@ pub enum GamescopeFilter {
     Pixel,
 }
 
+/// `-S`/`--scaler` (gamescope's own upscale-strategy option) — real
+/// gamescope option values, confirmed against the actually-installed
+/// `gamescope --help` (3.16.25), not guessed. Pairs with `filter` (both only
+/// matter when the output and nested resolutions differ); same
+/// always-`Option`-wrapped treatment for the same reason — no sensible
+/// non-`None` global default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GamescopeScaler {
+    Auto,
+    Integer,
+    Fit,
+    Fill,
+    Stretch,
+}
+
 /// Extra `gamescope` launch settings, layered the same way at both the
 /// global and per-profile level (each field independently `None` = "don't
 /// pass this flag, let gamescope use its own default" — there's no
@@ -167,6 +183,10 @@ pub struct GamescopeSettings {
     pub nested_height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<GamescopeFilter>,
+    /// Gamescope's own `-S`/`--scaler` — how it upscales when `filter` is
+    /// engaged (nested/output resolutions differ). Config-only, no CLI flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scaler: Option<GamescopeScaler>,
     /// Gamescope's own `-b`/`--borderless` — merged with the CLI `-b` flag
     /// at launch time (either one turns it on for that launch, see
     /// `launch::run`); `None`/`Some(false)` both mean "don't pass it".
@@ -179,6 +199,10 @@ pub struct GamescopeSettings {
     /// which grabs the *keyboard* — a different, not-yet-exposed option).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grab_cursor: Option<bool>,
+    /// Gamescope's own `--adaptive-sync` (VRR) — simple bool toggle, same
+    /// pattern as `borderless`/`grab_cursor`. Config-only, no CLI flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_sync: Option<bool>,
 }
 
 impl GamescopeSettings {
@@ -193,8 +217,10 @@ impl GamescopeSettings {
             nested_width: profile.nested_width.or(self.nested_width),
             nested_height: profile.nested_height.or(self.nested_height),
             filter: profile.filter.or(self.filter),
+            scaler: profile.scaler.or(self.scaler),
             borderless: profile.borderless.or(self.borderless),
             grab_cursor: profile.grab_cursor.or(self.grab_cursor),
+            adaptive_sync: profile.adaptive_sync.or(self.adaptive_sync),
         }
     }
 }
@@ -639,6 +665,25 @@ mod tests {
         profile.defaults.gamescope_settings.grab_cursor = Some(false);
         assert_eq!(
             cfg.effective(Some(&profile)).gamescope_settings.grab_cursor,
+            Some(false)
+        );
+
+        cfg.defaults.gamescope_settings.scaler = Some(GamescopeScaler::Fit);
+        cfg.defaults.gamescope_settings.adaptive_sync = Some(true);
+        assert_eq!(
+            cfg.effective(Some(&profile)).gamescope_settings.scaler,
+            Some(GamescopeScaler::Fit)
+        );
+        profile.defaults.gamescope_settings.scaler = Some(GamescopeScaler::Stretch);
+        profile.defaults.gamescope_settings.adaptive_sync = Some(false);
+        assert_eq!(
+            cfg.effective(Some(&profile)).gamescope_settings.scaler,
+            Some(GamescopeScaler::Stretch)
+        );
+        assert_eq!(
+            cfg.effective(Some(&profile))
+                .gamescope_settings
+                .adaptive_sync,
             Some(false)
         );
     }

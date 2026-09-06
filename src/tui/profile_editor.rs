@@ -89,6 +89,10 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
                 profile.defaults.gamescope_settings.filter =
                     app::next_gamescope_filter(profile.defaults.gamescope_settings.filter);
             }
+            ProfileField::GamescopeScaler => {
+                profile.defaults.gamescope_settings.scaler =
+                    app::next_gamescope_scaler(profile.defaults.gamescope_settings.scaler);
+            }
             ProfileField::GamescopeBorderless => {
                 profile.defaults.gamescope_settings.borderless =
                     app::next_optional_bool(profile.defaults.gamescope_settings.borderless);
@@ -96,6 +100,10 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
             ProfileField::GamescopeGrabCursor => {
                 profile.defaults.gamescope_settings.grab_cursor =
                     app::next_optional_bool(profile.defaults.gamescope_settings.grab_cursor);
+            }
+            ProfileField::GamescopeAdaptiveSync => {
+                profile.defaults.gamescope_settings.adaptive_sync =
+                    app::next_optional_bool(profile.defaults.gamescope_settings.adaptive_sync);
             }
             _ => {}
         }
@@ -442,8 +450,10 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::LogAutoOpen
         | ProfileField::Gamescope
         | ProfileField::GamescopeFilter
+        | ProfileField::GamescopeScaler
         | ProfileField::GamescopeBorderless
         | ProfileField::GamescopeGrabCursor
+        | ProfileField::GamescopeAdaptiveSync
         | ProfileField::EnvTable
         | ProfileField::WineDllOverrideTable => {}
     }

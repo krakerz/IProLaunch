@@ -354,6 +354,11 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .gamescope_settings
                     .filter
                     .map_or_else(|| "(inherit)".to_string(), |f| format!("{f:?}")),
+                ProfileField::GamescopeScaler => profile
+                    .defaults
+                    .gamescope_settings
+                    .scaler
+                    .map_or_else(|| "(inherit)".to_string(), |s| format!("{s:?}")),
                 ProfileField::GamescopeBorderless => profile
                     .defaults
                     .gamescope_settings
@@ -363,6 +368,11 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .defaults
                     .gamescope_settings
                     .grab_cursor
+                    .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
+                ProfileField::GamescopeAdaptiveSync => profile
+                    .defaults
+                    .gamescope_settings
+                    .adaptive_sync
                     .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
                 ProfileField::LogKeep => profile
                     .logging
@@ -533,6 +543,10 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                     .gamescope_settings
                     .filter
                     .map_or_else(|| "(unset)".to_string(), |f| format!("{f:?}")),
+                ConfigField::GamescopeScaler => d
+                    .gamescope_settings
+                    .scaler
+                    .map_or_else(|| "(unset)".to_string(), |s| format!("{s:?}")),
                 ConfigField::GamescopeBorderless => d
                     .gamescope_settings
                     .borderless
@@ -540,6 +554,10 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::GamescopeGrabCursor => d
                     .gamescope_settings
                     .grab_cursor
+                    .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
+                ConfigField::GamescopeAdaptiveSync => d
+                    .gamescope_settings
+                    .adaptive_sync
                     .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
                 ConfigField::LogMode => format!("{:?}", l.mode),
                 ConfigField::LogPath => l.path.clone(),
@@ -707,19 +725,21 @@ Profile editor (Library, after 'e'):
       wins if passed). -b/borderless is independent of this (not mutually
       exclusive with fullscreen/maximize) — see gamescope_settings.borderless.
     - gamescope_settings.* overrides (output_width/output_height/refresh/
-      nested_width/nested_height/filter/borderless/grab_cursor) only matter
-      once gamescope is actually wrapping the launch (-f/-w/-b, or the
-      gamescope override above) — blank means \"don't pass that flag, let
-      gamescope pick.\" output_* is gamescope's real output size (-W/-H) —
-      gamescope only auto-detects this when it owns the display directly,
-      not nested inside an existing desktop session, so this is the fix for
-      -w producing a small window on a normal desktop. nested_* (-w/-h,
-      gamescope's own flags — not to be confused with iprolaunch's own -w/
-      --maximize) is the game's own internal render resolution; filter (-F)
-      is the upscale filter (linear/nearest/fsr/nis/pixel) used when nested/
-      output differ; borderless (-b) merges with the CLI -b flag — either
-      one turns it on for that launch; grab_cursor (--force-grab-cursor,
-      relative mouse mode) is config-only, no CLI flag.
+      nested_width/nested_height/filter/scaler/borderless/grab_cursor/
+      adaptive_sync) only matter once gamescope is actually wrapping the
+      launch (-f/-w/-b, or the gamescope override above) — blank means
+      \"don't pass that flag, let gamescope pick.\" output_* is gamescope's
+      real output size (-W/-H) — gamescope only auto-detects this when it
+      owns the display directly, not nested inside an existing desktop
+      session, so this is the fix for -w producing a small window on a
+      normal desktop. nested_* (-w/-h, gamescope's own flags — not to be
+      confused with iprolaunch's own -w/--maximize) is the game's own
+      internal render resolution; filter (-F, linear/nearest/fsr/nis/pixel)
+      and scaler (-S, auto/integer/fit/fill/stretch) together control the
+      upscale used when nested/output differ; borderless (-b) merges with
+      the CLI -b flag — either one turns it on for that launch; grab_cursor
+      (--force-grab-cursor, relative mouse mode) and adaptive_sync
+      (--adaptive-sync, VRR) are config-only, no CLI flag.
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or
@@ -1380,7 +1400,9 @@ mod tests {
         app.tab = Tab::Library;
         app.profiles = vec![("game-1".to_string(), test_profile("Game#1"))];
         app.profile_editor = Some("game-1".to_string());
-        let out = rendered(&mut app, 100, 36);
+        // Tall enough to fit every field row without clipping — see
+        // `config_tab_lists_every_field_label`'s identical reasoning.
+        let out = rendered(&mut app, 100, 40);
         assert!(out.contains("Game#1"));
         for field in ProfileField::ALL {
             assert!(

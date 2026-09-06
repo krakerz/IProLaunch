@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "iprolaunch"
-version = "1.19.4"
+version = "1.19.5"
 dependencies = [
  "anyhow",
  "clap",

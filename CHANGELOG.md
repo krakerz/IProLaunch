@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.19.5] — 2026-09-06
+
+### Added
+- Configurable gamescope upscale strategy (`-S`/`--scaler`) and adaptive-sync/VRR toggle (`--adaptive-sync`), global default + per-profile override, alongside the existing upscale-filter setting.
+
 ## [1.19.4] — 2026-09-06
 
 ### Added
