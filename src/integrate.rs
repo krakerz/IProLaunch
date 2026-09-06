@@ -31,6 +31,27 @@ const MIME_TYPES: [&str; 4] = [
     "application/x-msi",
 ];
 const DESKTOP_FILE_NAME: &str = "iprolaunch.desktop";
+/// A second, separate `.desktop` file from the mimetype-handler one above:
+/// that one is `NoDisplay=true` and its `Exec=` line ends in `run %f`, which
+/// only makes sense invoked by a file manager with a real file to hand it —
+/// launched bare from an app menu (no `%f` to substitute) it'd just run
+/// `iprolaunch run` with no path and fail immediately. This entry instead
+/// runs plain `iprolaunch` (opens the TUI) inside a terminal
+/// (`Terminal=true` — it's a TUI, not a GUI) and is left visible
+/// (`NoDisplay` omitted/false) so it shows up in the app menu/start menu —
+/// installed and removed alongside the handler entry, not standalone.
+const MENU_DESKTOP_FILE_NAME: &str = "iprolaunch-menu.desktop";
+
+/// Freedesktop icon name (no extension) both `.desktop` entries' `Icon=`
+/// lines reference — resolved via the standard hicolor icon theme lookup,
+/// not a hardcoded path, so it works the same way any other installed
+/// app's icon does. The actual image bytes are embedded in the binary
+/// (`ICON_SVG`/`ICON_PNG`) and written out to the theme directories by
+/// `install`, so there's no runtime dependency on `assets/` existing next
+/// to the binary.
+const ICON_NAME: &str = "iprolaunch";
+const ICON_SVG: &[u8] = include_bytes!("../assets/icon.svg");
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
 fn base_dirs() -> Result<directories::BaseDirs> {
     directories::BaseDirs::new().context("could not determine home directory")
@@ -45,6 +66,34 @@ fn applications_dir() -> Result<PathBuf> {
 
 fn desktop_file_path() -> Result<PathBuf> {
     Ok(applications_dir()?.join(DESKTOP_FILE_NAME))
+}
+
+fn menu_desktop_file_path() -> Result<PathBuf> {
+    Ok(applications_dir()?.join(MENU_DESKTOP_FILE_NAME))
+}
+
+/// `~/.local/share/icons/hicolor` — the user-local override of the
+/// standard fallback icon theme every desktop environment ships, so
+/// anything installed under it is picked up regardless of whichever icon
+/// theme is actually active (GNOME/KDE/XFCE all fall back to hicolor).
+fn hicolor_dir() -> Result<PathBuf> {
+    Ok(base_dirs()?.data_dir().join("icons").join("hicolor"))
+}
+
+/// The scalable SVG variant — sized-agnostic, so this alone is enough for
+/// any toolkit that honors scalable icons (GTK/Qt both do).
+fn icon_svg_path() -> Result<PathBuf> {
+    Ok(hicolor_dir()?
+        .join("scalable/apps")
+        .join(format!("{ICON_NAME}.svg")))
+}
+
+/// A rendered 256x256 fallback for anything that only looks at fixed-size
+/// buckets (e.g. some file managers' thumbnailers) rather than scalable.
+fn icon_png_path() -> Result<PathBuf> {
+    Ok(hicolor_dir()?
+        .join("256x256/apps")
+        .join(format!("{ICON_NAME}.png")))
 }
 
 fn mimeapps_list_path() -> Result<PathBuf> {
@@ -141,11 +190,18 @@ pub fn install() -> Result<()> {
     fs::write(&desktop_path, contents)
         .with_context(|| format!("writing {}", desktop_path.display()))?;
 
+    let menu_path = menu_desktop_file_path()?;
+    fs::write(&menu_path, menu_desktop_file_contents(&exe))
+        .with_context(|| format!("writing {}", menu_path.display()))?;
+
+    install_icon()?;
+
     for mime in MIME_TYPES {
         set_default(DESKTOP_FILE_NAME, mime)?;
     }
 
     refresh_desktop_database(&dir);
+    refresh_icon_cache();
 
     println!("Installed {}", desktop_path.display());
     println!("Default handler for:");
@@ -155,6 +211,23 @@ pub fn install() -> Result<()> {
     println!(
         "Launches run detached (no terminal window) — see `iprolaunch running list` to check on one."
     );
+    println!("Added to the app menu (start menu) as IProLaunch.");
+    Ok(())
+}
+
+fn install_icon() -> Result<()> {
+    let svg_path = icon_svg_path()?;
+    if let Some(parent) = svg_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(&svg_path, ICON_SVG).with_context(|| format!("writing {}", svg_path.display()))?;
+
+    let png_path = icon_png_path()?;
+    if let Some(parent) = png_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(&png_path, ICON_PNG).with_context(|| format!("writing {}", png_path.display()))?;
+
     Ok(())
 }
 
@@ -172,6 +245,14 @@ pub fn uninstall() -> Result<()> {
             .with_context(|| format!("removing {}", desktop_path.display()))?;
     }
 
+    let menu_path = menu_desktop_file_path()?;
+    let removed_menu = menu_path.exists();
+    if removed_menu {
+        fs::remove_file(&menu_path).with_context(|| format!("removing {}", menu_path.display()))?;
+    }
+
+    let removed_icon = remove_icon()?;
+
     let backup_file = backup_path()?;
     let restored = restore_prior_defaults(&backup_file)?;
     let cleared = remove_default_associations()?;
@@ -179,13 +260,30 @@ pub fn uninstall() -> Result<()> {
 
     let dir = applications_dir()?;
     refresh_desktop_database(&dir);
+    refresh_icon_cache();
 
-    if removed_desktop || restored || cleared {
+    if removed_desktop || removed_menu || removed_icon || restored || cleared {
         println!("Uninstalled.");
     } else {
         println!("Nothing to uninstall — it wasn't installed.");
     }
     Ok(())
+}
+
+fn remove_icon() -> Result<bool> {
+    let svg_path = icon_svg_path()?;
+    let had_svg = svg_path.exists();
+    if had_svg {
+        fs::remove_file(&svg_path).with_context(|| format!("removing {}", svg_path.display()))?;
+    }
+
+    let png_path = icon_png_path()?;
+    let had_png = png_path.exists();
+    if had_png {
+        fs::remove_file(&png_path).with_context(|| format!("removing {}", png_path.display()))?;
+    }
+
+    Ok(had_svg || had_png)
 }
 
 fn set_default(desktop_file: &str, mime: &str) -> Result<()> {
@@ -257,6 +355,21 @@ fn refresh_desktop_database(applications_dir: &Path) {
         .status();
 }
 
+fn refresh_icon_cache() {
+    // Best-effort, same reasoning as `refresh_desktop_database`: icon
+    // lookup itself doesn't strictly require this (hicolor is scanned
+    // directly by most toolkits), but a few DEs use the cache for speed
+    // and won't notice a new icon until it's rebuilt. `gtk-update-icon-cache`
+    // isn't guaranteed to be installed outside GTK-based desktops, hence
+    // ignoring the error entirely rather than surfacing it.
+    if let Ok(dir) = hicolor_dir() {
+        let _ = Command::new("gtk-update-icon-cache")
+            .arg("-f")
+            .arg(&dir)
+            .status();
+    }
+}
+
 fn remove_default_associations() -> Result<bool> {
     let path = mimeapps_list_path()?;
     let Ok(original) = fs::read_to_string(&path) else {
@@ -278,10 +391,30 @@ Comment=Launch Windows apps/games through Proton via umu-run\n\
 Exec=\"{}\" run %f\n\
 Terminal=false\n\
 NoDisplay=true\n\
+Icon={ICON_NAME}\n\
 Categories=Game;Utility;\n\
 MimeType={};\n",
         exe.display(),
         MIME_TYPES.join(";"),
+    )
+}
+
+/// The app-menu-visible entry (see `MENU_DESKTOP_FILE_NAME`): bare `Exec=`
+/// (no `%f`, nothing to substitute from a menu launch) inside a terminal,
+/// since `iprolaunch` with no arguments opens the TUI. `NoDisplay` is
+/// omitted (defaults to false) so it actually shows up, unlike the
+/// handler entry above.
+fn menu_desktop_file_contents(exe: &Path) -> String {
+    format!(
+        "[Desktop Entry]\n\
+Type=Application\n\
+Name=IProLaunch\n\
+Comment=Launch Windows apps/games through Proton via umu-run\n\
+Exec=\"{}\"\n\
+Terminal=true\n\
+Icon={ICON_NAME}\n\
+Categories=Game;Utility;\n",
+        exe.display(),
     )
 }
 

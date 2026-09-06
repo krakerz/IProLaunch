@@ -377,9 +377,21 @@ pub struct App {
 
     pub running: Vec<RunningEntry>,
     pub running_selected: usize,
+    /// `Some(text)` while the Running tab's quick-search (`f`) is active —
+    /// same `Option<String>`-at-the-`App`-level pattern as `profile_editor`
+    /// below, not a `Mode` variant: Up/Down/Enter still need to operate on
+    /// the (filtered) list while typing, which an exclusive `Mode` like
+    /// `TextInput` doesn't allow for. `running_selected` indexes into
+    /// whichever set is currently *displayed* — the filtered subset when
+    /// this is `Some`, the full list when `None` — see
+    /// `filtered_running_indices`.
+    pub running_filter: Option<String>,
 
     pub profiles: Vec<(String, Profile)>,
     pub library_selected: usize,
+    /// Same as `running_filter`, for the Library tab — see
+    /// `filtered_profile_indices`.
+    pub library_filter: Option<String>,
 
     pub config_selected: usize,
 
@@ -415,8 +427,10 @@ impl App {
             status: None,
             running: Vec::new(),
             running_selected: 0,
+            running_filter: None,
             profiles: Vec::new(),
             library_selected: 0,
+            library_filter: None,
             config_selected: 0,
             profile_editor: None,
             profile_field_selected: 0,
@@ -448,6 +462,44 @@ impl App {
         }
         if self.library_selected >= self.profiles.len() {
             self.library_selected = self.profiles.len().saturating_sub(1);
+        }
+    }
+
+    /// Indices into `self.profiles` currently displayed — every index, in
+    /// order, when `library_filter` is `None`; otherwise only the ones
+    /// whose `name` contains the filter text (case-insensitive substring).
+    /// `library_selected` is an index *into this*, not into `self.profiles`
+    /// directly — callers that need the real profile look it up via
+    /// `indices[library_selected]`.
+    pub fn filtered_profile_indices(&self) -> Vec<usize> {
+        match &self.library_filter {
+            None => (0..self.profiles.len()).collect(),
+            Some(filter) => {
+                let needle = filter.to_lowercase();
+                self.profiles
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, p))| p.name.to_lowercase().contains(&needle))
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+        }
+    }
+
+    /// Same as `filtered_profile_indices`, for `self.running` /
+    /// `running_filter` / `running_selected`.
+    pub fn filtered_running_indices(&self) -> Vec<usize> {
+        match &self.running_filter {
+            None => (0..self.running.len()).collect(),
+            Some(filter) => {
+                let needle = filter.to_lowercase();
+                self.running
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.name.to_lowercase().contains(&needle))
+                    .map(|(i, _)| i)
+                    .collect()
+            }
         }
     }
 
