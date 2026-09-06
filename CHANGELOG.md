@@ -2,6 +2,81 @@
 
 ## [Unreleased]
 
+## [1.17.2] — 2026-09-06
+
+### Fixed
+- A launch's working directory is now set to the target exe's own folder
+  before spawning, matching what double-clicking it in Windows Explorer
+  (or Lutris, which always sets this) gives it. Previously the spawned
+  process just inherited iprolaunch's own cwd (wherever it happened to be
+  run from), which broke a real game whose asset loading assumes cwd is
+  its own install folder.
+
+## [1.17.1] — 2026-09-06
+
+### Fixed
+- TUI Running/Library: once a quick-search filter is locked (Enter), the
+  block title had only shown "(locked, Esc = clear)" — dropping the
+  a/r/e/d/c/Enter shortcut legend, even though all of it works again once
+  locked. Now shows both together.
+
+## [1.17.0] — 2026-09-06
+
+### Added
+- `defaults.gamescope` (global) / a per-profile override, cycled in the TUI
+  (Config tab and the profile editor): `none`/`fullscreen`/`maximize`,
+  remembering the same choice `-f`/`-m` would set for one launch so
+  `iprolaunch <slug>` doesn't need it retyped every time — an explicit
+  `-f`/`-m` on the command line still wins for that one launch.
+- README: a "Requirements" section listing every external tool iprolaunch
+  can use, assuming a clean system — `umu-run` (required), and what each
+  optional one (`xdg-utils`, `gtk-update-icon-cache`, KDE's
+  `kbuildsycoca`, `wl-copy`/`xclip`, `gamescope`) is actually needed for.
+
+### Changed
+- A profile's `proton` override now only takes effect in
+  `defaults.prefix_mode = per-slug`, same restriction `windows-version`
+  already had — in `single` prefix mode every profile shares one prefix,
+  so a mismatched Proton version from one profile's override risked
+  corrupting it for the rest. The stored override itself is untouched
+  (still editable, just inert until switched to per-slug).
+
+## [1.16.0] — 2026-09-06
+
+### Added
+- `-f`/`-m` — wraps a launch (`run` or quick-launch, `iprolaunch <slug>`)
+  in a nested `gamescope` session instead of spawning `umu-run` directly:
+  `-f` uses gamescope's own `-f`/`--fullscreen` (a real display-mode-switch
+  fullscreen), `-m` uses `--force-windows-fullscreen` (stretches the game's
+  own window to fill the nested surface, regardless of the size it
+  requests — the closest thing gamescope has to "maximized", since it's a
+  Wayland compositor with no literal maximized-window concept). Combine
+  both for `-f -m`. Useful inside an already-running gamescope session
+  (Steam Game Mode/a Deck) — nesting one specifically around a single
+  non-Steam-game's launch is the standard trick for forcing it to actually
+  fullscreen/fill the screen, since a plain windowed Wine game won't
+  otherwise switch display modes on its own. Requires `gamescope` on
+  `$PATH`.
+
+### Changed
+- TUI Running/Library quick-search (`f`): Enter now *locks* the filter
+  instead of immediately killing/launching — the narrowed list stays, but
+  every other key (kill/refresh/launch/add/edit/delete/copy, Up/Down) goes
+  back to working normally, now scoped to the filtered subset. Esc clears
+  it entirely whether still typing or locked, and so does switching tabs
+  (previously a filter just stuck around invisibly on a tab you'd left).
+  Also fixed a related bug this surfaced: while actively typing a filter,
+  digits/`q`/`?`/Tab were being intercepted by the global tab-switch/quit/
+  help shortcuts before the filter ever saw them (so searching a game
+  named e.g. "Dark Souls 3" didn't work) — those now correctly become
+  filter text while typing, same as any other character.
+- Bare `iprolaunch` (the TUI) now fails with a clear, actionable message
+  when there's no controlling terminal to run in, instead of a bare
+  `enable_raw_mode()` OS error — confirmed for real this is exactly what
+  happens when Steam Game Mode launches a non-Steam-game shortcut directly
+  (no console attached at all), which is why only `iprolaunch <slug>`
+  worked there and bare `iprolaunch` silently did nothing.
+
 ## [1.15.1] — 2026-09-06
 
 ### Changed

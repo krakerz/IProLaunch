@@ -1,6 +1,6 @@
 [package]
 name = "iprolaunch"
-version = "1.15.1"
+version = "1.17.2"
 edition = "2024"
 
 [[bin]]

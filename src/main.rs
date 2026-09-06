@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use config::{Config, Profile};
-use launch::RunOptions;
+use launch::{GamescopeMode, RunOptions};
 
 #[derive(Parser)]
 #[command(
@@ -28,6 +28,23 @@ use launch::RunOptions;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+
+    /// Wrap the launch in a nested `gamescope -f` session (real fullscreen
+    /// mode-switch) — useful inside an existing gamescope session (e.g.
+    /// Steam Game Mode/a Deck), the standard trick for forcing one
+    /// non-Steam-game to behave since a plain windowed Wine game won't
+    /// otherwise switch display modes. Applies to `run` and quick-launch
+    /// (`iprolaunch <slug>`) only; needs `gamescope` on `$PATH`.
+    #[arg(short = 'f', long, global = true)]
+    fullscreen: bool,
+
+    /// Wrap the launch in a nested gamescope session with
+    /// `--force-windows-fullscreen` (stretches the game's own window to
+    /// fill it, regardless of the size it requests) — gamescope has no
+    /// literal "maximized" mode; this is the closest real equivalent.
+    /// Combine with -f for both at once.
+    #[arg(short = 'm', long, global = true)]
+    maximize: bool,
 }
 
 #[derive(Subcommand)]
@@ -200,7 +217,12 @@ fn add_profile(target: &Path) -> Result<()> {
 /// so a fumbled Steam shortcut still lands) and launches it. Leading
 /// `KEY=VALUE` tokens in `extra_args` become one-off env overrides; whatever
 /// remains is forwarded to the exe.
-fn quick_launch(cfg: &Config, query: &str, extra_args: Vec<String>) -> Result<()> {
+fn quick_launch(
+    cfg: &Config,
+    query: &str,
+    extra_args: Vec<String>,
+    gamescope: GamescopeMode,
+) -> Result<()> {
     let profiles = Profile::load_all()?;
     let matches: Vec<&(String, Profile)> = profiles
         .iter()
@@ -223,6 +245,7 @@ fn quick_launch(cfg: &Config, query: &str, extra_args: Vec<String>) -> Result<()
         RunOptions {
             env,
             args,
+            gamescope,
             ..Default::default()
         },
     )
@@ -296,6 +319,10 @@ fn config_init(mut cfg: Config) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load_or_init()?;
+    let gamescope = GamescopeMode {
+        fullscreen: cli.fullscreen,
+        maximize: cli.maximize,
+    };
 
     match cli.command {
         Some(Command::Run {
@@ -312,6 +339,7 @@ fn main() -> Result<()> {
                 prefix,
                 env,
                 args,
+                gamescope,
             },
         ),
         Some(Command::Add { target }) => add_profile(&target),
@@ -380,7 +408,7 @@ fn main() -> Result<()> {
                 anyhow::bail!("usage: iprolaunch <name-or-slug> [args...]");
             }
             let query = args.remove(0);
-            quick_launch(&cfg, &query, args)
+            quick_launch(&cfg, &query, args, gamescope)
         }
         None => tui::run(cfg),
     }

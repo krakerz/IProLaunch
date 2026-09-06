@@ -12,17 +12,18 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     if let Some(slug) = app.profile_editor.clone() {
         return super::profile_editor::on_key(app, code, slug);
     }
-    if app.library_filter.is_some() {
-        return filter_key(app, code, terminal);
+    if app.library_filter_editing {
+        return filter_key(app, code);
     }
 
     match code {
         KeyCode::Up => {
-            app.library_selected =
-                app::move_selection(app.library_selected, app.profiles.len(), -1);
+            let len = app.filtered_profile_indices().len();
+            app.library_selected = app::move_selection(app.library_selected, len, -1);
         }
         KeyCode::Down => {
-            app.library_selected = app::move_selection(app.library_selected, app.profiles.len(), 1);
+            let len = app.filtered_profile_indices().len();
+            app.library_selected = app::move_selection(app.library_selected, len, 1);
         }
         KeyCode::Char('a') => {
             app.mode = Mode::TextInput {
@@ -37,12 +38,17 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         KeyCode::Char('f') => start_filter(app),
         KeyCode::Char('c') => copy_quick_launch(app),
         KeyCode::Enter => launch_selected(app, terminal),
+        // Only meaningful once a filter is locked (still-typing Esc is
+        // handled by `edit_filter` instead, via the early return above) —
+        // a no-op otherwise, same as Esc always was here.
+        KeyCode::Esc if app.library_filter.is_some() => app.clear_library_filter(),
         _ => {}
     }
 }
 
 fn start_filter(app: &mut App) {
     app.library_filter = Some(String::new());
+    app.library_filter_editing = true;
     app.library_selected = 0;
 }
 
@@ -85,18 +91,21 @@ fn edit_filter(app: &mut App, code: KeyCode) -> bool {
     }
 }
 
-/// Keys while the quick-search box is active (`f` was pressed): typing
-/// edits the filter text directly (so `a`/`r`/`e`/`d` — this tab's own
-/// shortcuts — are unavailable while filtering, since they're needed as
-/// literal characters instead; `Esc` to leave filter mode restores them),
-/// Up/Down navigate the filtered subset, Enter still launches the
-/// selected one.
-fn filter_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
+/// Keys while actively typing the quick-search box (`f` was pressed, not
+/// yet locked): typing edits the filter text directly (so `a`/`r`/`e`/`d` —
+/// this tab's own shortcuts — are unavailable while typing, since they're
+/// needed as literal characters instead), Up/Down navigate the filtered
+/// subset, Esc clears the filter entirely. Enter *locks* it instead of
+/// launching — the filtered view stays exactly as it is, but every other
+/// key (including this same Enter, next press) goes back to meaning what
+/// it normally does, now scoped to the filtered subset (see `on_key`'s
+/// `library_filter_editing` check).
+fn filter_key(app: &mut App, code: KeyCode) {
     if edit_filter(app, code) {
         return;
     }
     if code == KeyCode::Enter {
-        launch_selected(app, terminal);
+        app.library_filter_editing = false;
     }
 }
 
@@ -433,9 +442,52 @@ mod tests {
     }
 
     #[test]
-    fn unhandled_keys_fall_through_so_enter_can_still_launch() {
+    fn enter_locks_the_filter_instead_of_launching() {
         let mut app = test_app_with_two_profiles();
         start_filter(&mut app);
+        for c in "kt".chars() {
+            edit_filter(&mut app, KeyCode::Char(c));
+        }
+        filter_key(&mut app, KeyCode::Enter);
+        assert!(!app.library_filter_editing);
+        // Still filtered — locking keeps the narrowed view, not just
+        // resets it. `edit_filter` doesn't handle Enter itself (it's
+        // `filter_key`'s own job), confirmed by `edit_filter` returning
+        // false for it.
+        assert_eq!(app.library_filter.as_deref(), Some("kt"));
         assert!(!edit_filter(&mut app, KeyCode::Enter));
+    }
+
+    #[test]
+    fn once_locked_r_still_means_refresh_not_edit_the_filter() {
+        // `on_key` itself needs a real `Term` (not safely constructible in
+        // a unit test), but once locked, `library_filter_editing` is what
+        // routes `r` to this function instead of back into `filter_key` —
+        // exercising that function directly is the meaningful part.
+        let mut app = test_app_with_two_profiles();
+        start_filter(&mut app);
+        filter_key(&mut app, KeyCode::Enter); // locks with an empty filter
+        assert!(!app.library_filter_editing);
+        refresh(&mut app);
+        assert_eq!(app.status.as_deref(), Some("Refreshed."));
+        // The filter itself (even though empty) is still in place — only
+        // Esc/switching tabs should clear it, not `r`.
+        assert!(app.library_filter.is_some());
+    }
+
+    #[test]
+    fn clear_library_filter_resets_both_the_text_and_the_editing_flag() {
+        // What `on_key`'s `KeyCode::Esc if app.library_filter.is_some()`
+        // arm calls once a filter's locked — the routing itself needs a
+        // real `Term` to exercise directly (see `App::new` test rules),
+        // verified by hand instead (project NOTES.md).
+        let mut app = test_app_with_two_profiles();
+        start_filter(&mut app);
+        edit_filter(&mut app, KeyCode::Char('x'));
+        filter_key(&mut app, KeyCode::Enter); // locks
+        assert!(app.library_filter.is_some());
+        app.clear_library_filter();
+        assert_eq!(app.library_filter, None);
+        assert!(!app.library_filter_editing);
     }
 }

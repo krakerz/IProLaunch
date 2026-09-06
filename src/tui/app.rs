@@ -1,4 +1,4 @@
-use crate::config::{Config, LogMode, PrefixMode, Profile, RecordMode};
+use crate::config::{Config, GamescopeSetting, LogMode, PrefixMode, Profile, RecordMode};
 use crate::proton::ProtonBuild;
 use crate::running::{self, RunningEntry};
 
@@ -47,6 +47,7 @@ pub enum ConfigField {
     PrefixPath,
     PrefixesRoot,
     WindowsVersion,
+    Gamescope,
     LogMode,
     LogPath,
     LogKeep,
@@ -58,12 +59,13 @@ pub enum ConfigField {
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 13] = [
+    pub const ALL: [ConfigField; 14] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
         ConfigField::PrefixesRoot,
         ConfigField::WindowsVersion,
+        ConfigField::Gamescope,
         ConfigField::LogMode,
         ConfigField::LogPath,
         ConfigField::LogKeep,
@@ -81,6 +83,7 @@ impl ConfigField {
             ConfigField::PrefixPath => "defaults.prefix_path",
             ConfigField::PrefixesRoot => "defaults.prefixes_root",
             ConfigField::WindowsVersion => "defaults.windows-version",
+            ConfigField::Gamescope => "defaults.gamescope",
             ConfigField::LogMode => "logging.mode",
             ConfigField::LogPath => "logging.path (blank = default)",
             ConfigField::LogKeep => "logging.keep",
@@ -99,9 +102,10 @@ impl ConfigField {
     pub fn kind(self) -> FieldKind {
         match self {
             ConfigField::Proton => FieldKind::ProtonPicker,
-            ConfigField::PrefixMode | ConfigField::LogMode | ConfigField::LogRecord => {
-                FieldKind::Cycle
-            }
+            ConfigField::PrefixMode
+            | ConfigField::LogMode
+            | ConfigField::LogRecord
+            | ConfigField::Gamescope => FieldKind::Cycle,
             ConfigField::LogAutoOpen => FieldKind::Toggle,
             ConfigField::LogKeep | ConfigField::GamedbInterval => FieldKind::Number,
             ConfigField::PrefixPath
@@ -189,6 +193,7 @@ pub enum ProfileField {
     Proton,
     PrefixPath,
     WindowsVersion,
+    Gamescope,
     LogKeep,
     LogRecord,
     LogAutoOpen,
@@ -197,7 +202,7 @@ pub enum ProfileField {
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 13] = [
+    pub const ALL: [ProfileField; 14] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
@@ -206,6 +211,7 @@ impl ProfileField {
         ProfileField::Proton,
         ProfileField::PrefixPath,
         ProfileField::WindowsVersion,
+        ProfileField::Gamescope,
         ProfileField::LogKeep,
         ProfileField::LogRecord,
         ProfileField::LogAutoOpen,
@@ -220,9 +226,10 @@ impl ProfileField {
             ProfileField::Name => "name (#N auto-managed)",
             ProfileField::Title => "title (for GAMEID matching)",
             ProfileField::Args => "args (space-separated)",
-            ProfileField::Proton => "defaults.proton override",
+            ProfileField::Proton => "defaults.proton override (per-slug mode only)",
             ProfileField::PrefixPath => "defaults.prefix_path override",
             ProfileField::WindowsVersion => "defaults.windows-version override",
+            ProfileField::Gamescope => "defaults.gamescope override",
             ProfileField::LogKeep => "logging.keep override",
             ProfileField::LogRecord => "logging.record override",
             ProfileField::LogAutoOpen => "logging.auto_open override",
@@ -241,7 +248,9 @@ impl ProfileField {
     pub fn kind(self) -> FieldKind {
         match self {
             ProfileField::Proton => FieldKind::ProtonPicker,
-            ProfileField::LogRecord | ProfileField::LogAutoOpen => FieldKind::Cycle,
+            ProfileField::LogRecord | ProfileField::LogAutoOpen | ProfileField::Gamescope => {
+                FieldKind::Cycle
+            }
             ProfileField::TargetPath
             | ProfileField::Slug
             | ProfileField::Name
@@ -391,12 +400,20 @@ pub struct App {
     /// this is `Some`, the full list when `None` — see
     /// `filtered_running_indices`.
     pub running_filter: Option<String>,
+    /// `true` while actively typing the filter (capturing every key as
+    /// filter text/edits); `false` once Enter "locks" it — the filter
+    /// text/view stays exactly as it was, but every other key (kill,
+    /// refresh, even switching tabs) works normally again on the filtered
+    /// subset. Meaningless when `running_filter` is `None`.
+    pub running_filter_editing: bool,
 
     pub profiles: Vec<(String, Profile)>,
     pub library_selected: usize,
     /// Same as `running_filter`, for the Library tab — see
     /// `filtered_profile_indices`.
     pub library_filter: Option<String>,
+    /// Same as `running_filter_editing`, for the Library tab.
+    pub library_filter_editing: bool,
 
     pub config_selected: usize,
 
@@ -440,9 +457,11 @@ impl App {
             running: Vec::new(),
             running_selected: 0,
             running_filter: None,
+            running_filter_editing: false,
             profiles: Vec::new(),
             library_selected: 0,
             library_filter: None,
+            library_filter_editing: false,
             config_selected: 0,
             profile_editor: None,
             profile_field_selected: 0,
@@ -517,11 +536,37 @@ impl App {
     }
 
     pub fn next_tab(&mut self) {
+        self.clear_filters();
         self.tab = self.tab.next();
     }
 
     pub fn prev_tab(&mut self) {
+        self.clear_filters();
         self.tab = self.tab.prev();
+    }
+
+    /// Clears a locked-or-still-typing Library quick-search back to no
+    /// filter — used both by `Esc` (once the filter's locked, `Esc` isn't
+    /// routed to `edit_filter` anymore, so this covers that case
+    /// directly) and by switching tabs.
+    pub fn clear_library_filter(&mut self) {
+        self.library_filter = None;
+        self.library_filter_editing = false;
+        self.library_selected = 0;
+    }
+
+    /// Same as `clear_library_filter`, for Running.
+    pub fn clear_running_filter(&mut self) {
+        self.running_filter = None;
+        self.running_filter_editing = false;
+        self.running_selected = 0;
+    }
+
+    /// Both at once — switching tabs resets whichever of Running/Library's
+    /// filter might be active, regardless of which tab you're leaving.
+    pub fn clear_filters(&mut self) {
+        self.clear_library_filter();
+        self.clear_running_filter();
     }
 
     /// The map a `MapField` refers to, as a sorted `(key, value)` list —
@@ -666,6 +711,26 @@ pub fn next_profile_auto_open(v: Option<bool>) -> Option<bool> {
     }
 }
 
+pub fn next_gamescope_setting(m: GamescopeSetting) -> GamescopeSetting {
+    match m {
+        GamescopeSetting::None => GamescopeSetting::Fullscreen,
+        GamescopeSetting::Fullscreen => GamescopeSetting::Maximize,
+        GamescopeSetting::Maximize => GamescopeSetting::None,
+    }
+}
+
+/// Same as `next_profile_record_mode`, for a profile's `gamescope`
+/// override — inherit → none (explicitly off, distinct from inheriting) →
+/// fullscreen → maximize → inherit.
+pub fn next_profile_gamescope_setting(m: Option<GamescopeSetting>) -> Option<GamescopeSetting> {
+    match m {
+        None => Some(GamescopeSetting::None),
+        Some(GamescopeSetting::None) => Some(GamescopeSetting::Fullscreen),
+        Some(GamescopeSetting::Fullscreen) => Some(GamescopeSetting::Maximize),
+        Some(GamescopeSetting::Maximize) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,6 +796,27 @@ mod tests {
         assert_eq!(r, RecordMode::Off);
         r = next_record_mode(r);
         assert_eq!(r, RecordMode::All);
+
+        let mut g = GamescopeSetting::None;
+        g = next_gamescope_setting(g);
+        assert_eq!(g, GamescopeSetting::Fullscreen);
+        g = next_gamescope_setting(g);
+        assert_eq!(g, GamescopeSetting::Maximize);
+        g = next_gamescope_setting(g);
+        assert_eq!(g, GamescopeSetting::None);
+    }
+
+    #[test]
+    fn profile_gamescope_setting_cycle_includes_inherit_and_returns_to_it() {
+        let mut g = None;
+        g = next_profile_gamescope_setting(g);
+        assert_eq!(g, Some(GamescopeSetting::None));
+        g = next_profile_gamescope_setting(g);
+        assert_eq!(g, Some(GamescopeSetting::Fullscreen));
+        g = next_profile_gamescope_setting(g);
+        assert_eq!(g, Some(GamescopeSetting::Maximize));
+        g = next_profile_gamescope_setting(g);
+        assert_eq!(g, None);
     }
 
     #[test]

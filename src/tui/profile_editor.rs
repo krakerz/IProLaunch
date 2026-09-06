@@ -81,6 +81,10 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
             ProfileField::LogAutoOpen => {
                 profile.logging.auto_open = app::next_profile_auto_open(profile.logging.auto_open);
             }
+            ProfileField::Gamescope => {
+                profile.defaults.gamescope =
+                    app::next_profile_gamescope_setting(profile.defaults.gamescope);
+            }
             _ => {}
         }
     }
@@ -374,6 +378,7 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::Proton
         | ProfileField::LogRecord
         | ProfileField::LogAutoOpen
+        | ProfileField::Gamescope
         | ProfileField::EnvTable
         | ProfileField::WineDllOverrideTable => {}
     }

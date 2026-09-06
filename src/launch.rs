@@ -18,6 +18,64 @@ pub struct RunOptions {
     pub prefix: Option<PathBuf>,
     pub env: Vec<(String, String)>,
     pub args: Vec<String>,
+    pub gamescope: GamescopeMode,
+}
+
+/// `-f`/`-m` (CLI) — wraps the launch in a nested `gamescope` session
+/// instead of spawning `umu-run` directly. Useful when already running
+/// inside an *embedded* gamescope session (Steam Game Mode/a Deck) — that's
+/// the standard, documented trick for forcing one specific non-Steam-game
+/// to behave, since a plain windowed Wine game won't otherwise switch
+/// display modes or fill the screen on its own. Real gamescope flags
+/// confirmed against the actually-installed `gamescope --help` (3.16.25),
+/// not guessed:
+/// - `-f` → gamescope's own `-f`/`--fullscreen` (nested mode option — an
+///   actual display-mode-switching fullscreen for the nested window).
+/// - `-m` → gamescope's `--force-windows-fullscreen` (stretches whatever
+///   window the game itself opens to fill the nested surface, regardless
+///   of the size it requests) — gamescope has no literal "maximized"
+///   concept (it's a Wayland compositor, not an X11 window manager); this
+///   is the closest real equivalent, confirmed with the user directly
+///   rather than guessed.
+///
+/// Combining both is allowed (`-f -m` stacks their args).
+#[derive(Default, Clone, Copy)]
+pub struct GamescopeMode {
+    pub fullscreen: bool,
+    pub maximize: bool,
+}
+
+impl GamescopeMode {
+    fn is_active(self) -> bool {
+        self.fullscreen || self.maximize
+    }
+
+    fn args(self) -> Vec<&'static str> {
+        let mut args = Vec::new();
+        if self.fullscreen {
+            args.push("-f");
+        }
+        if self.maximize {
+            args.push("--force-windows-fullscreen");
+        }
+        args
+    }
+}
+
+impl From<crate::config::GamescopeSetting> for GamescopeMode {
+    fn from(setting: crate::config::GamescopeSetting) -> Self {
+        match setting {
+            crate::config::GamescopeSetting::None => GamescopeMode::default(),
+            crate::config::GamescopeSetting::Fullscreen => GamescopeMode {
+                fullscreen: true,
+                maximize: false,
+            },
+            crate::config::GamescopeSetting::Maximize => GamescopeMode {
+                fullscreen: false,
+                maximize: true,
+            },
+        }
+    }
 }
 
 /// Launches `target` through `umu-run`. Looks up (or creates, on first run)
@@ -66,12 +124,39 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
 
     install_signal_forwarding(&prefix_path);
 
+    // CLI-passed `-f`/`-m` win when actually typed (consistent with every
+    // other `opts` override beating the profile/global config); otherwise
+    // fall back to whatever the profile/global `gamescope` setting already
+    // remembers, so `iprolaunch <slug>` doesn't need `-f`/`-m` every time.
+    let gamescope = if opts.gamescope.is_active() {
+        opts.gamescope
+    } else {
+        effective.gamescope.into()
+    };
+
     // Per `man umu`: WINEPREFIX/PROTONPATH/GAMEID are all optional env vars;
     // GAMEID defaults to "umu-default" when unset.
-    let mut command = Command::new("umu-run");
+    let mut command = if gamescope.is_active() {
+        let mut c = Command::new("gamescope");
+        c.args(gamescope.args());
+        c.arg("--").arg("umu-run");
+        c
+    } else {
+        Command::new("umu-run")
+    };
     command.arg(&target);
     command.args(&profile.args); // profile's own defaults first, e.g. `--dx11`
     command.args(&opts.args); // then CLI/quick-launch args, supplementing rather than replacing
+    // Without this, the spawned process inherits *iprolaunch's own* cwd
+    // (wherever it happened to be run from) instead of the game's install
+    // folder — exactly what double-clicking the exe in Windows Explorer
+    // (or Lutris, which always sets this) gives it instead. A game whose
+    // asset loading assumes cwd == its own folder (a real, confirmed case:
+    // a VN that otherwise rendered no background art / threw a load error
+    // under iprolaunch, working fine under Lutris) breaks without this.
+    if let Some(dir) = target.parent() {
+        command.current_dir(dir);
+    }
     command.env("WINEPREFIX", &prefix_path);
     if !effective.proton.is_empty() && effective.proton != "system" {
         command.env("PROTONPATH", &effective.proton);
@@ -98,9 +183,14 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
         None
     };
 
-    let mut child = command
-        .spawn()
-        .context("failed to spawn umu-run (is it installed and on $PATH?)")?;
+    let mut child = command.spawn().with_context(|| {
+        if gamescope.is_active() {
+            "failed to spawn gamescope (is it installed and on $PATH? required for -f/-m)"
+                .to_string()
+        } else {
+            "failed to spawn umu-run (is it installed and on $PATH?)".to_string()
+        }
+    })?;
     let state_path = running::record(child.id(), &profile.name, &target, &prefix_path)?;
 
     let status = child.wait().context("waiting for umu-run")?;
@@ -353,6 +443,56 @@ fn winedlloverrides_value(overrides: &BTreeMap<String, String>) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gamescope_mode_default_is_inactive_with_no_args() {
+        let mode = GamescopeMode::default();
+        assert!(!mode.is_active());
+        assert!(mode.args().is_empty());
+    }
+
+    #[test]
+    fn fullscreen_maps_to_gamescopes_own_dash_f() {
+        let mode = GamescopeMode {
+            fullscreen: true,
+            maximize: false,
+        };
+        assert!(mode.is_active());
+        assert_eq!(mode.args(), vec!["-f"]);
+    }
+
+    #[test]
+    fn maximize_maps_to_force_windows_fullscreen() {
+        let mode = GamescopeMode {
+            fullscreen: false,
+            maximize: true,
+        };
+        assert!(mode.is_active());
+        assert_eq!(mode.args(), vec!["--force-windows-fullscreen"]);
+    }
+
+    #[test]
+    fn both_stack_fullscreen_first() {
+        let mode = GamescopeMode {
+            fullscreen: true,
+            maximize: true,
+        };
+        assert_eq!(mode.args(), vec!["-f", "--force-windows-fullscreen"]);
+    }
+
+    #[test]
+    fn gamescope_setting_converts_to_the_matching_mode() {
+        use crate::config::GamescopeSetting;
+        assert!(!GamescopeMode::from(GamescopeSetting::None).is_active());
+        assert_eq!(
+            GamescopeMode::from(GamescopeSetting::Fullscreen).args(),
+            vec!["-f"]
+        );
+        assert_eq!(
+            GamescopeMode::from(GamescopeSetting::Maximize).args(),
+            vec!["--force-windows-fullscreen"]
+        );
+    }
 
     #[test]
     fn clear_execute_bit_strips_only_the_execute_bits() {
