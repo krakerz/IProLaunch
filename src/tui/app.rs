@@ -328,6 +328,14 @@ pub enum Mode {
     /// (`App::help_scroll`) is shared with the Help tab itself, so it's
     /// just "the same help, viewed a second way", not separate state.
     Help,
+    /// Confirming Library `p` (launch winetricks against the selected
+    /// game's actual prefix) before it happens — not destructive, but
+    /// launches an external GUI tool, so a stray keypress shouldn't
+    /// trigger it silently.
+    ConfirmWinetricks {
+        slug: String,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

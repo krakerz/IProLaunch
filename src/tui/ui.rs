@@ -79,6 +79,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ..
         } => draw_confirm_rename_slug_popup(frame, old_prefix_dir, new_prefix_dir),
         Mode::Help => draw_help_popup(frame, app),
+        Mode::ConfirmWinetricks { name, .. } => draw_confirm_winetricks_popup(frame, name),
         Mode::Normal => {}
     }
 }
@@ -182,7 +183,7 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     let title = filter_title(
         &app.library_filter,
         app.library_filter_editing,
-        "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, f = search)",
+        "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, p = winetricks, f = search)",
     );
 
     let indices = app.filtered_profile_indices();
@@ -355,6 +356,24 @@ y = confirm, any other key = cancel"
             Block::default()
                 .borders(Borders::ALL)
                 .title("Confirm delete"),
+        ),
+        area,
+    );
+}
+
+fn draw_confirm_winetricks_popup(frame: &mut Frame, name: &str) {
+    let area = centered_rect(60, 20, frame.area());
+    frame.render_widget(Clear, area);
+    let text = format!(
+        "Launch winetricks for \"{name}\"?\n\
+Runs against the exact same prefix a normal launch of this game would use.\n\n\
+y = confirm, any other key = cancel"
+    );
+    frame.render_widget(
+        Paragraph::new(text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Confirm winetricks"),
         ),
         area,
     );
@@ -534,12 +553,17 @@ Library:
   c                        copy a quick-launch command to the clipboard —
                            \"<this binary's path>\" <slug> — for pasting into
                            a Steam non-Steam-game shortcut's Target field
+  p                        run winetricks against this game's own prefix
+                           (confirms first) — uses the profile's proton
+                           override if in defaults.prefix_mode = per-slug,
+                           otherwise the single shared prefix/Proton pair,
+                           exactly like a real launch of it would
   f                        quick-search — filters by name as you type;
                            while typing, only Enter/Esc/Up/Down work
-                           (a/r/e/d/c become literal search characters
+                           (a/r/e/d/c/p become literal search characters
                            instead). Enter *locks* the search instead of
                            launching — the narrowed list stays, but
-                           a/r/e/d/c/Enter/Up/Down all go back to normal,
+                           a/r/e/d/c/p/Enter/Up/Down all go back to normal,
                            now scoped to it. Esc clears it entirely,
                            whether still typing or locked.
   Esc                      cancel while typing a path, or clear an active
@@ -882,6 +906,7 @@ fn marquee_signature(app: &App) -> String {
             format!("confirmrenameslug:{slug}:{candidate}")
         }
         Mode::Help => "help".to_string(),
+        Mode::ConfirmWinetricks { slug, .. } => format!("confirmwinetricks:{slug}"),
     };
     format!(
         "{:?}|{}|{}|{}|{:?}|{:?}|{:?}|{mode_part}",

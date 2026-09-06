@@ -96,6 +96,9 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
             return profile_editor::confirm_rename_slug_key(app, code);
         }
         Mode::Help => return help_popup_key(app, code),
+        Mode::ConfirmWinetricks { .. } => {
+            return library::confirm_winetricks_key(app, code, terminal);
+        }
         Mode::Normal => {}
     }
 
