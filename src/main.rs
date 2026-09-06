@@ -267,7 +267,7 @@ fn kill_running(target: &str) -> Result<()> {
     };
 
     match matches.as_slice() {
-        [one] => running::terminate(&one.prefix_path),
+        [one] => running::terminate(&one.launch_id),
         [] => anyhow::bail!("nothing running matches `{target}` — check `iprolaunch running list`"),
         _ => anyhow::bail!("`{target}` matches more than one running entry — use its pid"),
     }

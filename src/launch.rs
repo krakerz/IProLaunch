@@ -122,7 +122,11 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
         eprintln!("iprolaunch: warning: failed to apply windows-version={version}: {err:#}");
     }
 
-    install_signal_forwarding(&prefix_path);
+    // Uniquely tags this one launch's whole process tree — see
+    // `running::matching_pids_for_launch`'s doc comment for why `WINEPREFIX`
+    // alone can't do this (every profile shares one in `single` prefix mode).
+    let launch_id = running::new_launch_id();
+    install_signal_forwarding(&launch_id);
 
     // CLI-passed `-f`/`-m` win when actually typed (consistent with every
     // other `opts` override beating the profile/global config); otherwise
@@ -158,6 +162,7 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
         command.current_dir(dir);
     }
     command.env("WINEPREFIX", &prefix_path);
+    command.env("IPROLAUNCH_LAUNCH_ID", &launch_id);
     if !effective.proton.is_empty() && effective.proton != "system" {
         command.env("PROTONPATH", &effective.proton);
     }
@@ -191,7 +196,7 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
             "failed to spawn umu-run (is it installed and on $PATH?)".to_string()
         }
     })?;
-    let state_path = running::record(child.id(), &profile.name, &target, &prefix_path)?;
+    let state_path = running::record(child.id(), &profile.name, &target, &prefix_path, &launch_id)?;
 
     let status = child.wait().context("waiting for umu-run")?;
     running::clear(&state_path);
@@ -369,7 +374,7 @@ fn apply_windows_version(prefix_path: &Path, version: &str) -> Result<()> {
 }
 
 /// Forwards Ctrl+C (and a plain `kill`/SIGTERM on `iprolaunch` itself) into
-/// the sandboxed game tree via `running::terminate`'s WINEPREFIX-matching
+/// the sandboxed game tree via `running::terminate`'s launch-id-matching
 /// sweep. Needed because the tree bwrap creates detaches into its own
 /// session (see NOTES.md, 2026-09-06) — the terminal's SIGINT reaches
 /// `iprolaunch` and the directly-spawned `umu-run` (both still share the
@@ -378,16 +383,16 @@ fn apply_windows_version(prefix_path: &Path, version: &str) -> Result<()> {
 /// running orphaned. Best-effort: if installing the handler fails, launch
 /// proceeds anyway with just a warning — Ctrl+C during the run degrades back
 /// to today's behavior rather than blocking the whole launch over it.
-fn install_signal_forwarding(prefix_path: &Path) {
+fn install_signal_forwarding(launch_id: &str) {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::iterator::Signals;
 
     match Signals::new([SIGINT, SIGTERM]) {
         Ok(mut signals) => {
-            let prefix = prefix_path.to_string_lossy().into_owned();
+            let launch_id = launch_id.to_string();
             std::thread::spawn(move || {
                 for _ in signals.forever() {
-                    let _ = running::terminate(&prefix);
+                    let _ = running::terminate(&launch_id);
                 }
             });
         }
