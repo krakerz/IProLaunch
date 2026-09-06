@@ -5,13 +5,30 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-/// Windows PE executables are already recognized under these on a stock
-/// Linux system (shared-mime-info sniffs the "MZ" header, not the `.exe`
-/// extension) — we only need to register as the *default handler*, not
-/// teach the OS a new file type.
-const MIME_TYPES: [&str; 2] = [
+/// Windows PE executables are already recognized under the first two of
+/// these on a stock Linux system (shared-mime-info sniffs the "MZ" header,
+/// not the `.exe` extension) — we only need to register as the *default
+/// handler*, not teach the OS a new file type. `.bat`/`.cmd` both resolve
+/// to the third, and `.msi` to the fourth (all confirmed via `xdg-mime
+/// query filetype` on real files) — `iprolaunch run` already launches all
+/// of these correctly with zero extra wrapping (`wine <path>` recognizes
+/// `.bat`/`.msi` by extension and dispatches to `cmd`/`msiexec` itself
+/// internally — confirmed directly: a real `.msi` engaged wine's MSI
+/// installer UI, not a generic "unrecognized file" error — see project
+/// NOTES.md), this just extends the *file-manager* double-click
+/// association to cover them too, matching the `.exe` experience. Modeled
+/// after `wine.desktop`'s own `MimeType=` list (`/usr/share/applications/
+/// wine.desktop`, which additionally claims `application/x-ms-shortcut`
+/// (`.lnk`) and `application/x-mswinurl` (`.url`) — the latter is a URL/
+/// website shortcut, clearly out of scope for a game/exe launcher; `.lnk`
+/// is deliberately NOT included yet — see TODO.md, needs a real generated
+/// shortcut to verify properly rather than the inconclusive synthetic file
+/// tested so far).
+const MIME_TYPES: [&str; 4] = [
     "application/x-msdownload",
     "application/x-ms-dos-executable",
+    "application/x-bat",
+    "application/x-msi",
 ];
 const DESKTOP_FILE_NAME: &str = "iprolaunch.desktop";
 
@@ -54,8 +71,33 @@ pub fn is_installed() -> bool {
     desktop_file_path().map(|p| p.exists()).unwrap_or(false)
 }
 
-/// Registers `iprolaunch` as the default handler for Windows `.exe` files:
-/// writes a `.desktop` file pointing at this exact binary, then uses
+/// The binary path the installed `.desktop` entry's `Exec=` line actually
+/// points at — read from that file, not this process's own
+/// `current_exe()`, since they can differ if the registered binary was
+/// moved (or a different `iprolaunch` build is running now) since
+/// `install` last wrote it. `None` if not installed or the file's somehow
+/// unparsable.
+pub fn registered_binary_path() -> Option<String> {
+    let path = desktop_file_path().ok()?;
+    let content = fs::read_to_string(path).ok()?;
+    parse_exec_path(&content)
+}
+
+/// Pure text parse of a `.desktop` file's `Exec="<path>" run %f` line, kept
+/// separate from the real read (`registered_binary_path`) so the parsing
+/// itself — the part actually worth getting right — is unit-testable
+/// without needing a real installed `.desktop` file.
+fn parse_exec_path(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let rest = line.strip_prefix("Exec=\"")?;
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    })
+}
+
+/// Registers `iprolaunch` as the default handler for Windows `.exe`
+/// files (and `.bat`/`.cmd` — see `MIME_TYPES`): writes a `.desktop` file
+/// pointing at this exact binary, then uses
 /// `xdg-mime default` (part of `xdg-utils`, standard on any desktop Linux —
 /// this is a freedesktop.org mechanism, not KDE-specific, so it should work
 /// on GNOME/XFCE too) to register it. Launches are detached (`Terminal=false`)
@@ -64,22 +106,34 @@ pub fn is_installed() -> bool {
 /// pager with nothing to attach to.
 ///
 /// Before changing anything, records whatever was the previous default for
-/// each mimetype (if any) to `backup_path()` — but only if that file doesn't
-/// already exist. Without that guard, running `install` a second time
-/// without an `uninstall` in between would overwrite the real original with
-/// "iprolaunch.desktop" itself (since by then *we're* the current default),
-/// permanently losing what `uninstall` is supposed to restore.
+/// each mimetype (if any) to `backup_path()` — but *only for mimetypes not
+/// already captured there*, never overwriting an existing entry. Without
+/// that "don't overwrite" rule, running `install` a second time without an
+/// `uninstall` in between would overwrite the real original with
+/// "iprolaunch.desktop" itself (since by then *we're* the current
+/// default), permanently losing what `uninstall` is supposed to restore.
+/// The "top up missing entries" half (rather than skipping the whole
+/// capture once the file exists at all) matters when `MIME_TYPES` itself
+/// grows — confirmed by hand: adding `.bat`/`.cmd` support to an already-
+/// installed system left the *existing* backup covering only the original
+/// two mimetypes, and a plain "skip if file exists" would have left the
+/// newly-added one with nothing to restore on a later `uninstall`.
 pub fn install() -> Result<()> {
     let exe = std::env::current_exe().context("resolving iprolaunch's own binary path")?;
     let dir = applications_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
     let backup_file = backup_path()?;
-    if !backup_file.exists() {
-        let prior = capture_prior_defaults();
-        if !prior.is_empty() {
-            write_backup(&backup_file, &prior)?;
-        }
+    let mut backup = read_backup(&backup_file);
+    let missing = capture_prior_defaults_for(
+        MIME_TYPES
+            .iter()
+            .filter(|m| !backup.contains_key(**m))
+            .copied(),
+    );
+    if !missing.is_empty() {
+        backup.extend(missing);
+        write_backup(&backup_file, &backup)?;
     }
 
     let desktop_path = desktop_file_path()?;
@@ -154,12 +208,13 @@ fn query_current_default(mime: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-/// Queries the current default for each of our mimetypes, keeping only the
-/// ones that actually have one set (nothing to restore for a mimetype that
-/// had no prior default at all).
-fn capture_prior_defaults() -> BTreeMap<String, String> {
-    MIME_TYPES
-        .iter()
+/// Queries the current default for each of `mimes`, keeping only the ones
+/// that actually have one set (nothing to restore for a mimetype that had
+/// no prior default at all).
+fn capture_prior_defaults_for<'a>(
+    mimes: impl Iterator<Item = &'a str>,
+) -> BTreeMap<String, String> {
+    mimes
         .filter_map(|mime| query_current_default(mime).map(|prior| (mime.to_string(), prior)))
         .collect()
 }
@@ -296,12 +351,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn desktop_file_contents_includes_the_exact_binary_path_and_both_mimetypes() {
+    fn desktop_file_contents_includes_the_exact_binary_path_and_every_mimetype() {
         let contents = desktop_file_contents(Path::new("/opt/iprolaunch/iprolaunch"));
         assert!(contents.contains("Exec=\"/opt/iprolaunch/iprolaunch\" run %f"));
         assert!(contents.contains("Terminal=false"));
-        assert!(contents.contains("application/x-msdownload"));
-        assert!(contents.contains("application/x-ms-dos-executable"));
+        for mime in MIME_TYPES {
+            assert!(contents.contains(mime), "missing {mime}");
+        }
     }
 
     #[test]
@@ -379,5 +435,19 @@ mod tests {
     fn read_backup_is_empty_when_file_is_missing() {
         let entries = read_backup(Path::new("/nonexistent/integrate-backup.json"));
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_exec_path_extracts_the_quoted_binary_path() {
+        let content = desktop_file_contents(Path::new("/opt/iprolaunch/iprolaunch"));
+        assert_eq!(
+            parse_exec_path(&content),
+            Some("/opt/iprolaunch/iprolaunch".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_exec_path_is_none_without_an_exec_line() {
+        assert_eq!(parse_exec_path("[Desktop Entry]\nType=Application\n"), None);
     }
 }

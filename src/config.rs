@@ -52,6 +52,26 @@ pub fn now_local() -> time::OffsetDateTime {
     now.to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC))
 }
 
+/// Three-letter month name for `Profile::mark_launched_now`'s
+/// `DD-Mon-YYYY` date — `time::Month`'s own `Display` spells out the full
+/// name ("September"), not the abbreviation this format wants.
+fn month_abbrev(m: time::Month) -> &'static str {
+    match m {
+        time::Month::January => "Jan",
+        time::Month::February => "Feb",
+        time::Month::March => "Mar",
+        time::Month::April => "Apr",
+        time::Month::May => "May",
+        time::Month::June => "Jun",
+        time::Month::July => "Jul",
+        time::Month::August => "Aug",
+        time::Month::September => "Sep",
+        time::Month::October => "Oct",
+        time::Month::November => "Nov",
+        time::Month::December => "Dec",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PrefixMode {
@@ -295,7 +315,7 @@ pub struct Profile {
     /// signal that rarely matches a proper multi-word title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// `DD-MM-YYYY, HH:MM:SS`, local time — see `Profile::mark_launched_now`.
+    /// `DD-Mon-YYYY, HH:MM:SS`, local time — see `Profile::mark_launched_now`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_launched: Option<String>,
     /// Extra args always forwarded to this exe (e.g. `["--dx11"]`), prepended
@@ -325,15 +345,15 @@ impl Profile {
     }
 
     /// Sets `last_launched` to now (local time), formatted
-    /// `DD-MM-YYYY, HH:MM:SS`. A plain formatted string rather than TOML's
+    /// `DD-Mon-YYYY, HH:MM:SS`. A plain formatted string rather than TOML's
     /// native datetime type, so the profile file reads in the user's
     /// preferred layout at a glance.
     pub fn mark_launched_now(&mut self) {
         let now = now_local();
         self.last_launched = Some(format!(
-            "{:02}-{:02}-{}, {:02}:{:02}:{:02}",
+            "{:02}-{}-{}, {:02}:{:02}:{:02}",
             now.day(),
-            u8::from(now.month()),
+            month_abbrev(now.month()),
             now.year(),
             now.hour(),
             now.minute(),
@@ -428,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_launched_now_formats_dd_mm_yyyy_hh_mm_ss() {
+    fn mark_launched_now_formats_dd_mon_yyyy_hh_mm_ss() {
         let mut profile = Profile {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
@@ -443,16 +463,16 @@ mod tests {
         profile.mark_launched_now();
         let stamp = profile.last_launched.expect("mark_launched_now sets it");
 
-        let (date, time) = stamp.split_once(", ").expect("`DD-MM-YYYY, HH:MM:SS`");
+        let (date, time) = stamp.split_once(", ").expect("`DD-Mon-YYYY, HH:MM:SS`");
         let date_parts: Vec<&str> = date.split('-').collect();
         let time_parts: Vec<&str> = time.split(':').collect();
-        assert_eq!(date_parts.len(), 3, "date should be DD-MM-YYYY: {stamp}");
+        assert_eq!(date_parts.len(), 3, "date should be DD-Mon-YYYY: {stamp}");
         assert_eq!(time_parts.len(), 3, "time should be HH:MM:SS: {stamp}");
         assert_eq!(date_parts[0].len(), 2, "day should be zero-padded: {stamp}");
         assert_eq!(
             date_parts[1].len(),
-            2,
-            "month should be zero-padded: {stamp}"
+            3,
+            "month should be a 3-letter abbreviation: {stamp}"
         );
         assert_eq!(date_parts[2].len(), 4, "year should be 4 digits: {stamp}");
         assert!(

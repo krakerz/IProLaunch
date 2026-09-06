@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -6,43 +7,87 @@ use directories::UserDirs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtonBuild {
-    /// Folder name under `compatibilitytools.d` — this is what gets stored
-    /// as `defaults.proton` (or a profile override) and passed straight
-    /// through as `PROTONPATH`, which `man umu` documents as accepting a
-    /// path, a version name, or a codename; a folder name here is a valid
-    /// version name.
+    /// What gets stored as `defaults.proton` (or a profile override) and
+    /// passed straight through as `PROTONPATH`, which `man umu` documents
+    /// as accepting a path, a version name, or a codename. For a
+    /// `compatibilitytools.d` entry this is just the folder name (Steam's
+    /// own compat-tool lookup resolves that); for an official Steam-shipped
+    /// build under `steamapps/common` it's the build's absolute path
+    /// instead, since that folder name alone isn't resolvable the same way.
     pub id: String,
     pub display_name: String,
 }
 
-fn compatibilitytools_dir() -> Result<PathBuf> {
+/// Every place this machine might have a Steam install — the standard
+/// native path, the `~/.steam/steam` symlink some distros set up pointing
+/// at it (deduped below since it'd otherwise double-count every build), and
+/// the Flatpak sandbox's data dir. Checked online against Valve's/Flatpak's
+/// own documented layouts rather than assumed.
+fn steam_roots() -> Result<Vec<PathBuf>> {
     let home = UserDirs::new().context("could not determine home directory")?;
-    Ok(home
-        .home_dir()
-        .join(".local/share/Steam/compatibilitytools.d"))
+    let home = home.home_dir();
+    let candidates = [
+        home.join(".local/share/Steam"),
+        home.join(".steam/steam"),
+        home.join(".steam/root"),
+        home.join(".var/app/com.valvesoftware.Steam/data/Steam"),
+    ];
+
+    let mut seen = HashSet::new();
+    Ok(candidates
+        .into_iter()
+        .filter(|p| p.is_dir())
+        .filter_map(|p| p.canonicalize().ok())
+        .filter(|p| seen.insert(p.clone()))
+        .collect())
 }
 
-/// Scans `~/.local/share/Steam/compatibilitytools.d` for installed
-/// community Proton builds (GE-Proton, CachyOS Proton, umu's own
+/// System-wide (not per-user) compat-tool locations some distro packages
+/// install a default Proton build into — confirmed present on this machine
+/// at `/usr/share/steam/compatibilitytools.d` (CachyOS's
+/// `proton-cachyos-slr` package installs there).
+fn system_compatibilitytools_dirs() -> Vec<PathBuf> {
+    vec![PathBuf::from("/usr/share/steam/compatibilitytools.d")]
+}
+
+/// Scans every known Steam root for both community Proton builds
+/// (`compatibilitytools.d`) and official Valve-shipped ones
+/// (`steamapps/common/Proton*`), plus any system-wide compat-tool
+/// directory — this is the one scan used everywhere a Proton build list is
+/// needed (the `proton list` CLI command and the TUI's proton picker
+/// alike), so improving it here improves both.
+pub fn scan() -> Result<Vec<ProtonBuild>> {
+    let mut builds = Vec::new();
+    for root in steam_roots()? {
+        builds.extend(
+            scan_compatibilitytools(&root.join("compatibilitytools.d")).unwrap_or_default(),
+        );
+        builds.extend(scan_official_proton(&root.join("steamapps/common")).unwrap_or_default());
+    }
+    for dir in system_compatibilitytools_dirs() {
+        builds.extend(scan_compatibilitytools(&dir).unwrap_or_default());
+    }
+    builds.sort_by(|a, b| {
+        a.display_name
+            .to_lowercase()
+            .cmp(&b.display_name.to_lowercase())
+    });
+    builds.dedup_by(|a, b| a.id == b.id);
+    Ok(builds)
+}
+
+/// Community Proton builds (GE-Proton, CachyOS Proton, umu's own
 /// auto-downloaded UMU-Proton, etc). A directory only counts if it has a
 /// `toolmanifest.vdf` — the same file Steam itself uses to recognize a
 /// compatibility tool; confirmed present in every real build and absent
 /// from anything else on this machine.
-///
-/// Doesn't cover Proton versions Steam installs directly under
-/// `steamapps/common/` (official "Proton 9.0", "Proton - Experimental",
-/// etc.) — on this machine those had no `proton` script or manifest files at
-/// all (an incomplete/pending Steam-side install state), so there was
-/// nothing reliable to detect there. Revisit if that turns out to be the
-/// common case elsewhere.
-pub fn scan() -> Result<Vec<ProtonBuild>> {
-    let dir = compatibilitytools_dir()?;
+fn scan_compatibilitytools(dir: &Path) -> Result<Vec<ProtonBuild>> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
 
     let mut builds = Vec::new();
-    for entry in fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
@@ -55,11 +100,39 @@ pub fn scan() -> Result<Vec<ProtonBuild>> {
         let display_name = read_display_name(&path).unwrap_or_else(|| id.clone());
         builds.push(ProtonBuild { id, display_name });
     }
-    builds.sort_by(|a, b| {
-        a.display_name
-            .to_lowercase()
-            .cmp(&b.display_name.to_lowercase())
-    });
+    Ok(builds)
+}
+
+/// Official Steam-installed Proton (`Proton 9.0`, `Proton - Experimental`,
+/// etc.) under `<steam-root>/steamapps/common`. Recognized by a `proton`
+/// script directly inside the folder — the same executable umu-run/Steam
+/// itself invokes — which is also what rules out an incomplete/pending
+/// download (confirmed on this machine: a `Proton 10.0` folder existed with
+/// no `proton` script at all, just Steam's own bookkeeping files, and is
+/// correctly skipped here).
+fn scan_official_proton(common_dir: &Path) -> Result<Vec<ProtonBuild>> {
+    if !common_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut builds = Vec::new();
+    for entry in
+        fs::read_dir(common_dir).with_context(|| format!("reading {}", common_dir.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("Proton") || !path.join("proton").is_file() {
+            continue;
+        }
+        builds.push(ProtonBuild {
+            id: path.to_string_lossy().into_owned(),
+            display_name: name,
+        });
+    }
     Ok(builds)
 }
 
@@ -98,5 +171,42 @@ mod tests {
     #[test]
     fn missing_manifest_returns_none() {
         assert_eq!(read_display_name(Path::new("/nonexistent")), None);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "iprolaunch-proton-test-{name}-{}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn official_proton_needs_both_the_name_prefix_and_a_proton_script() {
+        let common = temp_dir("official-common");
+        fs::create_dir_all(common.join("Proton 9.0")).unwrap();
+        fs::write(common.join("Proton 9.0").join("proton"), "#!/bin/sh\n").unwrap();
+        // A same-named but incomplete/pending download: no `proton` script.
+        fs::create_dir_all(common.join("Proton 10.0")).unwrap();
+        // An unrelated app that isn't a Proton build at all.
+        fs::create_dir_all(common.join("Some Other Game")).unwrap();
+        fs::write(common.join("Some Other Game").join("proton"), "decoy").unwrap();
+
+        let builds = scan_official_proton(&common).unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].display_name, "Proton 9.0");
+        assert_eq!(
+            builds[0].id,
+            common.join("Proton 9.0").to_string_lossy().into_owned()
+        );
+
+        fs::remove_dir_all(&common).ok();
+    }
+
+    #[test]
+    fn official_proton_missing_common_dir_returns_empty_not_error() {
+        assert_eq!(
+            scan_official_proton(Path::new("/nonexistent")).unwrap(),
+            Vec::new()
+        );
     }
 }

@@ -96,29 +96,66 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     }
 }
 
-fn handle_text_input(app: &mut App, code: KeyCode, terminal: &mut Term) {
+/// Cursor movement, insert, and delete for `Mode::TextInput` — everything
+/// that never needs `terminal`, kept separate from `handle_text_input` so
+/// it's unit-testable without needing a real `Term`. Operates on
+/// `buffer.chars()` (char index, not byte offset) throughout. Returns
+/// `true` if `code` was handled here (so the caller shouldn't fall through
+/// to Enter/Esc handling).
+fn edit_text_buffer(app: &mut App, code: KeyCode) -> bool {
     match code {
-        KeyCode::Esc => {
-            app.mode = Mode::Normal;
-            return;
+        KeyCode::Left => {
+            if let Mode::TextInput { cursor, .. } = &mut app.mode {
+                *cursor = cursor.saturating_sub(1);
+            }
+            true
+        }
+        KeyCode::Right => {
+            if let Mode::TextInput { buffer, cursor, .. } = &mut app.mode {
+                *cursor = (*cursor + 1).min(buffer.chars().count());
+            }
+            true
         }
         KeyCode::Backspace => {
-            if let Mode::TextInput { buffer, .. } = &mut app.mode {
-                buffer.pop();
+            if let Mode::TextInput { buffer, cursor, .. } = &mut app.mode
+                && *cursor > 0
+            {
+                let mut chars: Vec<char> = buffer.chars().collect();
+                *cursor -= 1;
+                chars.remove(*cursor);
+                *buffer = chars.into_iter().collect();
             }
-            return;
+            true
         }
         KeyCode::Char(c) => {
-            if let Mode::TextInput { buffer, .. } = &mut app.mode {
-                buffer.push(c);
+            if let Mode::TextInput { buffer, cursor, .. } = &mut app.mode {
+                let mut chars: Vec<char> = buffer.chars().collect();
+                chars.insert((*cursor).min(chars.len()), c);
+                *buffer = chars.into_iter().collect();
+                *cursor += 1;
             }
-            return;
+            true
         }
-        KeyCode::Enter => {}
-        _ => return,
+        _ => false,
+    }
+}
+
+fn handle_text_input(app: &mut App, code: KeyCode, terminal: &mut Term) {
+    if code == KeyCode::Esc {
+        app.mode = Mode::Normal;
+        return;
+    }
+    if edit_text_buffer(app, code) {
+        return;
+    }
+    if code != KeyCode::Enter {
+        return;
     }
 
-    let Mode::TextInput { purpose, buffer } = std::mem::replace(&mut app.mode, Mode::Normal) else {
+    let Mode::TextInput {
+        purpose, buffer, ..
+    } = std::mem::replace(&mut app.mode, Mode::Normal)
+    else {
         return;
     };
     match purpose {
@@ -205,4 +242,72 @@ pub fn resume(terminal: &mut Term) -> Result<()> {
     terminal.hide_cursor()?;
     terminal.clear()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app::TextInputPurpose;
+
+    fn text_input_app(buffer: &str, cursor: usize) -> App {
+        let mut app = App::new(crate::config::Config::default());
+        app.mode = Mode::TextInput {
+            purpose: TextInputPurpose::AddLibraryPath,
+            buffer: buffer.to_string(),
+            cursor,
+        };
+        app
+    }
+
+    fn cursor_and_buffer(app: &App) -> (usize, &str) {
+        let Mode::TextInput { buffer, cursor, .. } = &app.mode else {
+            panic!("expected TextInput")
+        };
+        (*cursor, buffer)
+    }
+
+    #[test]
+    fn left_right_move_the_cursor_and_clamp_at_both_ends() {
+        let mut app = text_input_app("abc", 1);
+        edit_text_buffer(&mut app, KeyCode::Left);
+        assert_eq!(cursor_and_buffer(&app).0, 0);
+        edit_text_buffer(&mut app, KeyCode::Left); // already at 0
+        assert_eq!(cursor_and_buffer(&app).0, 0);
+
+        edit_text_buffer(&mut app, KeyCode::Right);
+        edit_text_buffer(&mut app, KeyCode::Right);
+        edit_text_buffer(&mut app, KeyCode::Right);
+        assert_eq!(cursor_and_buffer(&app).0, 3); // clamped to buffer length
+        edit_text_buffer(&mut app, KeyCode::Right);
+        assert_eq!(cursor_and_buffer(&app).0, 3);
+    }
+
+    #[test]
+    fn typing_inserts_at_the_cursor_not_just_at_the_end() {
+        // The scenario the user asked for: fix one segment of a path
+        // without retyping the whole thing.
+        let mut app = text_input_app("a\\c.exe", 2); // cursor right after "a\"
+        edit_text_buffer(&mut app, KeyCode::Char('b'));
+        let (cursor, buffer) = cursor_and_buffer(&app);
+        assert_eq!(buffer, "a\\bc.exe");
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn backspace_deletes_before_the_cursor_and_moves_it_back() {
+        let mut app = text_input_app("abc", 2); // cursor between 'b' and 'c'
+        edit_text_buffer(&mut app, KeyCode::Backspace);
+        let (cursor, buffer) = cursor_and_buffer(&app);
+        assert_eq!(buffer, "ac");
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn backspace_at_the_start_does_nothing() {
+        let mut app = text_input_app("abc", 0);
+        edit_text_buffer(&mut app, KeyCode::Backspace);
+        let (cursor, buffer) = cursor_and_buffer(&app);
+        assert_eq!(buffer, "abc");
+        assert_eq!(cursor, 0);
+    }
 }

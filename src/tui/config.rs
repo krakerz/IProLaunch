@@ -1,21 +1,28 @@
 use crossterm::event::KeyCode;
 
 use super::app::{
-    self, App, ConfigField, FieldKind, MapField, Mode, ProtonPickerTarget, TextInputPurpose,
+    self, App, ConfigField, FieldKind, IntegrateAction, IntegrateField, MapField, Mode,
+    ProtonPickerTarget, TextInputPurpose,
 };
 use super::profile_editor;
 use super::{Term, resume, suspend};
 use crate::proton;
 
+/// The Config tab's main field list and its "Desktop integration" table
+/// share one continuous selection index (`app.config_selected`) so Up/Down
+/// flows from one into the other with no separate focus-switch key — this
+/// is the boundary between the two ranges.
+fn total_rows() -> usize {
+    ConfigField::ALL.len() + IntegrateField::ALL.len()
+}
+
 pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     match code {
         KeyCode::Up => {
-            app.config_selected =
-                app::move_selection(app.config_selected, ConfigField::ALL.len(), -1);
+            app.config_selected = app::move_selection(app.config_selected, total_rows(), -1);
         }
         KeyCode::Down => {
-            app.config_selected =
-                app::move_selection(app.config_selected, ConfigField::ALL.len(), 1);
+            app.config_selected = app::move_selection(app.config_selected, total_rows(), 1);
         }
         KeyCode::Left => adjust_number(app, -1),
         KeyCode::Right => adjust_number(app, 1),
@@ -25,6 +32,11 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
 }
 
 fn activate_selected(app: &mut App, terminal: &mut Term) {
+    if app.config_selected >= ConfigField::ALL.len() {
+        let field = IntegrateField::ALL[app.config_selected - ConfigField::ALL.len()];
+        return activate_integrate_field(app, terminal, field);
+    }
+
     let field = ConfigField::ALL[app.config_selected];
     match field.kind() {
         FieldKind::Cycle => cycle_field(app, field),
@@ -35,9 +47,11 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
         FieldKind::Number => {} // Left/Right, not Enter
         FieldKind::Text => {
             let buffer = current_text_value(app, field);
+            let cursor = buffer.chars().count();
             app.mode = Mode::TextInput {
                 purpose: TextInputPurpose::ConfigField(field),
                 buffer,
+                cursor,
             };
         }
         FieldKind::ProtonPicker => match proton::scan() {
@@ -65,26 +79,67 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
                 selected: 0,
             };
         }
-        FieldKind::IntegrationToggle => run_integrate_toggle(app, terminal),
     }
 }
 
-/// Suspends the TUI around `integrate::install`/`uninstall` — both print
+fn activate_integrate_field(app: &mut App, terminal: &mut Term, field: IntegrateField) {
+    match field {
+        // Info rows — nothing to do on Enter.
+        IntegrateField::Status | IntegrateField::BinaryPath => {}
+        IntegrateField::Setup => run_integrate_action(app, terminal, IntegrateAction::Setup),
+        IntegrateField::Reapply => run_integrate_action(app, terminal, IntegrateAction::Reapply),
+        IntegrateField::Uninstall => {
+            run_integrate_action(app, terminal, IntegrateAction::Uninstall)
+        }
+    }
+}
+
+/// Runs one desktop-integration action, guarding against the two
+/// nonsensical combinations first (Setup when already installed, Reapply/
+/// Uninstall when not installed yet) without even suspending the TUI for
+/// those. `Setup` and `Reapply` both just call `integrate::install` — it's
+/// already idempotent and backup-guarded (a backup is only captured if one
+/// doesn't already exist), so re-running it is exactly "refresh the
+/// `.desktop` file's binary path and re-apply the mimetype defaults,
+/// leaving the original backup alone" — the two rows exist for clarity of
+/// intent, not because the underlying action differs.
+///
+/// Suspends the TUI first since `integrate::install`/`uninstall` print
 /// their own informational output via `println!` (which mimetypes were
 /// touched, or "nothing to uninstall"), which would otherwise be invisible
 /// or corrupt the alternate screen if called while the TUI is drawing.
 /// Mirrors `library::launch_path`'s suspend/run/wait-for-enter/resume shape.
-fn run_integrate_toggle(app: &mut App, terminal: &mut Term) {
+/// Whether `action` is nonsensical given the current `installed` state
+/// (Setup when already installed, Reapply/Uninstall when not installed
+/// yet), and if so, the status message to show instead of running it. Kept
+/// pure (installed state passed in, not queried here) so it's testable
+/// without needing a real `.desktop` file or a `Term`.
+fn integrate_guard_message(action: IntegrateAction, installed: bool) -> Option<&'static str> {
+    match (action, installed) {
+        (IntegrateAction::Setup, true) => {
+            Some("Already installed — use Reapply to refresh the binary path.")
+        }
+        (IntegrateAction::Reapply, false) | (IntegrateAction::Uninstall, false) => {
+            Some("Not installed yet — use Setup first.")
+        }
+        _ => None,
+    }
+}
+
+fn run_integrate_action(app: &mut App, terminal: &mut Term, action: IntegrateAction) {
+    if let Some(message) = integrate_guard_message(action, crate::integrate::is_installed()) {
+        app.status = Some(message.to_string());
+        return;
+    }
+
     if suspend(terminal).is_err() {
         app.status = Some("Failed to suspend the TUI.".to_string());
         return;
     }
 
-    let was_installed = crate::integrate::is_installed();
-    let result = if was_installed {
-        crate::integrate::uninstall()
-    } else {
-        crate::integrate::install()
+    let result = match action {
+        IntegrateAction::Setup | IntegrateAction::Reapply => crate::integrate::install(),
+        IntegrateAction::Uninstall => crate::integrate::uninstall(),
     };
     if let Err(err) = &result {
         println!("Error: {err:#}");
@@ -101,10 +156,11 @@ fn run_integrate_toggle(app: &mut App, terminal: &mut Term) {
         return;
     }
 
-    app.status = Some(match result {
-        Ok(()) if was_installed => "Removed as default handler.".to_string(),
-        Ok(()) => "Set as default handler.".to_string(),
-        Err(err) => format!("Desktop integration failed: {err:#}"),
+    app.status = Some(match (action, &result) {
+        (_, Err(err)) => format!("Desktop integration failed: {err:#}"),
+        (IntegrateAction::Setup, Ok(())) => "Set up as default handler.".to_string(),
+        (IntegrateAction::Reapply, Ok(())) => "Reapplied — binary path refreshed.".to_string(),
+        (IntegrateAction::Uninstall, Ok(())) => "Removed as default handler.".to_string(),
     });
 }
 
@@ -188,6 +244,9 @@ pub fn apply_proton_choice(
 }
 
 fn adjust_number(app: &mut App, delta: i64) {
+    if app.config_selected >= ConfigField::ALL.len() {
+        return; // no Number-kind field in the integrate table
+    }
     let field = ConfigField::ALL[app.config_selected];
     match field {
         ConfigField::LogKeep => {
@@ -393,6 +452,28 @@ mod tests {
         assert_eq!(adjust_u32(0, -1), 0);
         assert_eq!(adjust_u32(3, -1), 2);
         assert_eq!(adjust_u32(3, 1), 4);
+    }
+
+    #[test]
+    fn total_rows_spans_both_config_and_integrate_tables() {
+        assert_eq!(
+            total_rows(),
+            ConfigField::ALL.len() + IntegrateField::ALL.len()
+        );
+    }
+
+    #[test]
+    fn integrate_guard_blocks_setup_when_already_installed() {
+        assert!(integrate_guard_message(IntegrateAction::Setup, true).is_some());
+        assert!(integrate_guard_message(IntegrateAction::Setup, false).is_none());
+    }
+
+    #[test]
+    fn integrate_guard_blocks_reapply_and_uninstall_when_not_installed() {
+        assert!(integrate_guard_message(IntegrateAction::Reapply, false).is_some());
+        assert!(integrate_guard_message(IntegrateAction::Uninstall, false).is_some());
+        assert!(integrate_guard_message(IntegrateAction::Reapply, true).is_none());
+        assert!(integrate_guard_message(IntegrateAction::Uninstall, true).is_none());
     }
 
     // The tests below only exercise paths that don't call `save_config`/

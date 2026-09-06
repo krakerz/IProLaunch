@@ -2,6 +2,86 @@
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-09-06
+
+### Changed
+- README now opens with the same ASCII-art wordmark as the TUI header,
+  instead of a plain `# IProLaunch` heading.
+
+## [1.9.0] — 2026-09-06
+
+### Added
+- TUI text inputs (config/profile-editor field edits, add-by-path, the
+  title prompt) now support Left/Right cursor movement, insert, and delete
+  at the cursor position — not just always-append-at-the-end — shown as a
+  reverse-video block cursor. Makes fixing one segment of a path (e.g. a
+  different parent folder) easy without retyping the whole thing.
+- `iprolaunch integrate` now also registers `.msi` installers as a default
+  handler, alongside the existing `.exe`/`.bat`/`.cmd` — `iprolaunch run`
+  already launched all of these correctly with no extra wrapping (`wine
+  <path>` dispatches to `cmd`/`msiexec` internally by extension); this
+  extends file-manager double-click association to match.
+
+### Changed
+- The marquee scroll added in 1.8.0 now waits 2 seconds before it starts
+  moving, and always resets to position 0 whenever the selected row or open
+  popup/field changes — previously it scrolled immediately and kept a
+  single shared position that could pick up mid-scroll after moving the
+  cursor to something new.
+
+### Fixed
+- `integrate install`'s backup now tops up any mimetype missing from an
+  already-existing backup (rather than skipping the capture entirely once
+  the file exists at all) — matters whenever the set of mimetypes IProLaunch
+  manages grows (as it just did, twice, in this release): without this, a
+  mimetype added after a system was already integrated would have nothing
+  recorded to restore on a later `uninstall`.
+
+## [1.8.0] — 2026-09-06
+
+### Added
+- TUI: a selected row or a popup title too long to fit a small terminal now
+  scrolls (marquee-style) instead of being silently clipped, so the full
+  text is still readable — the Config/Integrate/Library/profile-editor
+  lists' selected row, and every popup's title (edit prompts, the proton
+  picker, the env/winedlloverride entry editor). Animated by the TUI's
+  existing idle redraw (already ticks ~4/sec even with no key pressed), so
+  no extra timer/thread was needed.
+
+## [1.7.0] — 2026-09-06
+
+### Added
+- Proton scan (`proton list` and the TUI's proton picker alike) now checks
+  every place this machine might have a Proton build, not just the native
+  `~/.local/share/Steam/compatibilitytools.d`: the `~/.steam/steam`/
+  `~/.steam/root` symlinks some distros set up (deduped), Flatpak Steam's
+  data dir, official Steam-installed Proton under `steamapps/common`
+  (recognized by its `proton` script — an incomplete/pending download is
+  correctly skipped), and the system-wide
+  `/usr/share/steam/compatibilitytools.d` some distro packages install a
+  default build into.
+- TUI profile editor: `target-path` (the exe location) is now an editable
+  field — checked against the real filesystem before being accepted, so a
+  typo or a moved/deleted exe can't silently leave a profile pointing at
+  nothing.
+- TUI Library list now shows each game's last 2 parent directory names
+  (e.g. `[..\Downloads\Programs]`) so two profiles that happen to share an
+  exe filename are easy to tell apart at a glance, and "last launched" is
+  right-aligned to the row's edge instead of immediately following the rest
+  of the row.
+- Config tab: desktop integration is now its own separate table below the
+  main field list (sharing one continuous selection cursor with it), with
+  five rows instead of one toggle: status, binary location (the actual
+  registered path, read from the `.desktop` file itself — not just this
+  process's own binary path, so it's accurate even if the registered
+  binary was moved since), setup, reapply (re-points the registration at
+  the current binary's path without touching the saved backup of the prior
+  default), and uninstall.
+
+### Changed
+- `Profile.last_launched`'s date now reads `DD-Mon-YYYY` (e.g. `06-Sep-2026`)
+  instead of `DD-MM-YYYY` — the time part is unchanged (`HH:MM:SS`).
+
 ## [1.6.0] — 2026-09-06
 
 ### Added

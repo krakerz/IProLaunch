@@ -25,6 +25,7 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
             app.mode = Mode::TextInput {
                 purpose: TextInputPurpose::AddLibraryPath,
                 buffer: String::new(),
+                cursor: 0,
             };
         }
         KeyCode::Char('r') => refresh(app),
@@ -159,6 +160,7 @@ pub fn launch_path(app: &mut App, terminal: &mut Term, target: &str, label: &str
         app.mode = Mode::TextInput {
             purpose: TextInputPurpose::ProfileTitle(slug.clone()),
             buffer: String::new(),
+            cursor: 0,
         };
     }
 }
