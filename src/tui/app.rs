@@ -51,10 +51,12 @@ pub enum ConfigField {
     LogRecord,
     LogAutoOpen,
     GamedbInterval,
+    EnvTable,
+    WineDllOverrideTable,
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 11] = [
+    pub const ALL: [ConfigField; 13] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
@@ -66,6 +68,8 @@ impl ConfigField {
         ConfigField::LogRecord,
         ConfigField::LogAutoOpen,
         ConfigField::GamedbInterval,
+        ConfigField::EnvTable,
+        ConfigField::WineDllOverrideTable,
     ];
 
     pub fn label(self) -> &'static str {
@@ -81,12 +85,15 @@ impl ConfigField {
             ConfigField::LogRecord => "logging.record",
             ConfigField::LogAutoOpen => "logging.auto_open",
             ConfigField::GamedbInterval => "gamedb.update_interval_days",
+            ConfigField::EnvTable => "env (global)",
+            ConfigField::WineDllOverrideTable => "winedlloverride (global)",
         }
     }
 
     /// How this field reacts to Enter: cycle/toggle in place, open a text
-    /// popup, or (proton only) open the build picker. `env` isn't listed
-    /// here at all — not editable from the TUI in this pass, see Help tab.
+    /// popup, open the proton build picker, or open the multi-line map
+    /// editor. Per-profile overrides for any of these still aren't editable
+    /// from the TUI — see Help tab.
     pub fn kind(self) -> FieldKind {
         match self {
             ConfigField::Proton => FieldKind::ProtonPicker,
@@ -99,6 +106,7 @@ impl ConfigField {
             | ConfigField::PrefixesRoot
             | ConfigField::WindowsVersion
             | ConfigField::LogPath => FieldKind::Text,
+            ConfigField::EnvTable | ConfigField::WineDllOverrideTable => FieldKind::MapEditor,
         }
     }
 }
@@ -110,6 +118,7 @@ pub enum FieldKind {
     Number,
     Text,
     ProtonPicker,
+    MapEditor,
 }
 
 pub enum Mode {
@@ -124,11 +133,51 @@ pub enum Mode {
         builds: Vec<ProtonBuild>,
         selected: usize,
     },
+    /// Browsing one map's entries (`env` or `winedlloverride`): `a` add,
+    /// `e` edit the selected entry, `d` delete it, Esc back to Config.
+    MapEditor {
+        field: MapField,
+        selected: usize,
+    },
+    /// Add/edit flow for one entry of a map — key then value, each a plain
+    /// single-line input. We join them into `KEY=VALUE` ourselves, so the
+    /// user only ever types one bare value at a time, never that syntax.
+    MapEntryInput {
+        field: MapField,
+        /// `Some(key)` when editing an existing entry (so we know which key
+        /// to remove if the name itself gets changed); `None` when adding.
+        original_key: Option<String>,
+        step: MapEntryStep,
+        key: String,
+        value: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapEntryStep {
+    Key,
+    Value,
 }
 
 pub enum TextInputPurpose {
     ConfigField(ConfigField),
     AddLibraryPath,
+}
+
+/// Which global map a `Mode::MapEditor`/`MapEntryInput` session is editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapField {
+    Env,
+    WineDllOverride,
+}
+
+impl MapField {
+    pub fn label(self) -> &'static str {
+        match self {
+            MapField::Env => "env",
+            MapField::WineDllOverride => "winedlloverride",
+        }
+    }
 }
 
 pub struct App {
@@ -195,6 +244,30 @@ impl App {
 
     pub fn prev_tab(&mut self) {
         self.tab = self.tab.prev();
+    }
+
+    /// The map a `MapField` refers to, as a sorted `(key, value)` list —
+    /// sorted because it's a `BTreeMap`, so this is stable across calls
+    /// (important since `Mode::MapEditor.selected` indexes into it).
+    pub fn map_entries(&self, field: MapField) -> Vec<(String, String)> {
+        self.map(field)
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    pub fn map(&self, field: MapField) -> &std::collections::BTreeMap<String, String> {
+        match field {
+            MapField::Env => &self.cfg.env,
+            MapField::WineDllOverride => &self.cfg.winedlloverride,
+        }
+    }
+
+    pub fn map_mut(&mut self, field: MapField) -> &mut std::collections::BTreeMap<String, String> {
+        match field {
+            MapField::Env => &mut self.cfg.env,
+            MapField::WineDllOverride => &mut self.cfg.winedlloverride,
+        }
     }
 }
 

@@ -272,6 +272,15 @@ pub struct Profile {
     /// `DD-MM-YYYY, HH-MM-SS`, local time — see `Profile::mark_launched_now`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_launched: Option<String>,
+    /// Extra args always forwarded to this exe (e.g. `["--dx11"]`), prepended
+    /// to whatever's passed on the command line (`run ... -- extra`, or
+    /// quick-launch trailing args) rather than replacing them. A `Vec`, not
+    /// one free-text string — an arg containing a space (e.g. a path) has no
+    /// ambiguity this way, unlike splitting a string on whitespace would.
+    /// No global equivalent (unlike `env`/`winedlloverride`): the same flags
+    /// rarely make sense across different games, so this is profile-only.
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default)]
     pub defaults: ProfileDefaults,
     #[serde(default)]
@@ -380,6 +389,7 @@ mod tests {
             logging: ProfileLogging::default(),
             env: BTreeMap::new(),
             winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
         };
         profile.env.insert("DXVK_HUD".into(), "fps".into());
         assert_eq!(
@@ -402,6 +412,7 @@ mod tests {
             logging: ProfileLogging::default(),
             env: BTreeMap::new(),
             winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
         };
         profile.mark_launched_now();
         let stamp = profile.last_launched.expect("mark_launched_now sets it");

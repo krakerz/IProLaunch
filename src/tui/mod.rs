@@ -72,6 +72,8 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     match &app.mode {
         Mode::TextInput { .. } => return handle_text_input(app, code, terminal),
         Mode::ProtonPicker { .. } => return handle_proton_picker(app, code),
+        Mode::MapEditor { .. } => return config::map_editor_key(app, code),
+        Mode::MapEntryInput { .. } => return config::map_entry_input_key(app, code),
         Mode::Normal => {}
     }
 

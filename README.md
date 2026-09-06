@@ -34,8 +34,10 @@ entry.
 - `Ctrl+C` during a launch, and `running list` / `running kill`, both
   reliably stop the whole sandboxed game tree, not just `iprolaunch` itself.
 - A full TUI (run `iprolaunch` with no arguments) — running-games/quick-kill,
-  game library (launch or add by path), a live config editor, and help —
-  for everything above without needing to remember the CLI subcommands.
+  game library (launch or add by path), a live config editor (including
+  managing global `env`/`winedlloverride` entries one at a time — add, edit,
+  delete), and help — for everything above without needing to remember the
+  CLI subcommands.
 
 ## Installation
 
@@ -87,12 +89,14 @@ defaults). Per-game overrides live at
 `~/.config/iprolaunch/profiles/<slug>/profile.toml`, created automatically
 the first time you run that exe; edit it by hand to override proton
 version, prefix path, Windows version (per-exe prefix mode only), logging,
-environment variables, or DLL overrides (`[winedlloverride]`, e.g.
-`winhttp = "n,b"` — joined into a single `WINEDLLOVERRIDES` at launch) for
-that one game — or set `title` to the game's real name (e.g.
-`"Grand Theft Auto V"`) so it can be matched against the umu-database for a
-GAMEID, which is what lets `umu-run`'s automatic protonfixes actually find a
-fix instead of a generic default.
+environment variables, DLL overrides (`[winedlloverride]`, e.g.
+`winhttp = "n,b"` — joined into a single `WINEDLLOVERRIDES` at launch), or
+extra launch args (`args = ["--dx11"]`, always forwarded to that exe, in
+addition to anything passed on the command line) for that one game — or set
+`title` to the game's real name (e.g. `"Grand Theft Auto V"`) so it can be
+matched against the umu-database for a GAMEID, which is what lets
+`umu-run`'s automatic protonfixes actually find a fix instead of a generic
+default.
 
 ## FAQ
 

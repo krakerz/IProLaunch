@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
 
-use super::app::{App, ConfigField, Mode, Tab};
+use super::app::{App, ConfigField, MapEntryStep, MapField, Mode, Tab};
 
 /// figlet, font "slant". Kept as literal art rather than generated at
 /// runtime — it's decoration, not something that needs to adapt to the
@@ -46,6 +46,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::ProtonPicker { builds, selected } => {
             draw_proton_picker_popup(frame, builds, *selected)
         }
+        Mode::MapEditor { field, selected } => draw_map_editor_popup(frame, app, *field, *selected),
+        Mode::MapEntryInput {
+            field,
+            step,
+            key,
+            value,
+            ..
+        } => draw_map_entry_input_popup(frame, *field, *step, key, value),
         Mode::Normal => {}
     }
 }
@@ -153,6 +161,8 @@ fn draw_config(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::LogRecord => format!("{:?}", l.record),
                 ConfigField::LogAutoOpen => l.auto_open.to_string(),
                 ConfigField::GamedbInterval => g.update_interval_days.to_string(),
+                ConfigField::EnvTable => entry_count(&app.cfg.env),
+                ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
             };
             ListItem::new(format!("{:<28} {}", field.label(), value))
         })
@@ -187,15 +197,22 @@ Library:
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or
-                           toggle (auto_open); opens a picker for proton
+                           toggle (auto_open); opens a picker for proton;
+                           opens the entry list for env/winedlloverride
   Left/Right               adjust a number field
   Esc                      cancel a text edit without saving
   Changes save to config.toml immediately.
 
+env / winedlloverride entry list:
+  a                        add an entry (prompts for name, then value)
+  e                        edit the selected entry
+  d                        delete the selected entry
+  Esc                      back to the Config tab
+
 Not editable here — edit profile.toml by hand instead:
   - a profile's env/winedlloverride overrides, or its windows-version/prefix_path override
   - a profile's `title` (used to match the umu-database for a GAMEID)
-  - the global [env] and [winedlloverride] tables
+  - a profile's `args` (extra launch args always passed to that exe, e.g. `--dx11`)
 
 Config file: ~/.config/iprolaunch/config.toml
 Profiles:    ~/.config/iprolaunch/profiles/<slug>/profile.toml
@@ -248,6 +265,69 @@ fn draw_proton_picker_popup(
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(selected));
+}
+
+fn entry_count(map: &std::collections::BTreeMap<String, String>) -> String {
+    match map.len() {
+        0 => "(empty)".to_string(),
+        1 => "1 entry".to_string(),
+        n => format!("{n} entries"),
+    }
+}
+
+fn draw_map_editor_popup(frame: &mut Frame, app: &App, field: MapField, selected: usize) {
+    let area = centered_rect(70, 60, frame.area());
+    frame.render_widget(Clear, area);
+
+    let entries = app.map_entries(field);
+    let items: Vec<ListItem> = if entries.is_empty() {
+        vec![ListItem::new("(empty — press 'a' to add an entry)")]
+    } else {
+        entries
+            .iter()
+            .map(|(k, v)| ListItem::new(format!("{k}={v}")))
+            .collect()
+    };
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            "{} — a add, e edit, d delete, Esc back",
+            field.label()
+        )))
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, area, &mut list_state(selected));
+}
+
+fn draw_map_entry_input_popup(
+    frame: &mut Frame,
+    field: MapField,
+    step: MapEntryStep,
+    key: &str,
+    value: &str,
+) {
+    let area = centered_rect(60, 20, frame.area());
+    frame.render_widget(Clear, area);
+
+    let (title, text) = match step {
+        MapEntryStep::Key => (
+            format!(
+                "{} — variable name (Enter = next, Esc = cancel)",
+                field.label()
+            ),
+            format!("{key}_"),
+        ),
+        MapEntryStep::Value => (
+            format!(
+                "{} — value for \"{key}\" (Enter = save, Esc = cancel)",
+                field.label()
+            ),
+            format!("{value}_"),
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(title)),
+        area,
+    );
 }
 
 fn list_state(selected: usize) -> ratatui::widgets::ListState {

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+- TUI: manage global `env`/`winedlloverride` entries directly — `a` add,
+  `e` edit, `d` delete, each a simple name-then-value prompt (no need to
+  type `KEY=VALUE` syntax yourself)
+- Profile `args`: extra launch args always forwarded to that exe (e.g.
+  `args = ["--dx11"]`), supplementing rather than replacing anything passed
+  via `run ... -- extra` or quick-launch trailing args
+
+### Fixed
+- A detached launch (no controlling terminal) no longer risks a broken/
+  hanging pager when `auto_open` fires on failure — skipped when stdout
+  isn't a terminal, since the log file is still there to inspect afterward
+
 ## [1.1.0] — 2026-09-06
 
 ### Added

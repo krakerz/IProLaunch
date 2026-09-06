@@ -1,6 +1,6 @@
 use crossterm::event::KeyCode;
 
-use super::app::{self, App, ConfigField, FieldKind, Mode, TextInputPurpose};
+use super::app::{self, App, ConfigField, FieldKind, MapField, Mode, TextInputPurpose};
 use crate::proton;
 
 pub fn on_key(app: &mut App, code: KeyCode) {
@@ -46,6 +46,17 @@ fn activate_selected(app: &mut App) {
             }
             Err(err) => app.status = Some(format!("proton scan failed: {err:#}")),
         },
+        FieldKind::MapEditor => {
+            let map_field = match field {
+                ConfigField::EnvTable => MapField::Env,
+                ConfigField::WineDllOverrideTable => MapField::WineDllOverride,
+                _ => return,
+            };
+            app.mode = Mode::MapEditor {
+                field: map_field,
+                selected: 0,
+            };
+        }
     }
 }
 
@@ -134,6 +145,152 @@ fn save_config(app: &mut App) {
     }
 }
 
+/// Keys while browsing one map's entries (`Mode::MapEditor`): `a` add,
+/// `e` edit the selected entry, `d` delete it, Esc back to the Config tab.
+pub fn map_editor_key(app: &mut App, code: KeyCode) {
+    let (field, selected) = match app.mode {
+        Mode::MapEditor { field, selected } => (field, selected),
+        _ => return,
+    };
+    let entries = app.map_entries(field);
+
+    match code {
+        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Up => {
+            let selected = app::move_selection(selected, entries.len(), -1);
+            app.mode = Mode::MapEditor { field, selected };
+        }
+        KeyCode::Down => {
+            let selected = app::move_selection(selected, entries.len(), 1);
+            app.mode = Mode::MapEditor { field, selected };
+        }
+        KeyCode::Char('a') => {
+            app.mode = Mode::MapEntryInput {
+                field,
+                original_key: None,
+                step: app::MapEntryStep::Key,
+                key: String::new(),
+                value: String::new(),
+            };
+        }
+        KeyCode::Char('e') => {
+            if let Some((k, v)) = entries.get(selected) {
+                app.mode = Mode::MapEntryInput {
+                    field,
+                    original_key: Some(k.clone()),
+                    step: app::MapEntryStep::Key,
+                    key: k.clone(),
+                    value: v.clone(),
+                };
+            }
+        }
+        KeyCode::Char('d') => {
+            if let Some((k, _)) = entries.get(selected) {
+                let k = k.clone();
+                app.map_mut(field).remove(&k);
+                save_config(app);
+            }
+            let new_len = app.map_entries(field).len();
+            let selected = selected.min(new_len.saturating_sub(1));
+            app.mode = Mode::MapEditor { field, selected };
+        }
+        _ => {}
+    }
+}
+
+/// Keys while adding/editing one map entry (`Mode::MapEntryInput`): plain
+/// typing/Backspace edit whichever of `key`/`value` is the active step;
+/// Enter advances Key → Value, then commits on Value; Esc cancels entirely
+/// (never partially applies a half-finished edit).
+pub fn map_entry_input_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            if let Mode::MapEntryInput { field, .. } = app.mode {
+                app.mode = Mode::MapEditor { field, selected: 0 };
+            }
+            return;
+        }
+        KeyCode::Backspace => {
+            match &mut app.mode {
+                Mode::MapEntryInput {
+                    step: app::MapEntryStep::Key,
+                    key,
+                    ..
+                } => {
+                    key.pop();
+                }
+                Mode::MapEntryInput {
+                    step: app::MapEntryStep::Value,
+                    value,
+                    ..
+                } => {
+                    value.pop();
+                }
+                _ => {}
+            }
+            return;
+        }
+        KeyCode::Char(c) => {
+            match &mut app.mode {
+                Mode::MapEntryInput {
+                    step: app::MapEntryStep::Key,
+                    key,
+                    ..
+                } => {
+                    key.push(c);
+                }
+                Mode::MapEntryInput {
+                    step: app::MapEntryStep::Value,
+                    value,
+                    ..
+                } => {
+                    value.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+        KeyCode::Enter => {}
+        _ => return,
+    }
+
+    let Mode::MapEntryInput {
+        field,
+        original_key,
+        step,
+        key,
+        value,
+    } = std::mem::replace(&mut app.mode, Mode::Normal)
+    else {
+        return;
+    };
+
+    match step {
+        app::MapEntryStep::Key => {
+            app.mode = Mode::MapEntryInput {
+                field,
+                original_key,
+                step: app::MapEntryStep::Value,
+                key,
+                value,
+            };
+        }
+        app::MapEntryStep::Value => {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                if let Some(old_key) = &original_key
+                    && *old_key != key
+                {
+                    app.map_mut(field).remove(old_key);
+                }
+                app.map_mut(field).insert(key, value);
+                save_config(app);
+            }
+            app.mode = Mode::MapEditor { field, selected: 0 };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +300,166 @@ mod tests {
         assert_eq!(adjust_u32(0, -1), 0);
         assert_eq!(adjust_u32(3, -1), 2);
         assert_eq!(adjust_u32(3, 1), 4);
+    }
+
+    // The tests below only exercise paths that don't call `save_config` (and
+    // so never touch `Config::save()`, which writes to the *real*
+    // `~/.config/iprolaunch/config.toml` — there is no test-only override of
+    // `project_dirs()`). Add ('a'), edit ('e'), delete ('d'), and the final
+    // confirm-on-Value step all call it and are deliberately NOT covered
+    // here; verify those by hand instead. Never add a test that reaches
+    // `save_config`/`app.cfg.save()` without a way to redirect it away from
+    // the real config file first.
+
+    fn test_app() -> App {
+        App::new(crate::config::Config::default())
+    }
+
+    #[test]
+    fn map_editor_navigation_wraps_within_entry_count() {
+        let mut app = test_app();
+        app.cfg.env.insert("A".into(), "1".into());
+        app.cfg.env.insert("B".into(), "2".into());
+        app.mode = Mode::MapEditor {
+            field: MapField::Env,
+            selected: 0,
+        };
+
+        map_editor_key(&mut app, KeyCode::Down);
+        assert!(matches!(app.mode, Mode::MapEditor { selected: 1, .. }));
+        map_editor_key(&mut app, KeyCode::Down); // already at the last entry
+        assert!(matches!(app.mode, Mode::MapEditor { selected: 1, .. }));
+        map_editor_key(&mut app, KeyCode::Up);
+        assert!(matches!(app.mode, Mode::MapEditor { selected: 0, .. }));
+    }
+
+    #[test]
+    fn map_editor_esc_returns_to_normal() {
+        let mut app = test_app();
+        app.mode = Mode::MapEditor {
+            field: MapField::Env,
+            selected: 0,
+        };
+        map_editor_key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn add_opens_entry_input_with_empty_buffers() {
+        let mut app = test_app();
+        app.mode = Mode::MapEditor {
+            field: MapField::WineDllOverride,
+            selected: 0,
+        };
+        map_editor_key(&mut app, KeyCode::Char('a'));
+
+        match &app.mode {
+            Mode::MapEntryInput {
+                field,
+                original_key,
+                step,
+                key,
+                value,
+            } => {
+                assert_eq!(*field, MapField::WineDllOverride);
+                assert_eq!(*original_key, None);
+                assert_eq!(*step, app::MapEntryStep::Key);
+                assert_eq!(key, "");
+                assert_eq!(value, "");
+            }
+            _ => panic!("expected MapEntryInput"),
+        }
+    }
+
+    #[test]
+    fn edit_opens_entry_input_prefilled_with_the_selected_entry() {
+        let mut app = test_app();
+        app.cfg
+            .winedlloverride
+            .insert("winhttp".into(), "n,b".into());
+        app.mode = Mode::MapEditor {
+            field: MapField::WineDllOverride,
+            selected: 0,
+        };
+        map_editor_key(&mut app, KeyCode::Char('e'));
+
+        match &app.mode {
+            Mode::MapEntryInput {
+                original_key,
+                key,
+                value,
+                ..
+            } => {
+                assert_eq!(original_key.as_deref(), Some("winhttp"));
+                assert_eq!(key, "winhttp");
+                assert_eq!(value, "n,b");
+            }
+            _ => panic!("expected MapEntryInput"),
+        }
+    }
+
+    #[test]
+    fn typing_and_backspace_edit_the_active_steps_buffer() {
+        let mut app = test_app();
+        app.mode = Mode::MapEntryInput {
+            field: MapField::Env,
+            original_key: None,
+            step: app::MapEntryStep::Key,
+            key: String::new(),
+            value: String::new(),
+        };
+        for c in "FOO".chars() {
+            map_entry_input_key(&mut app, KeyCode::Char(c));
+        }
+        map_entry_input_key(&mut app, KeyCode::Backspace);
+
+        let Mode::MapEntryInput { key, .. } = &app.mode else {
+            panic!("expected MapEntryInput")
+        };
+        assert_eq!(key, "FO");
+    }
+
+    #[test]
+    fn enter_on_key_step_advances_to_value_step_keeping_the_key() {
+        let mut app = test_app();
+        app.mode = Mode::MapEntryInput {
+            field: MapField::Env,
+            original_key: None,
+            step: app::MapEntryStep::Key,
+            key: "FOO".to_string(),
+            value: String::new(),
+        };
+        map_entry_input_key(&mut app, KeyCode::Enter);
+
+        match &app.mode {
+            Mode::MapEntryInput { step, key, .. } => {
+                assert_eq!(*step, app::MapEntryStep::Value);
+                assert_eq!(key, "FOO");
+            }
+            _ => panic!("expected MapEntryInput still, on the Value step"),
+        }
+    }
+
+    #[test]
+    fn esc_during_entry_input_cancels_back_to_the_map_editor() {
+        let mut app = test_app();
+        app.mode = Mode::MapEntryInput {
+            field: MapField::Env,
+            original_key: None,
+            step: app::MapEntryStep::Value,
+            key: "FOO".to_string(),
+            value: "bar".to_string(),
+        };
+        map_entry_input_key(&mut app, KeyCode::Esc);
+
+        assert!(matches!(
+            app.mode,
+            Mode::MapEditor {
+                field: MapField::Env,
+                ..
+            }
+        ));
+        // And critically: cancelling must not have written anything.
+        assert!(app.cfg.env.is_empty());
     }
 }
