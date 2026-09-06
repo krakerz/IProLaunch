@@ -4,6 +4,7 @@ prefix_mode = "single"
 prefix_path = "~/.local/share/iprolaunch/prefix"
 prefixes_root = "~/.local/share/iprolaunch/prefixes"
 windows-version = "win10"
+gamescope = "none"
 
 [logging]
 mode = "single"

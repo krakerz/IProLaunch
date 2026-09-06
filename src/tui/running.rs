@@ -4,38 +4,50 @@ use super::app::{self, App};
 use crate::running;
 
 pub fn on_key(app: &mut App, code: KeyCode) {
-    if app.running_filter.is_some() {
+    if app.running_filter_editing {
         return filter_key(app, code);
     }
 
     match code {
         KeyCode::Up => {
-            app.running_selected = app::move_selection(app.running_selected, app.running.len(), -1);
+            let len = app.filtered_running_indices().len();
+            app.running_selected = app::move_selection(app.running_selected, len, -1);
         }
         KeyCode::Down => {
-            app.running_selected = app::move_selection(app.running_selected, app.running.len(), 1);
+            let len = app.filtered_running_indices().len();
+            app.running_selected = app::move_selection(app.running_selected, len, 1);
         }
         KeyCode::Char('r') => app.refresh_running(),
         KeyCode::Char('f') => start_filter(app),
         KeyCode::Enter | KeyCode::Char('k') | KeyCode::Delete => kill_selected(app),
+        // Only meaningful once a filter is locked (still-typing Esc is
+        // handled by `filter_key` instead, via the early return above) —
+        // a no-op otherwise, same as Esc always was here.
+        KeyCode::Esc if app.running_filter.is_some() => app.clear_running_filter(),
         _ => {}
     }
 }
 
 fn start_filter(app: &mut App) {
     app.running_filter = Some(String::new());
+    app.running_filter_editing = true;
     app.running_selected = 0;
 }
 
-/// Keys while the quick-search box is active (`f` was pressed): typing
-/// edits the filter text directly (so `r`/`k` — this tab's own shortcuts —
-/// are unavailable while filtering, since they're needed as literal
-/// characters instead; `Esc` to leave filter mode restores them), Up/Down
-/// navigate the filtered subset, Enter/Delete still kill the selected one.
+/// Keys while actively typing the quick-search box (`f` was pressed, not
+/// yet locked): typing edits the filter text directly (so `r`/`k` — this
+/// tab's own shortcuts — are unavailable while typing, since they're
+/// needed as literal characters instead), Up/Down navigate the filtered
+/// subset, Esc clears the filter entirely. Enter/Delete *lock* it instead
+/// of killing — the filtered view stays exactly as it is, but every other
+/// key (including Enter/Delete/k, next press) goes back to meaning what it
+/// normally does, now scoped to the filtered subset (see `on_key`'s
+/// `running_filter_editing` check).
 fn filter_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => {
             app.running_filter = None;
+            app.running_filter_editing = false;
             app.running_selected = 0;
         }
         KeyCode::Backspace => {
@@ -58,7 +70,7 @@ fn filter_key(app: &mut App, code: KeyCode) {
             let len = app.filtered_running_indices().len();
             app.running_selected = app::move_selection(app.running_selected, len, 1);
         }
-        KeyCode::Enter | KeyCode::Delete => kill_selected(app),
+        KeyCode::Enter | KeyCode::Delete => app.running_filter_editing = false,
         _ => {}
     }
 }
@@ -181,18 +193,71 @@ mod tests {
     }
 
     #[test]
-    fn enter_kills_the_selected_entry_within_the_filtered_subset() {
+    fn enter_locks_the_filter_instead_of_killing() {
         let mut app = test_app_with_two_entries();
         start_filter(&mut app);
         for c in "guild".chars() {
             filter_key(&mut app, KeyCode::Char(c));
         }
         filter_key(&mut app, KeyCode::Enter);
+        assert!(!app.running_filter_editing);
+        // Still filtered — locking keeps the narrowed view, not just
+        // resets it.
+        assert_eq!(app.running_filter.as_deref(), Some("guild"));
+        assert!(app.status.is_none(), "locking shouldn't kill anything");
+    }
+
+    #[test]
+    fn delete_also_locks_the_filter_instead_of_killing() {
+        let mut app = test_app_with_two_entries();
+        start_filter(&mut app);
+        filter_key(&mut app, KeyCode::Delete);
+        assert!(!app.running_filter_editing);
+        assert!(app.status.is_none());
+    }
+
+    #[test]
+    fn a_second_enter_after_locking_kills_the_selected_entry() {
+        let mut app = test_app_with_two_entries();
+        start_filter(&mut app);
+        for c in "guild".chars() {
+            filter_key(&mut app, KeyCode::Char(c));
+        }
+        filter_key(&mut app, KeyCode::Enter); // locks
+        on_key(&mut app, KeyCode::Enter); // now a normal key again, scoped to the filtered subset
         assert_eq!(
             app.status.as_deref(),
             Some(
                 "Failed to kill Guildmaster: nothing running against prefix /tmp/iprolaunch-test-nonexistent-prefix/Guildmaster"
             )
         );
+    }
+
+    #[test]
+    fn once_locked_r_refreshes_normally_instead_of_editing_the_filter() {
+        let mut app = test_app_with_two_entries();
+        start_filter(&mut app);
+        filter_key(&mut app, KeyCode::Char('r')); // still typing: 'r' is filter text, not refresh
+        assert_eq!(app.running_filter.as_deref(), Some("r"));
+        filter_key(&mut app, KeyCode::Enter); // locks
+        on_key(&mut app, KeyCode::Char('r')); // now refresh again, not more filter text
+        // refresh_running() only touches `status` on error — reaching here
+        // at all (rather than 'r' silently becoming "rr" in the filter
+        // text) is what actually matters.
+        assert_eq!(app.running_filter.as_deref(), Some("r"));
+        // The filter itself is still in place — only Esc/switching tabs
+        // should clear it, not `r`.
+        assert!(app.running_filter.is_some());
+    }
+
+    #[test]
+    fn esc_clears_a_locked_filter_too() {
+        let mut app = test_app_with_two_entries();
+        start_filter(&mut app);
+        filter_key(&mut app, KeyCode::Char('x'));
+        filter_key(&mut app, KeyCode::Enter); // locks
+        on_key(&mut app, KeyCode::Esc);
+        assert_eq!(app.running_filter, None);
+        assert!(!app.running_filter_editing);
     }
 }

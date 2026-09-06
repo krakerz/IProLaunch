@@ -5,10 +5,10 @@ mod profile_editor;
 mod running;
 mod ui;
 
-use std::io::{self, Stdout};
+use std::io::{self, IsTerminal, Stdout};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -23,6 +23,22 @@ use app::{App, Mode, TextInputPurpose};
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
 pub fn run(cfg: Config) -> Result<()> {
+    // Bare `iprolaunch` with no controlling terminal (confirmed for real:
+    // Steam Game Mode launches a non-Steam-game shortcut this way) makes
+    // `enable_raw_mode()` below fail with a bare, cryptic OS error
+    // ("No such device or address (os error 6)") that's invisible there
+    // anyway (no console shown) — this at least prints something
+    // actionable if stderr *is* visible (e.g. run from a script), and the
+    // exit is the same either way. Checked up front rather than after
+    // already touching the real terminal, so there's nothing to undo.
+    if !io::stdout().is_terminal() {
+        bail!(
+            "no terminal available to run the TUI in (this happens when launched without a \
+             console, e.g. a Steam Game Mode/gamescope shortcut) — point it at \
+             `iprolaunch <name-or-slug>` instead"
+        );
+    }
+
     let mut app = App::new(cfg);
 
     enable_raw_mode()?;
@@ -83,12 +99,38 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         Mode::Normal => {}
     }
 
+    // While actively typing a Running/Library quick-search (not yet
+    // locked by Enter), every key goes straight to it — including digits/
+    // q/?/Tab, which the global shortcuts below would otherwise swallow
+    // before the filter ever saw them (e.g. searching a game named
+    // "Dark Souls 3"). Once locked (Enter pressed, or no filter at all),
+    // these fall through to the normal global-key handling below, same as
+    // ever.
+    if app.tab == app::Tab::Running && app.running_filter_editing {
+        return running::on_key(app, code);
+    }
+    if app.tab == app::Tab::Library && app.library_filter_editing {
+        return library::on_key(app, code, terminal);
+    }
+
     match code {
         KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('1') => app.tab = app::Tab::Running,
-        KeyCode::Char('2') => app.tab = app::Tab::Library,
-        KeyCode::Char('3') => app.tab = app::Tab::Config,
-        KeyCode::Char('4') => app.tab = app::Tab::Help,
+        KeyCode::Char('1') => {
+            app.clear_filters();
+            app.tab = app::Tab::Running;
+        }
+        KeyCode::Char('2') => {
+            app.clear_filters();
+            app.tab = app::Tab::Library;
+        }
+        KeyCode::Char('3') => {
+            app.clear_filters();
+            app.tab = app::Tab::Config;
+        }
+        KeyCode::Char('4') => {
+            app.clear_filters();
+            app.tab = app::Tab::Help;
+        }
         KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Tab => app.next_tab(),
         KeyCode::BackTab => app.prev_tab(),

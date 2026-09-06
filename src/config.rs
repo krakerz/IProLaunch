@@ -109,6 +109,21 @@ pub enum RecordMode {
     Off,
 }
 
+/// Whether (and how) to wrap a launch in a nested `gamescope` session —
+/// see `launch::GamescopeMode` for what `Fullscreen`/`Maximize` actually
+/// pass to `gamescope` itself. Lets `iprolaunch <slug>` remember the same
+/// choice `-f`/`-m` would set for one launch, without retyping it —
+/// `-f`/`-m` on the command line still win when actually passed (see
+/// `launch::run`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GamescopeSetting {
+    #[default]
+    None,
+    Fullscreen,
+    Maximize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Defaults {
     pub proton: String,
@@ -117,6 +132,8 @@ pub struct Defaults {
     pub prefixes_root: String,
     #[serde(rename = "windows-version")]
     pub windows_version: String,
+    #[serde(default)]
+    pub gamescope: GamescopeSetting,
 }
 
 impl Default for Defaults {
@@ -127,6 +144,7 @@ impl Default for Defaults {
             prefix_path: "~/.local/share/iprolaunch/prefix".into(),
             prefixes_root: "~/.local/share/iprolaunch/prefixes".into(),
             windows_version: "win10".into(),
+            gamescope: GamescopeSetting::None,
         }
     }
 }
@@ -233,9 +251,18 @@ impl Config {
             None => (None, None, None, None),
         };
 
-        let proton = pd
-            .and_then(|pd| pd.proton.clone())
-            .unwrap_or_else(|| d.proton.clone());
+        // A profile's own proton override only means anything when it owns
+        // its own prefix — in `Single` mode every profile shares one
+        // prefix, so letting one profile silently launch it with a
+        // different Proton version than the rest risks corrupting/
+        // confusing that shared prefix's contents (same reasoning as
+        // `windows_version` below, which has the identical restriction).
+        let proton = if d.prefix_mode == PrefixMode::PerSlug {
+            pd.and_then(|pd| pd.proton.clone())
+                .unwrap_or_else(|| d.proton.clone())
+        } else {
+            d.proton.clone()
+        };
         let prefix_path = pd
             .and_then(|pd| pd.prefix_path.clone())
             .unwrap_or_else(|| d.prefix_path.clone());
@@ -246,6 +273,7 @@ impl Config {
         } else {
             None
         };
+        let gamescope = pd.and_then(|pd| pd.gamescope).unwrap_or(d.gamescope);
 
         let keep = pl.and_then(|pl| pl.keep).unwrap_or(l.keep);
         let record = pl.and_then(|pl| pl.record).unwrap_or(l.record);
@@ -269,6 +297,7 @@ impl Config {
             prefix_path,
             prefixes_root: d.prefixes_root.clone(),
             windows_version,
+            gamescope,
             log_mode: l.mode,
             keep,
             record,
@@ -288,6 +317,7 @@ pub struct Effective {
     pub prefixes_root: String,
     /// `None` whenever `prefix_mode != PerSlug` — see `Config::effective`.
     pub windows_version: Option<String>,
+    pub gamescope: GamescopeSetting,
     pub log_mode: LogMode,
     pub keep: u32,
     pub record: RecordMode,
@@ -304,6 +334,8 @@ pub struct ProfileDefaults {
     pub prefix_path: Option<String>,
     #[serde(rename = "windows-version", skip_serializing_if = "Option::is_none")]
     pub windows_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gamescope: Option<GamescopeSetting>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -425,6 +457,53 @@ mod tests {
         assert_eq!(
             cfg.effective(None).windows_version,
             Some(cfg.defaults.windows_version.clone())
+        );
+    }
+
+    #[test]
+    fn profile_proton_override_is_ignored_outside_per_slug_mode() {
+        let mut cfg = Config::default();
+        cfg.defaults.proton = "system".into();
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        profile.defaults.proton = Some("GE-Proton10-34".into());
+
+        cfg.defaults.prefix_mode = PrefixMode::Single;
+        assert_eq!(cfg.effective(Some(&profile)).proton, "system");
+
+        cfg.defaults.prefix_mode = PrefixMode::PerSlug;
+        assert_eq!(cfg.effective(Some(&profile)).proton, "GE-Proton10-34");
+    }
+
+    #[test]
+    fn gamescope_defaults_to_none_and_a_profile_override_wins() {
+        let cfg = Config::default();
+        assert_eq!(cfg.effective(None).gamescope, GamescopeSetting::None);
+
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        profile.defaults.gamescope = Some(GamescopeSetting::Fullscreen);
+        assert_eq!(
+            cfg.effective(Some(&profile)).gamescope,
+            GamescopeSetting::Fullscreen
         );
     }
 

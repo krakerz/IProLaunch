@@ -125,6 +125,7 @@ fn draw_running(frame: &mut Frame, area: Rect, app: &App) {
     let indices = app.filtered_running_indices();
     let title = filter_title(
         &app.running_filter,
+        app.running_filter_editing,
         "Running (Enter/k = kill, r = refresh, f = search)",
     );
     if indices.is_empty() {
@@ -148,14 +149,20 @@ fn draw_running(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut list_state(app.running_selected));
 }
 
-/// Shared by `draw_running`/`draw_library`: while a quick-search filter is
-/// active, the block's own title becomes the filter box itself (with a
-/// trailing `_` cursor, same convention as the standalone text-input
-/// popups) instead of the tab's normal key hint.
-fn filter_title(filter: &Option<String>, normal_title: &str) -> String {
-    match filter {
-        Some(text) => format!("Filter: {text}_  (Esc = clear)"),
-        None => normal_title.to_string(),
+/// Shared by `draw_running`/`draw_library`: while actively typing a
+/// quick-search filter, the block's own title becomes the filter box
+/// itself (trailing `_` cursor, same convention as the standalone
+/// text-input popups) instead of the tab's normal key hint, since typing
+/// is all that works then. Once locked (Enter pressed), every one of the
+/// tab's normal shortcuts works again — so `normal_title` (which already
+/// lists all of them) is kept alongside the filter status instead of being
+/// replaced by it, otherwise there'd be nothing on screen reminding you
+/// `a`/`e`/`d`/`c`/etc. are usable again.
+fn filter_title(filter: &Option<String>, editing: bool, normal_title: &str) -> String {
+    match (filter, editing) {
+        (Some(text), true) => format!("Filter: {text}_  (Enter = lock, Esc = clear)"),
+        (Some(text), false) => format!("{normal_title} — Filter: {text} (locked, Esc = clear)"),
+        (None, _) => normal_title.to_string(),
     }
 }
 
@@ -174,6 +181,7 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     let inner_width = area.width.saturating_sub(4) as usize;
     let title = filter_title(
         &app.library_filter,
+        app.library_filter_editing,
         "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, f = search)",
     );
 
@@ -295,6 +303,10 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .windows_version
                     .clone()
                     .unwrap_or_else(|| "(inherit)".to_string()),
+                ProfileField::Gamescope => profile
+                    .defaults
+                    .gamescope
+                    .map_or_else(|| "(inherit)".to_string(), |g| format!("{g:?}")),
                 ProfileField::LogKeep => profile
                     .logging
                     .keep
@@ -401,6 +413,7 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::PrefixPath => d.prefix_path.clone(),
                 ConfigField::PrefixesRoot => d.prefixes_root.clone(),
                 ConfigField::WindowsVersion => d.windows_version.clone(),
+                ConfigField::Gamescope => format!("{:?}", d.gamescope),
                 ConfigField::LogMode => format!("{:?}", l.mode),
                 ConfigField::LogPath => l.path.clone(),
                 ConfigField::LogKeep => l.keep.to_string(),
@@ -495,7 +508,8 @@ const HELP_TEXT: &str = "\
 iprolaunch — TUI help
 
 Global:
-  1/2/3/4, Tab/Shift-Tab   switch screen
+  1/2/3/4, Tab/Shift-Tab   switch screen (also clears an active Running/
+                           Library quick-search, locked or still typing)
   ?                        open this help as a popup from any tab (Esc closes it)
   Up/Down/PageUp/PageDown/Home/End   scroll (Help tab and the ? popup)
   q                        quit
@@ -504,8 +518,12 @@ Running:
   Enter or k               kill the selected launch
   r                        refresh now (also refreshes automatically)
   f                        quick-search — filters by name as you type;
-                           while searching, only Enter/Esc/Up/Down work
-                           (r/k become literal search characters instead)
+                           while typing, only Enter/Esc/Up/Down work (r/k
+                           become literal search characters instead).
+                           Enter *locks* the search instead of killing —
+                           the narrowed list stays, but r/k/Enter/Up/Down
+                           all go back to normal, now scoped to it. Esc
+                           clears it entirely, whether still typing or locked.
 
 Library:
   Enter                    launch the selected game
@@ -517,10 +535,15 @@ Library:
                            \"<this binary's path>\" <slug> — for pasting into
                            a Steam non-Steam-game shortcut's Target field
   f                        quick-search — filters by name as you type;
-                           while searching, only Enter/Esc/Up/Down work
-                           (a/r/e/d/c become literal search characters instead)
+                           while typing, only Enter/Esc/Up/Down work
+                           (a/r/e/d/c become literal search characters
+                           instead). Enter *locks* the search instead of
+                           launching — the narrowed list stays, but
+                           a/r/e/d/c/Enter/Up/Down all go back to normal,
+                           now scoped to it. Esc clears it entirely,
+                           whether still typing or locked.
   Esc                      cancel while typing a path, or clear an active
-                           quick-search
+                           quick-search (typing or locked)
 
 Profile editor (Library, after 'e'):
   Enter                    edit (text fields), cycle (record/auto_open),
@@ -543,6 +566,13 @@ Profile editor (Library, after 'e'):
       auto-fills the lowest \"#N\" not already used by another profile's
       same base, reusing a gap left by a deleted/renamed one rather than
       always growing past the historical max.
+    - the proton override only has any effect in defaults.prefix_mode =
+      per-slug — in single-prefix mode it's ignored (every profile shares
+      one prefix, so a mismatched Proton version there risks corrupting it).
+    - gamescope override cycles inherit -> none -> fullscreen -> maximize ->
+      inherit — same as -f/-m on the command line, remembered per game so
+      \"iprolaunch <slug>\" doesn't need retyping it (an explicit -f/-m still
+      wins if passed).
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or

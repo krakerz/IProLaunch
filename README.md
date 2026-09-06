@@ -21,55 +21,75 @@ entry.
 
 ## Features
 
-- Global config (default Proton version, prefix mode, environment variables)
-  with per-game overrides.
-- Two prefix strategies: one shared prefix, or one auto-created per profile,
-  keyed by its slug (renaming a slug renames its prefix dir to match, with a
-  confirmation first).
-- A game library — every exe you launch gets an editable profile
-  automatically, or add one without launching it via `iprolaunch add <exe>`.
-  `integrate install` (below) also adds a file-manager right-click "Add to
-  IProLaunch Library" action (KDE/Dolphin, GNOME/Cinnamon/MATE, XFCE) for
-  mass-adding games without opening a terminal — `add`/that action also
-  copy a ready-to-paste quick-launch command to the clipboard.
-- Quick launch by name or slug (`iprolaunch <name>`) — a natural fit for a
-  Steam shortcut. The TUI's Library tab (`c`) copies a ready-to-paste
-  `"<iprolaunch binary>" <slug>` command for a Steam non-Steam-game shortcut's
-  Target field.
-- Per-launch logging with configurable retention (optionally keeping only
-  failed runs), either one shared log folder or one per profile.
-- `proton list` / `config init` detect installed Proton builds across every
-  common location (native/Flatpak Steam, official Steam installs,
-  distro-packaged system builds), not just `compatibilitytools.d`.
+- Global config (Proton version, prefix mode, environment variables) with
+  per-game overrides.
+- Two prefix strategies: one shared prefix, or one per profile keyed by
+  slug (renaming moves its prefix dir, with confirmation). A per-game
+  Proton override only applies in per-slug mode.
+- A game library — every launched exe gets an editable profile
+  automatically, or add one without launching via `iprolaunch add <exe>`.
+  `integrate install` (below) adds a file-manager right-click "Add to
+  IProLaunch Library" action (KDE, GNOME/Cinnamon/MATE, XFCE); both it and
+  `add` copy a ready-to-paste quick-launch command to the clipboard.
+- Quick launch by name or slug (`iprolaunch <name>`) — points a Steam
+  shortcut straight at a game. `-f`/`-m` wrap the launch in a nested
+  `gamescope` session (real fullscreen / stretch-to-fill) for Steam Game
+  Mode — remembered per-game (global default or profile override) so you
+  don't need to retype them.
+- Per-launch logging with configurable retention, one shared log folder or
+  one per profile.
+- `proton list` / `config init` detect installed Proton builds everywhere
+  (native/Flatpak Steam, official Steam installs, distro packages), not
+  just `compatibilitytools.d`.
 - Automatic GAMEID matching against the community
   [umu-database](https://umu.openwinecomponents.org) so protonfixes has a
-  real shot at finding a fix instead of falling back to a generic default.
-- `Ctrl+C`, `running list` / `running kill` all reliably stop the *whole*
-  sandboxed game tree, not just `iprolaunch` itself.
+  real shot at finding a fix instead of a generic default.
+- `Ctrl+C`, `running kill` all reliably stop the *whole* sandboxed game
+  tree, not just `iprolaunch` itself.
 - A full TUI (`iprolaunch`, no arguments) — running games with quick-kill,
-  a library (launch/add/edit/delete, with per-game overrides each
-  independently resettable to "inherit the default"), a live config editor
-  (incl. env/winedlloverride management and desktop integration), and a
-  scrollable help screen covering everything above without needing to
-  remember CLI subcommands — press `?` from any tab to pop it up without
-  losing your place. Press `f` in Running/Library to quick-search by name;
-  long text marquee-scrolls instead of clipping on a small terminal; the
-  status bar shows the global keys (`q`, `?`, tab-switching) whenever
-  there's nothing else to report.
-- `iprolaunch integrate install` — registers IProLaunch as the default
-  handler for `.exe`/`.bat`/`.cmd`/`.msi` files, adds it to the app/start
-  menu with its own icon, adds the right-click "Add to IProLaunch Library"
-  action to whichever of KDE/GNOME/Cinnamon/MATE/XFCE are actually present,
-  and backs up whatever was the default before so `integrate uninstall` can
-  restore all of it. Both are also available from the TUI's Config tab.
-  `iprolaunch context-menu install [kde|gnome|xfce]` manages just the
-  right-click action on its own, if you ever want only that.
+  a library (launch/add/edit/delete, overrides resettable to "inherit"), a
+  live config editor, and a scrollable help screen — press `?` from any
+  tab to pop it up without losing your place. `f` quick-searches
+  Running/Library by name; Enter locks the narrowed list (every other key
+  works normally again, scoped to it), Esc or switching tabs clears it.
+  The status bar shows the global keys when there's nothing else to report.
+- `iprolaunch integrate install` — registers as the default handler for
+  `.exe`/`.bat`/`.cmd`/`.msi`, adds an app-menu entry with an icon, and the
+  right-click "Add to Library" action for whichever DE is present —
+  backing up the prior default so `uninstall` restores everything. Also
+  available from the TUI's Config tab. `context-menu install
+  [kde|gnome|xfce]` manages just the right-click action alone.
 
 ## Installation
 
 Download the latest release archive, extract it, and put the `iprolaunch`
-binary on your `$PATH`. Requires [`umu-launcher`](https://github.com/Open-Wine-Components/umu-launcher)
-(`umu-run`) installed separately.
+binary on your `$PATH`.
+
+### Requirements
+
+Assuming nothing's installed yet:
+
+- **[`umu-launcher`](https://github.com/Open-Wine-Components/umu-launcher)**
+  (`umu-run` on `$PATH`) — required; this is what actually launches a game
+  through Proton.
+- **A Proton build** — auto-managed by default (`proton = "system"`), or
+  point `defaults.proton`/a profile override at one you already have
+  (`proton list` detects what's installed).
+
+Everything else is optional, each tied to one specific feature, and each
+degrades gracefully (usually a clear error) if missing:
+
+- **`xdg-utils`** (`xdg-mime`, usually already present) — `integrate
+  install`/`uninstall`.
+- **`gtk-update-icon-cache`** (GLib/GTK) — icon-cache refresh after
+  `integrate install`; the icon still shows up without it, just maybe not
+  until next login.
+- **KDE**: `kbuildsycoca6`/`5` — refreshes Dolphin's right-click menu after
+  `context-menu install`.
+- **`wl-copy`** (Wayland) or **`xclip`** (X11) — clipboard copy (`c`, `add`,
+  the right-click action).
+- **[`gamescope`](https://github.com/ValveSoftware/gamescope)** — `-f`/`-m`.
+  Already on SteamOS/a Deck; otherwise a distro package.
 
 ## Building from source
 
@@ -100,6 +120,11 @@ iprolaunch library list
 # Quick-launch by name or slug (what a Steam shortcut should point at)
 iprolaunch "eldenring#1"
 
+# Same, wrapped in a nested gamescope session — real fullscreen, or
+# stretch-to-fill (gamescope's closest thing to "maximized")
+iprolaunch -f "eldenring#1"
+iprolaunch -m "eldenring#1"
+
 # See what's currently running, and stop one
 iprolaunch running list
 iprolaunch running kill "eldenring#1"
@@ -124,13 +149,12 @@ iprolaunch context-menu uninstall
 
 Global config lives at `~/.config/iprolaunch/config.toml` (created with
 defaults on first run — see `config/config.example.toml`). Per-game
-overrides live at `~/.config/iprolaunch/profiles/<slug>/profile.toml`,
-created automatically on first run — edit via the TUI's Library tab (`e`) or
-by hand: proton version, prefix path, Windows version (per-slug prefix mode
-only), logging, environment variables, DLL overrides (`[winedlloverride]`,
-e.g. `winhttp = "n,b"`, joined into `WINEDLLOVERRIDES` at launch), extra args
-(`args = ["--dx11"]`, always forwarded), or `title` (the game's real name,
-matched against the umu-database for a GAMEID so protonfixes can find a fix).
+overrides live at `~/.config/iprolaunch/profiles/<slug>/profile.toml` —
+edit via the TUI's Library tab (`e`) or by hand: proton/prefix
+path/Windows version (per-slug mode only)/gamescope, logging, env vars,
+DLL overrides (`[winedlloverride]`, e.g. `winhttp = "n,b"`), extra args
+(`args = ["--dx11"]`, always forwarded), or `title` (matched against the
+umu-database for a GAMEID).
 
 ## FAQ
 
@@ -138,7 +162,9 @@ matched against the umu-database for a GAMEID so protonfixes can find a fix).
 `$PATH`.
 
 **Can I still add a game to Steam as a non-Steam game?** Yes — point the
-shortcut at `iprolaunch <name-or-slug>` instead of the exe directly.
+shortcut at `iprolaunch <name-or-slug>` instead of the exe directly. Bare
+`iprolaunch` opens the TUI, which needs a real terminal, so it won't work
+as a Game Mode/gamescope shortcut's Target — always use the slug form there.
 
 **Does it need internet access?** Only to auto-fetch the umu-database
 (re-checked every 7 days by default, configurable via `gamedb`'s

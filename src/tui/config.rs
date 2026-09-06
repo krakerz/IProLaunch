@@ -175,6 +175,9 @@ fn cycle_field(app: &mut App, field: ConfigField) {
         ConfigField::LogRecord => {
             app.cfg.logging.record = app::next_record_mode(app.cfg.logging.record);
         }
+        ConfigField::Gamescope => {
+            app.cfg.defaults.gamescope = app::next_gamescope_setting(app.cfg.defaults.gamescope);
+        }
         _ => {}
     }
     save_config(app);

@@ -69,6 +69,7 @@ mod tests {
             prefix_path: "~/unused".to_string(),
             prefixes_root: "~/prefixes".to_string(),
             windows_version: None,
+            gamescope: Default::default(),
             log_mode: crate::config::LogMode::Single,
             keep: 0,
             record: crate::config::RecordMode::Off,
