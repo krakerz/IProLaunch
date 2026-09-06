@@ -3,6 +3,21 @@
 ## [Unreleased]
 
 ### Added
+- Ctrl+C (and SIGTERM) during `run` now forwards into and stops the
+  sandboxed game tree, instead of only killing `iprolaunch` itself
+- `proton list` subcommand: lists installed Proton builds detected under
+  Steam's `compatibilitytools.d`
+- `config init`: interactively pick a default Proton build from what's
+  installed
+- Automatic GAMEID lookup against the community umu-database
+  (`[gamedb]`'s `update_interval_days`, default 7, controls how often the
+  local cache is refreshed; never blocks a launch on network failure) — a
+  profile's optional `title` field is the lookup query, falling back to the
+  exe's file stem when unset
+
+## [1.0.0] — 2026-09-06
+
+### Added
 - `run` subcommand: launch an exe through `umu-run`, auto-creating its
   library profile on first run
 - `library list` subcommand
@@ -21,3 +36,9 @@
 - One-line summary after each launch reporting whether `umu-run`'s automatic
   ProtonFixes found and applied a game-specific fix
 - `LICENSE` (MIT)
+
+### Changed
+- `last_launched` in a profile's `profile.toml` is now stored as
+  `DD-MM-YYYY, HH-MM-SS` instead of TOML's native datetime type
+- All timestamps (log filenames, `last_launched`, running-state metadata) use
+  local time instead of UTC

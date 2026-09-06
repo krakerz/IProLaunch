@@ -6,6 +6,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 
 use crate::config::{Config, Profile, RecordMode};
+use crate::gamedb;
 use crate::logging::LogSession;
 use crate::prefix;
 use crate::running;
@@ -35,6 +36,20 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
         effective.proton = proton;
     }
 
+    gamedb::refresh_if_stale(cfg.gamedb.update_interval_days);
+    let gameid_query = profile.title.clone().unwrap_or_else(|| {
+        target
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string()
+    });
+    let gameid = gamedb::lookup_gameid(&gameid_query);
+    match &gameid {
+        Some(id) => eprintln!("iprolaunch: matched GAMEID {id} for \"{gameid_query}\""),
+        None => eprintln!("iprolaunch: no umu-database match for \"{gameid_query}\""),
+    }
+
     let prefix_path = opts
         .prefix
         .unwrap_or_else(|| prefix::resolve(&effective, &target));
@@ -48,6 +63,8 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
         eprintln!("iprolaunch: warning: failed to apply windows-version={version}: {err:#}");
     }
 
+    install_signal_forwarding(&prefix_path);
+
     // Per `man umu`: WINEPREFIX/PROTONPATH/GAMEID are all optional env vars;
     // GAMEID defaults to "umu-default" when unset.
     let mut command = Command::new("umu-run");
@@ -56,6 +73,9 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     command.env("WINEPREFIX", &prefix_path);
     if !effective.proton.is_empty() && effective.proton != "system" {
         command.env("PROTONPATH", &effective.proton);
+    }
+    if let Some(id) = &gameid {
+        command.env("GAMEID", id);
     }
     for (k, v) in merge_env(&effective.env, &opts.env) {
         command.env(k, v);
@@ -81,7 +101,7 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     let status = child.wait().context("waiting for umu-run")?;
     running::clear(&state_path);
 
-    profile.last_launched = Some(time::OffsetDateTime::now_utc());
+    profile.mark_launched_now();
     profile.save(&slug)?;
 
     if let Some(session) = &log_session
@@ -129,6 +149,7 @@ fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
     let profile = Profile {
         name: format!("{base}#{n}"),
         target_path: target_str,
+        title: None,
         last_launched: None,
         defaults: Default::default(),
         logging: Default::default(),
@@ -215,6 +236,35 @@ fn apply_windows_version(prefix_path: &Path, version: &str) -> Result<()> {
         bail!("winetricks {version} exited with {status}");
     }
     Ok(())
+}
+
+/// Forwards Ctrl+C (and a plain `kill`/SIGTERM on `iprolaunch` itself) into
+/// the sandboxed game tree via `running::terminate`'s WINEPREFIX-matching
+/// sweep. Needed because the tree bwrap creates detaches into its own
+/// session (see NOTES.md, 2026-09-06) — the terminal's SIGINT reaches
+/// `iprolaunch` and the directly-spawned `umu-run` (both still share the
+/// foreground process group), but nothing forwards it deeper on its own, so
+/// without this, Ctrl+C would kill only `iprolaunch` and leave the game
+/// running orphaned. Best-effort: if installing the handler fails, launch
+/// proceeds anyway with just a warning — Ctrl+C during the run degrades back
+/// to today's behavior rather than blocking the whole launch over it.
+fn install_signal_forwarding(prefix_path: &Path) {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    match Signals::new([SIGINT, SIGTERM]) {
+        Ok(mut signals) => {
+            let prefix = prefix_path.to_string_lossy().into_owned();
+            std::thread::spawn(move || {
+                for _ in signals.forever() {
+                    let _ = running::terminate(&prefix);
+                }
+            });
+        }
+        Err(err) => {
+            eprintln!("iprolaunch: warning: failed to install Ctrl+C handler: {err}");
+        }
+    }
 }
 
 fn open_in_pager(path: &Path) {
