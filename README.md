@@ -103,7 +103,12 @@ degrades gracefully (usually a clear error) if missing:
 
 ## Building from source
 
-Requires a recent stable Rust toolchain (`rustup` recommended).
+Requires a recent stable Rust toolchain (`rustup` recommended), plus
+`libudev`'s development headers (gamepad support's `gilrs` dependency needs
+them to build on Linux) — `libudev-dev` on Debian/Ubuntu,
+`systemd-devel`/`libudev-devel` on Fedora/openSUSE, `eudev-libs`/`libudev`
+(with headers) on other distros. Already present on most desktop Linux
+installs; if `cargo build` fails looking for `libudev.pc`, that's this.
 
 ```sh
 git clone <this-repo>

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.19.1] — 2026-09-06
+
+### Fixed
+- CI (`Build` workflow) failed on every push after 1.19.0: `gilrs`'s Linux
+  gamepad backend needs `libudev`'s pkg-config file (`libudev.pc`) to
+  build, and the vanilla `ubuntu-latest` runner doesn't have it installed
+  (only worked locally because dev machines already had it). Added an
+  `apt-get install -y libudev-dev` step before the cargo steps. README's
+  "Building from source" section now lists it too, since anyone building
+  from source on Linux needs it for the same reason.
+
 ## [1.19.0] — 2026-09-06
 
 ### Added

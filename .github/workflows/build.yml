@@ -22,6 +22,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install libudev headers (gilrs' Linux gamepad backend needs them to build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
       - name: Format check
         run: cargo fmt -- --check
 
