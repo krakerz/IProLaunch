@@ -21,7 +21,10 @@ const LOGO: [&str; 5] = [
     "/___/_/   /_/   \\____/_____/\\__,_/\\__,_/_/ /_/\\___/_/ /_/ ",
 ];
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let signature = marquee_signature(app);
+    app.sync_marquee(signature);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -47,21 +50,28 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_status_bar(frame, chunks[3], app);
 
+    let tick = app.marquee_tick();
     match &app.mode {
-        Mode::TextInput { purpose, buffer } => draw_text_input_popup(frame, purpose, buffer),
+        Mode::TextInput {
+            purpose,
+            buffer,
+            cursor,
+        } => draw_text_input_popup(frame, purpose, buffer, *cursor, tick),
         Mode::ProtonPicker {
             builds,
             selected,
             target,
-        } => draw_proton_picker_popup(frame, builds, *selected, target),
-        Mode::MapEditor { field, selected } => draw_map_editor_popup(frame, app, field, *selected),
+        } => draw_proton_picker_popup(frame, builds, *selected, target, tick),
+        Mode::MapEditor { field, selected } => {
+            draw_map_editor_popup(frame, app, field, *selected, tick)
+        }
         Mode::MapEntryInput {
             field,
             step,
             key,
             value,
             ..
-        } => draw_map_entry_input_popup(frame, field, *step, key, value),
+        } => draw_map_entry_input_popup(frame, field, *step, key, value, tick),
         Mode::ConfirmDeleteProfile { name, .. } => draw_confirm_delete_popup(frame, name),
         Mode::Normal => {}
     }
@@ -136,10 +146,12 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     // list-item text inside the block.
     let inner_width = area.width.saturating_sub(4) as usize;
 
+    let tick = app.marquee_tick();
     let items: Vec<ListItem> = app
         .profiles
         .iter()
-        .map(|(slug, p)| {
+        .enumerate()
+        .map(|(i, (slug, p))| {
             let last = p.last_launched.as_deref().unwrap_or("never");
             let left = format!(
                 "{}  [{slug}]  [{}]",
@@ -150,7 +162,13 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
             let pad = inner_width
                 .saturating_sub(left.chars().count() + right.chars().count())
                 .max(1);
-            ListItem::new(format!("{left}{:pad$}{right}", ""))
+            let combined = format!("{left}{:pad$}{right}", "");
+            let text = if i == app.library_selected && combined.chars().count() > inner_width {
+                marquee(&combined, inner_width, tick)
+            } else {
+                combined
+            };
+            ListItem::new(text)
         })
         .collect();
     let list = List::new(items)
@@ -196,9 +214,12 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
         return;
     };
 
+    let inner_width = area.width.saturating_sub(4) as usize;
+    let tick = app.marquee_tick();
     let items: Vec<ListItem> = ProfileField::ALL
         .iter()
-        .map(|field| {
+        .enumerate()
+        .map(|(i, field)| {
             let value = match field {
                 ProfileField::TargetPath => profile.target_path.clone(),
                 ProfileField::Title => profile
@@ -242,7 +263,14 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                 ProfileField::EnvTable => entry_count(&profile.env),
                 ProfileField::WineDllOverrideTable => entry_count(&profile.winedlloverride),
             };
-            ListItem::new(format!("{:<34} {}", field.label(), value))
+            let combined = format!("{:<34} {}", field.label(), value);
+            let text = if i == app.profile_field_selected && combined.chars().count() > inner_width
+            {
+                marquee(&combined, inner_width, tick)
+            } else {
+                combined
+            };
+            ListItem::new(text)
         })
         .collect();
     let list = List::new(items)
@@ -290,10 +318,13 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
     let d = &app.cfg.defaults;
     let l = &app.cfg.logging;
     let g = &app.cfg.gamedb;
+    let inner_width = area.width.saturating_sub(4) as usize;
+    let tick = app.marquee_tick();
 
     let items: Vec<ListItem> = ConfigField::ALL
         .iter()
-        .map(|field| {
+        .enumerate()
+        .map(|(i, field)| {
             let value = match field {
                 ConfigField::Proton => d.proton.clone(),
                 ConfigField::PrefixMode => format!("{:?}", d.prefix_mode),
@@ -309,7 +340,13 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::EnvTable => entry_count(&app.cfg.env),
                 ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
             };
-            ListItem::new(format!("{:<28} {}", field.label(), value))
+            let combined = format!("{:<28} {}", field.label(), value);
+            let text = if i == app.config_selected && combined.chars().count() > inner_width {
+                marquee(&combined, inner_width, tick)
+            } else {
+                combined
+            };
+            ListItem::new(text)
         })
         .collect();
     let list = List::new(items)
@@ -328,15 +365,21 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
+    let inner_width = area.width.saturating_sub(4) as usize;
+    let tick = app.marquee_tick();
+    let selected_local = app.config_selected.checked_sub(ConfigField::ALL.len());
+
     let items: Vec<ListItem> = IntegrateField::ALL
         .iter()
-        .map(|field| {
+        .enumerate()
+        .map(|(i, field)| {
             let value = match field {
                 IntegrateField::Status => integration_status_text(),
                 IntegrateField::BinaryPath => crate::integrate::registered_binary_path()
                     .unwrap_or_else(|| "(not installed)".to_string()),
                 IntegrateField::Setup => {
-                    "Enter = register iprolaunch as the default .exe handler".to_string()
+                    "Enter = register iprolaunch as the default .exe/.bat/.cmd/.msi handler"
+                        .to_string()
                 }
                 IntegrateField::Reapply => {
                     "Enter = re-point the registration at this binary's current path".to_string()
@@ -345,7 +388,13 @@ fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
                     "Enter = remove the registration and restore the prior default".to_string()
                 }
             };
-            ListItem::new(format!("{:<34} {}", field.label(), value))
+            let combined = format!("{:<34} {}", field.label(), value);
+            let text = if selected_local == Some(i) && combined.chars().count() > inner_width {
+                marquee(&combined, inner_width, tick)
+            } else {
+                combined
+            };
+            ListItem::new(text)
         })
         .collect();
     let list = List::new(items)
@@ -417,7 +466,7 @@ Config:
 
 Desktop integration (Config tab, bottom table):
   status / binary location  info only, not editable
-  setup                      register iprolaunch as the default .exe handler
+  setup                      register iprolaunch as the default .exe/.bat/.cmd/.msi handler
   reapply                    re-point the registration at this binary's
                              current path, without touching the saved
                              backup of what the default was before setup
@@ -446,7 +495,13 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(text)), area);
 }
 
-fn draw_text_input_popup(frame: &mut Frame, purpose: &TextInputPurpose, buffer: &str) {
+fn draw_text_input_popup(
+    frame: &mut Frame,
+    purpose: &TextInputPurpose,
+    buffer: &str,
+    cursor: usize,
+    tick: usize,
+) {
     let area = centered_rect(60, 20, frame.area());
     frame.render_widget(Clear, area);
     let title = match purpose {
@@ -470,8 +525,36 @@ fn draw_text_input_popup(frame: &mut Frame, purpose: &TextInputPurpose, buffer: 
             )
         }
     };
+    let title = marquee_title(title, area.width, tick);
     let block = Block::default().borders(Borders::ALL).title(title);
-    frame.render_widget(Paragraph::new(format!("{buffer}_")).block(block), area);
+    frame.render_widget(
+        Paragraph::new(cursor_line(buffer, cursor)).block(block),
+        area,
+    );
+}
+
+/// Renders `buffer` with a reverse-video block over the character at
+/// `cursor` (or a trailing reversed space when the cursor sits past the
+/// last character) — a text-editor-style block cursor, so Left/Right
+/// movement (see `mod::handle_text_input`) has something to actually show
+/// where it landed, not just always-append-at-the-end like before.
+fn cursor_line(buffer: &str, cursor: usize) -> Line<'static> {
+    let chars: Vec<char> = buffer.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let before: String = chars[..cursor].iter().collect();
+    let (at, after): (String, String) = if cursor < chars.len() {
+        (
+            chars[cursor].to_string(),
+            chars[cursor + 1..].iter().collect(),
+        )
+    } else {
+        (" ".to_string(), String::new())
+    };
+    Line::from(vec![
+        Span::raw(before),
+        Span::styled(at, Style::default().add_modifier(Modifier::REVERSED)),
+        Span::raw(after),
+    ])
 }
 
 fn draw_proton_picker_popup(
@@ -479,6 +562,7 @@ fn draw_proton_picker_popup(
     builds: &[crate::proton::ProtonBuild],
     selected: usize,
     target: &ProtonPickerTarget,
+    tick: usize,
 ) {
     let area = centered_rect(60, 60, frame.area());
     frame.render_widget(Clear, area);
@@ -499,6 +583,7 @@ fn draw_proton_picker_popup(
             format!("Pick a Proton override for {slug} (Enter, Esc = cancel)")
         }
     };
+    let title = marquee_title(title, area.width, tick);
     items.extend(
         builds
             .iter()
@@ -527,7 +612,13 @@ fn integration_status_text() -> String {
     }
 }
 
-fn draw_map_editor_popup(frame: &mut Frame, app: &App, field: &MapField, selected: usize) {
+fn draw_map_editor_popup(
+    frame: &mut Frame,
+    app: &App,
+    field: &MapField,
+    selected: usize,
+    tick: usize,
+) {
     let area = centered_rect(70, 60, frame.area());
     frame.render_widget(Clear, area);
 
@@ -540,11 +631,13 @@ fn draw_map_editor_popup(frame: &mut Frame, app: &App, field: &MapField, selecte
             .map(|(k, v)| ListItem::new(format!("{k}={v}")))
             .collect()
     };
+    let title = marquee_title(
+        format!("{} — a add, e edit, d delete, Esc back", field.label()),
+        area.width,
+        tick,
+    );
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            "{} — a add, e edit, d delete, Esc back",
-            field.label()
-        )))
+        .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(selected));
@@ -556,6 +649,7 @@ fn draw_map_entry_input_popup(
     step: MapEntryStep,
     key: &str,
     value: &str,
+    tick: usize,
 ) {
     let area = centered_rect(60, 20, frame.area());
     frame.render_widget(Clear, area);
@@ -576,6 +670,7 @@ fn draw_map_entry_input_popup(
             format!("{value}_"),
         ),
     };
+    let title = marquee_title(title, area.width, tick);
     frame.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(title)),
         area,
@@ -586,6 +681,67 @@ fn list_state(selected: usize) -> ratatui::widgets::ListState {
     let mut state = ratatui::widgets::ListState::default();
     state.select(Some(selected));
     state
+}
+
+/// A cheap identifier for "whatever might currently be marquee-scrolling":
+/// changes exactly when the user has moved to a different row or a
+/// different popup/field (tab switched, a list selection moved, a popup
+/// opened or its own internal selection/field/step changed, the profile
+/// editor opened a different profile) — never on something that doesn't
+/// affect what's selected, like a `TextInput`'s `buffer` changing as the
+/// user types, or a `ProtonPicker`'s `builds` list (which is why this
+/// matches `Mode` by hand instead of just using its `Debug` output).
+/// `App::sync_marquee` resets the scroll-delay timer whenever this changes.
+fn marquee_signature(app: &App) -> String {
+    let mode_part = match &app.mode {
+        Mode::Normal => "normal".to_string(),
+        Mode::TextInput { purpose, .. } => format!("text:{purpose:?}"),
+        Mode::ProtonPicker {
+            selected, target, ..
+        } => format!("proton:{selected}:{target:?}"),
+        Mode::MapEditor { field, selected } => format!("map:{field:?}:{selected}"),
+        Mode::MapEntryInput { field, step, .. } => format!("mapentry:{field:?}:{step:?}"),
+        Mode::ConfirmDeleteProfile { slug, .. } => format!("confirmdelete:{slug}"),
+    };
+    format!(
+        "{:?}|{}|{}|{}|{:?}|{mode_part}",
+        app.tab,
+        app.library_selected,
+        app.config_selected,
+        app.profile_field_selected,
+        app.profile_editor,
+    )
+}
+
+/// Scrolls `text` to fit within `width` characters when it's too long to
+/// otherwise, animated by `tick` (see `App::marquee_tick`) — used for a
+/// selected row or a popup title too long for a small terminal, so the
+/// full text is still readable over a couple of seconds instead of being
+/// silently clipped. Text that already fits is returned unchanged (no
+/// pointless scrolling of something that's already fully visible).
+fn marquee(text: &str, width: usize, tick: usize) -> String {
+    let width = width.max(1);
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    // A gap between one lap and the next, so wrap-around reads as
+    // "...end    start..." instead of "...endstart..." running together.
+    const GAP: &str = "    ";
+    let padded: Vec<char> = text.chars().chain(GAP.chars()).collect();
+    let start = tick % padded.len();
+    padded.iter().cycle().skip(start).take(width).collect()
+}
+
+/// `marquee`, specialized for a popup's own `Block` title — takes the
+/// popup's full `area.width` and accounts for its 2 border columns itself,
+/// so every popup title call site doesn't have to repeat that subtraction.
+fn marquee_title(title: String, area_width: u16, tick: usize) -> String {
+    let width = area_width.saturating_sub(2) as usize;
+    if title.chars().count() > width {
+        marquee(&title, width, tick)
+    } else {
+        title
+    }
 }
 
 /// Standard ratatui recipe for a centered floating popup.
@@ -617,7 +773,7 @@ mod tests {
     use crate::config::Config;
     use crate::proton::ProtonBuild;
 
-    fn rendered(app: &App, width: u16, height: u16) -> String {
+    fn rendered(app: &mut App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
@@ -635,12 +791,82 @@ mod tests {
     }
 
     #[test]
+    fn marquee_signature_differs_when_the_selected_row_changes() {
+        let mut app = test_app();
+        app.tab = Tab::Config;
+        app.config_selected = 0;
+        let a = marquee_signature(&app);
+        app.config_selected = 1;
+        let b = marquee_signature(&app);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn marquee_signature_ignores_a_text_inputs_buffer_contents() {
+        // Typing shouldn't reset the marquee delay on the popup's own
+        // title — only *which* field is open should matter.
+        let mut app = test_app();
+        app.mode = Mode::TextInput {
+            purpose: super::super::app::TextInputPurpose::AddLibraryPath,
+            buffer: "a".to_string(),
+            cursor: 1,
+        };
+        let a = marquee_signature(&app);
+        app.mode = Mode::TextInput {
+            purpose: super::super::app::TextInputPurpose::AddLibraryPath,
+            buffer: "a longer buffer now".to_string(),
+            cursor: 19,
+        };
+        let b = marquee_signature(&app);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn marquee_leaves_short_text_unchanged() {
+        assert_eq!(marquee("short", 20, 0), "short");
+        assert_eq!(marquee("short", 20, 500), "short"); // tick doesn't matter either
+    }
+
+    #[test]
+    fn marquee_scrolls_long_text_and_advances_with_tick() {
+        let text = "this text is definitely longer than the width";
+        let width = 10;
+        let at_0 = marquee(text, width, 0);
+        let at_1 = marquee(text, width, 1);
+        assert_eq!(at_0.chars().count(), width);
+        assert_eq!(at_1.chars().count(), width);
+        assert_ne!(at_0, at_1, "advancing tick should shift the visible window");
+        assert!(text.starts_with(&at_0));
+    }
+
+    #[test]
+    fn marquee_wraps_around_via_the_gap_back_to_the_start() {
+        let text = "abcdef";
+        let width = 3;
+        // 6 chars + 4-char gap = 10-char cycle; tick == cycle length should
+        // land back exactly where tick == 0 did.
+        assert_eq!(marquee(text, width, 0), marquee(text, width, 10));
+    }
+
+    #[test]
+    fn marquee_title_accounts_for_the_2_border_columns() {
+        let long = "a very long popup title that will not fit";
+        // area.width - 2 (borders) == 10, so this should scroll, not just
+        // pass the whole (over-)long title through untouched.
+        let scrolled = marquee_title(long.to_string(), 12, 0);
+        assert_eq!(scrolled.chars().count(), 10);
+        // Comfortably wide: title fits once borders are subtracted, so it's
+        // returned untouched.
+        assert_eq!(marquee_title("short".to_string(), 20, 0), "short");
+    }
+
+    #[test]
     fn header_shows_the_wordmark_and_version() {
         // Regression check: the header block must be tall enough for the
         // logo *plus* the version line — sized for just the logo once and
         // silently clipped the version off until caught by manual testing.
-        let app = test_app();
-        let out = rendered(&app, 80, 24);
+        let mut app = test_app();
+        let out = rendered(&mut app, 80, 24);
         assert!(
             out.contains(LOGO[0].trim()),
             "ASCII wordmark's first line should render"
@@ -656,7 +882,7 @@ mod tests {
         let mut app = test_app();
         for tab in Tab::ALL {
             app.tab = tab;
-            let out = rendered(&app, 80, 24);
+            let out = rendered(&mut app, 80, 24);
             assert!(out.contains(tab.title()), "tab bar should show {:?}", tab);
         }
     }
@@ -668,7 +894,7 @@ mod tests {
         let mut app = test_app();
         for tab in Tab::ALL {
             app.tab = tab;
-            rendered(&app, 20, 6);
+            rendered(&mut app, 20, 6);
         }
     }
 
@@ -677,7 +903,7 @@ mod tests {
         let mut app = test_app();
         app.tab = Tab::Running;
         app.running.clear();
-        assert!(rendered(&app, 80, 24).contains("Nothing running"));
+        assert!(rendered(&mut app, 80, 24).contains("Nothing running"));
     }
 
     #[test]
@@ -685,7 +911,7 @@ mod tests {
         let mut app = test_app();
         app.tab = Tab::Library;
         app.profiles.clear();
-        assert!(rendered(&app, 80, 24).contains("No games yet"));
+        assert!(rendered(&mut app, 80, 24).contains("No games yet"));
     }
 
     #[test]
@@ -695,7 +921,7 @@ mod tests {
         let mut profile = test_profile("ktsysview#1");
         profile.target_path = "/media/media/Downloads/Programs/KTSYSVIEW.exe".to_string();
         app.profiles = vec![("ktsysview".to_string(), profile)];
-        let out = rendered(&app, 100, 24);
+        let out = rendered(&mut app, 100, 24);
         assert!(out.contains("[..\\Downloads\\Programs]"));
         // Right-aligned: "last launched:" should land near the row's right
         // edge, not immediately after the rest of the row's content.
@@ -719,7 +945,7 @@ mod tests {
         // shorter terminal will legitimately clip content, same as any
         // other list-heavy screen; that's covered by
         // `every_tab_renders_without_panicking_at_a_small_size` instead.
-        let out = rendered(&app, 100, 40);
+        let out = rendered(&mut app, 100, 40);
         for field in ConfigField::ALL {
             assert!(
                 out.contains(field.label()),
@@ -742,8 +968,9 @@ mod tests {
         app.mode = Mode::TextInput {
             purpose: super::super::app::TextInputPurpose::AddLibraryPath,
             buffer: "hello-world".to_string(),
+            cursor: 11,
         };
-        assert!(rendered(&app, 80, 24).contains("hello-world"));
+        assert!(rendered(&mut app, 80, 24).contains("hello-world"));
     }
 
     #[test]
@@ -752,8 +979,9 @@ mod tests {
         app.mode = Mode::TextInput {
             purpose: super::super::app::TextInputPurpose::ProfileTitle("some-slug".to_string()),
             buffer: String::new(),
+            cursor: 0,
         };
-        let out = rendered(&app, 80, 24);
+        let out = rendered(&mut app, 80, 24);
         assert!(out.contains("real title"));
         assert!(out.contains("GAMEID"));
     }
@@ -778,7 +1006,7 @@ mod tests {
         app.tab = Tab::Library;
         app.profiles = vec![("game-1".to_string(), test_profile("Game#1"))];
         app.profile_editor = Some("game-1".to_string());
-        let out = rendered(&app, 100, 30);
+        let out = rendered(&mut app, 100, 30);
         assert!(out.contains("Game#1"));
         for field in ProfileField::ALL {
             assert!(
@@ -796,7 +1024,7 @@ mod tests {
             slug: "game-1".to_string(),
             name: "Game#1".to_string(),
         };
-        let out = rendered(&app, 80, 24);
+        let out = rendered(&mut app, 80, 24);
         assert!(out.contains("Game#1"));
     }
 
@@ -811,7 +1039,7 @@ mod tests {
             selected: 0,
             target: super::super::app::ProtonPickerTarget::Global,
         };
-        let out = rendered(&app, 80, 24);
+        let out = rendered(&mut app, 80, 24);
         assert!(out.contains("system"));
         assert!(out.contains("GE-Proton10-34"));
     }

@@ -250,6 +250,13 @@ pub enum Mode {
     TextInput {
         purpose: TextInputPurpose,
         buffer: String,
+        /// Char index (not byte offset — see `mod::handle_text_input`,
+        /// which always operates on `buffer.chars()`), so Left/Right can
+        /// move within the text instead of only ever appending at the end
+        /// — handy for fixing one segment of a path without retyping the
+        /// whole thing. Starts at `buffer.chars().count()` (the end) for a
+        /// prefilled field, matching how every text editor starts you off.
+        cursor: usize,
     },
     /// Picking a Proton build for `defaults.proton` (global or a profile
     /// override, per `target`).
@@ -301,6 +308,7 @@ pub enum ProtonPickerTarget {
     Profile(String),
 }
 
+#[derive(Debug)]
 pub enum TextInputPurpose {
     ConfigField(ConfigField),
     AddLibraryPath,
@@ -361,6 +369,17 @@ pub struct App {
     /// reset `mode`, never this field.
     pub profile_editor: Option<String>,
     pub profile_field_selected: usize,
+
+    /// When the current marquee target (whatever `ui::draw` last computed
+    /// a selection/mode signature for) started being displayed — reset by
+    /// `sync_marquee` whenever that signature changes, so scrolling always
+    /// restarts from the beginning after a 2-second pause. See
+    /// `marquee_tick`.
+    marquee_reset_at: std::time::Instant,
+    /// The signature `sync_marquee` last saw — compared against each
+    /// frame's freshly-computed one to detect "the user moved to something
+    /// else" (a different row selected, a different popup/field open).
+    marquee_last_signature: String,
 }
 
 impl App {
@@ -378,6 +397,8 @@ impl App {
             config_selected: 0,
             profile_editor: None,
             profile_field_selected: 0,
+            marquee_reset_at: std::time::Instant::now(),
+            marquee_last_signature: String::new(),
         };
         app.refresh_running();
         app.refresh_profiles();
@@ -464,6 +485,38 @@ impl App {
             .find(|(s, _)| s == slug)
             .map(|(_, p)| p)
     }
+
+    /// `0` for the first 2 seconds after the current marquee target was
+    /// last reset (`sync_marquee`) — so newly-selected text sits still
+    /// long enough to actually read before it starts moving — then
+    /// advances roughly once every 200ms. Driven entirely by the TUI's
+    /// existing idle redraw cadence (`tui::mod::event_loop` calls
+    /// `terminal.draw` every loop iteration, including the ~4/sec ticks
+    /// where `event::poll`'s 250ms timeout expires with no key pressed), so
+    /// animating a marquee needs no extra thread or timer of its own.
+    pub fn marquee_tick(&self) -> usize {
+        const DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+        let elapsed = self.marquee_reset_at.elapsed();
+        let Some(scrolling) = elapsed.checked_sub(DELAY) else {
+            return 0;
+        };
+        (scrolling.as_millis() / 200) as usize
+    }
+
+    /// Resets the marquee delay/position whenever `signature` — a cheap
+    /// identifier for "what's currently selected/open", computed fresh
+    /// every frame by `ui::draw` — differs from what it was last frame.
+    /// Called once per frame, before anything reads `marquee_tick`, so a
+    /// changed selection (a different row, a newly-opened popup, a
+    /// different field within one) always restarts at position 0 with a
+    /// fresh 2-second pause, instead of picking up mid-scroll from
+    /// whatever the *previous* selection's timer happened to be at.
+    pub fn sync_marquee(&mut self, signature: String) {
+        if self.marquee_last_signature != signature {
+            self.marquee_last_signature = signature;
+            self.marquee_reset_at = std::time::Instant::now();
+        }
+    }
 }
 
 /// Moves a list selection up (`delta < 0`) or down (`delta > 0`), clamped to
@@ -528,6 +581,45 @@ pub fn next_profile_auto_open(v: Option<bool>) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The 2s-delay-then-advances part of `marquee_tick` depends on real
+    // elapsed wall-clock time, so it isn't covered here (a test asserting
+    // that would either sleep 2+ real seconds or need an injectable clock,
+    // neither of which is worth it for this) — verified manually/via tmux
+    // instead (see project NOTES.md). What *is* covered: a fresh reset
+    // always starts at tick 0, and re-syncing with the *same* signature
+    // must not reset it (a real regression this could otherwise have —
+    // e.g. resetting on every redraw regardless of signature — since that
+    // would make the delay this exists for pointless).
+
+    #[test]
+    fn marquee_tick_is_zero_immediately_after_a_reset() {
+        let mut app = App::new(Config::default());
+        app.sync_marquee("first".to_string());
+        assert_eq!(app.marquee_tick(), 0);
+    }
+
+    #[test]
+    fn resyncing_with_the_same_signature_does_not_reset_the_timer() {
+        let mut app = App::new(Config::default());
+        app.sync_marquee("same".to_string());
+        let reset_at_first = app.marquee_reset_at;
+        app.sync_marquee("same".to_string());
+        assert_eq!(
+            app.marquee_reset_at, reset_at_first,
+            "same signature again shouldn't restart the delay"
+        );
+    }
+
+    #[test]
+    fn resyncing_with_a_different_signature_does_reset_the_timer() {
+        let mut app = App::new(Config::default());
+        app.sync_marquee("one".to_string());
+        let reset_at_first = app.marquee_reset_at;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.sync_marquee("two".to_string());
+        assert!(app.marquee_reset_at > reset_at_first);
+    }
 
     #[test]
     fn tab_cycling_wraps_both_ways() {

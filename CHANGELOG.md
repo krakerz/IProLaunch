@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-09-06
+
+### Changed
+- README now opens with the same ASCII-art wordmark as the TUI header,
+  instead of a plain `# IProLaunch` heading.
+
+## [1.9.0] — 2026-09-06
+
+### Added
+- TUI text inputs (config/profile-editor field edits, add-by-path, the
+  title prompt) now support Left/Right cursor movement, insert, and delete
+  at the cursor position — not just always-append-at-the-end — shown as a
+  reverse-video block cursor. Makes fixing one segment of a path (e.g. a
+  different parent folder) easy without retyping the whole thing.
+- `iprolaunch integrate` now also registers `.msi` installers as a default
+  handler, alongside the existing `.exe`/`.bat`/`.cmd` — `iprolaunch run`
+  already launched all of these correctly with no extra wrapping (`wine
+  <path>` dispatches to `cmd`/`msiexec` internally by extension); this
+  extends file-manager double-click association to match.
+
+### Changed
+- The marquee scroll added in 1.8.0 now waits 2 seconds before it starts
+  moving, and always resets to position 0 whenever the selected row or open
+  popup/field changes — previously it scrolled immediately and kept a
+  single shared position that could pick up mid-scroll after moving the
+  cursor to something new.
+
+### Fixed
+- `integrate install`'s backup now tops up any mimetype missing from an
+  already-existing backup (rather than skipping the capture entirely once
+  the file exists at all) — matters whenever the set of mimetypes IProLaunch
+  manages grows (as it just did, twice, in this release): without this, a
+  mimetype added after a system was already integrated would have nothing
+  recorded to restore on a later `uninstall`.
+
+## [1.8.0] — 2026-09-06
+
+### Added
+- TUI: a selected row or a popup title too long to fit a small terminal now
+  scrolls (marquee-style) instead of being silently clipped, so the full
+  text is still readable — the Config/Integrate/Library/profile-editor
+  lists' selected row, and every popup's title (edit prompts, the proton
+  picker, the env/winedlloverride entry editor). Animated by the TUI's
+  existing idle redraw (already ticks ~4/sec even with no key pressed), so
+  no extra timer/thread was needed.
+
 ## [1.7.0] — 2026-09-06
 
 ### Added

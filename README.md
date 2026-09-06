@@ -1,4 +1,10 @@
-# IProLaunch
+```
+    ________             __                           __
+   /  _/ __ \_________  / /   ____ ___  ______  _____/ /_
+   / // /_/ / ___/ __ \/ /   / __ `/ / / / __ \/ ___/ __ \
+ _/ // ____/ /  / /_/ / /___/ /_/ / /_/ / / / / /__/ / / /
+/___/_/   /_/   \____/_____/\__,_/\__,_/_/ /_/\___/_/ /_/
+```
 
 A small CLI/TUI launcher for running Windows apps and games through Proton on
 Linux, without going through Steam.
@@ -45,10 +51,12 @@ entry.
   entries one at a time — add, edit, delete — and a separate desktop
   integration table: status, binary location, setup, reapply, uninstall),
   and help — for everything above without needing to remember the CLI
-  subcommands.
+  subcommands. On a small terminal, a selected row or popup title too long
+  to fit scrolls (marquee-style) instead of getting clipped.
 - `iprolaunch integrate install` — registers IProLaunch as the default
-  handler for Windows `.exe` files, so double-clicking one in a file manager
-  (Dolphin, Nautilus, Thunar, ...) runs it through IProLaunch automatically.
+  handler for Windows `.exe`, `.bat`/`.cmd`, and `.msi` files, so double-clicking
+  one in a file manager (Dolphin, Nautilus, Thunar, ...) runs it through
+  IProLaunch automatically.
   `integrate uninstall` removes that registration and restores whatever was
   the default before `install` ran. Both are also available from the TUI's
   Config tab, below the rest of the config fields.
@@ -96,7 +104,7 @@ iprolaunch config init
 # Inspect the resolved config
 iprolaunch config show
 
-# Make double-clicking a .exe in your file manager launch it via IProLaunch
+# Make double-clicking a .exe/.bat/.cmd/.msi in your file manager launch it via IProLaunch
 iprolaunch integrate install
 iprolaunch integrate uninstall
 ```

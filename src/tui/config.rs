@@ -47,9 +47,11 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
         FieldKind::Number => {} // Left/Right, not Enter
         FieldKind::Text => {
             let buffer = current_text_value(app, field);
+            let cursor = buffer.chars().count();
             app.mode = Mode::TextInput {
                 purpose: TextInputPurpose::ConfigField(field),
                 buffer,
+                cursor,
             };
         }
         FieldKind::ProtonPicker => match proton::scan() {

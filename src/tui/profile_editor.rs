@@ -30,9 +30,11 @@ fn activate_selected(app: &mut App, slug: &str) {
     match field.kind() {
         FieldKind::Text => {
             let buffer = current_text_value(app, slug, field);
+            let cursor = buffer.chars().count();
             app.mode = Mode::TextInput {
                 purpose: TextInputPurpose::ProfileField(slug.to_string(), field),
                 buffer,
+                cursor,
             };
         }
         FieldKind::Cycle => cycle_field(app, slug, field),
@@ -239,12 +241,17 @@ mod tests {
         activate_selected(&mut app, "game-1");
 
         match &app.mode {
-            Mode::TextInput { purpose, buffer } => {
+            Mode::TextInput {
+                purpose,
+                buffer,
+                cursor,
+            } => {
                 assert!(matches!(
                     purpose,
                     TextInputPurpose::ProfileField(slug, ProfileField::Title) if slug == "game-1"
                 ));
                 assert_eq!(buffer, "Real Title");
+                assert_eq!(*cursor, buffer.chars().count(), "cursor starts at the end");
             }
             _ => panic!("expected TextInput"),
         }
