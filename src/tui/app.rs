@@ -37,7 +37,9 @@ impl Tab {
 }
 
 /// Which global config field a config-tab row edits. Order here is the
-/// order rows render in.
+/// order rows render in. Desktop integration is deliberately *not* one of
+/// these — it's a separate table (`IntegrateField`) rendered in its own
+/// block below this list, per the user's request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigField {
     Proton,
@@ -53,14 +55,10 @@ pub enum ConfigField {
     GamedbInterval,
     EnvTable,
     WineDllOverrideTable,
-    /// Not really a config *value* — a toggle action ("install"/"uninstall")
-    /// rendered in its own section below the rest of the config fields, per
-    /// the user's request. Deliberately last in `ALL` for that reason.
-    Integrate,
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 14] = [
+    pub const ALL: [ConfigField; 13] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
@@ -74,7 +72,6 @@ impl ConfigField {
         ConfigField::GamedbInterval,
         ConfigField::EnvTable,
         ConfigField::WineDllOverrideTable,
-        ConfigField::Integrate,
     ];
 
     pub fn label(self) -> &'static str {
@@ -92,15 +89,13 @@ impl ConfigField {
             ConfigField::GamedbInterval => "gamedb.update_interval_days",
             ConfigField::EnvTable => "env (global)",
             ConfigField::WineDllOverrideTable => "winedlloverride (global)",
-            ConfigField::Integrate => "desktop integration",
         }
     }
 
     /// How this field reacts to Enter: cycle/toggle in place, open a text
-    /// popup, open the proton build picker, open the multi-line map editor,
-    /// or (install/uninstall) run the integrate action directly. Per-profile
-    /// overrides for any of these still aren't editable from the TUI — see
-    /// Help tab.
+    /// popup, open the proton build picker, or open the multi-line map
+    /// editor. Per-profile overrides for any of these are edited from the
+    /// Library tab's profile editor instead — see Help tab.
     pub fn kind(self) -> FieldKind {
         match self {
             ConfigField::Proton => FieldKind::ProtonPicker,
@@ -114,7 +109,6 @@ impl ConfigField {
             | ConfigField::WindowsVersion
             | ConfigField::LogPath => FieldKind::Text,
             ConfigField::EnvTable | ConfigField::WineDllOverrideTable => FieldKind::MapEditor,
-            ConfigField::Integrate => FieldKind::IntegrationToggle,
         }
     }
 }
@@ -127,14 +121,65 @@ pub enum FieldKind {
     Text,
     ProtonPicker,
     MapEditor,
-    IntegrationToggle,
 }
 
-/// Which per-game override a Library "edit profile" row edits. Every one of
-/// these is an override — blank/`Enter` on the "inherit" choice clears it
-/// back to the global default rather than deleting the profile.
+/// Rows of the Config tab's separate "Desktop integration" table, rendered
+/// below the main `ConfigField` list but sharing one continuous selection
+/// index with it (`App::config_selected` — see `App::is_integrate_selected`)
+/// so Up/Down flows naturally from one into the other without a separate
+/// focus-switch key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrateField {
+    /// Info row: installed or not. Not editable — Enter is a no-op.
+    Status,
+    /// Info row: the full path of the binary the installed `.desktop` entry
+    /// points at (from the `.desktop` file itself, not this process's own
+    /// `current_exe()` — they can differ if the binary moved since
+    /// install). Not editable — Enter is a no-op.
+    BinaryPath,
+    Setup,
+    Reapply,
+    Uninstall,
+}
+
+impl IntegrateField {
+    pub const ALL: [IntegrateField; 5] = [
+        IntegrateField::Status,
+        IntegrateField::BinaryPath,
+        IntegrateField::Setup,
+        IntegrateField::Reapply,
+        IntegrateField::Uninstall,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            IntegrateField::Status => "status",
+            IntegrateField::BinaryPath => "binary location",
+            IntegrateField::Setup => "setup desktop integration",
+            IntegrateField::Reapply => "reapply (refresh binary location)",
+            IntegrateField::Uninstall => "uninstall desktop integration",
+        }
+    }
+}
+
+/// Which of the three desktop-integration actions a `IntegrateField::Setup`/
+/// `Reapply`/`Uninstall` row runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrateAction {
+    Setup,
+    Reapply,
+    Uninstall,
+}
+
+/// Which per-game override a Library "edit profile" row edits. Every field
+/// except `TargetPath` is an override — blank/`Enter` on the "inherit"
+/// choice clears it back to the global default rather than deleting the
+/// profile. `TargetPath` is the one mandatory field (a profile with no exe
+/// to launch is meaningless), so it's validated instead of "inherit"-able —
+/// see `profile_editor::apply_text_field`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileField {
+    TargetPath,
     Title,
     Args,
     Proton,
@@ -148,7 +193,8 @@ pub enum ProfileField {
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 10] = [
+    pub const ALL: [ProfileField; 11] = [
+        ProfileField::TargetPath,
         ProfileField::Title,
         ProfileField::Args,
         ProfileField::Proton,
@@ -163,6 +209,7 @@ impl ProfileField {
 
     pub fn label(self) -> &'static str {
         match self {
+            ProfileField::TargetPath => "target-path (exe location)",
             ProfileField::Title => "title (for GAMEID matching)",
             ProfileField::Args => "args (space-separated)",
             ProfileField::Proton => "defaults.proton override",
@@ -177,16 +224,17 @@ impl ProfileField {
     }
 
     /// Same shape as `ConfigField::kind`, except every non-table field here
-    /// is an `Option` in the underlying `Profile` — blank text / a dedicated
-    /// "inherit" choice means "no override", not "empty string"/"zero".
-    /// `LogKeep` is a `Text` field (not `Number`) specifically so blank can
-    /// mean "inherit" — a plain number field has no clean way to represent
-    /// that.
+    /// (other than `TargetPath`) is an `Option` in the underlying
+    /// `Profile` — blank text / a dedicated "inherit" choice means "no
+    /// override", not "empty string"/"zero". `LogKeep` is a `Text` field
+    /// (not `Number`) specifically so blank can mean "inherit" — a plain
+    /// number field has no clean way to represent that.
     pub fn kind(self) -> FieldKind {
         match self {
             ProfileField::Proton => FieldKind::ProtonPicker,
             ProfileField::LogRecord | ProfileField::LogAutoOpen => FieldKind::Cycle,
-            ProfileField::Title
+            ProfileField::TargetPath
+            | ProfileField::Title
             | ProfileField::Args
             | ProfileField::PrefixPath
             | ProfileField::WindowsVersion

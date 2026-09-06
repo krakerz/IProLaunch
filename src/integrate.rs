@@ -54,6 +54,30 @@ pub fn is_installed() -> bool {
     desktop_file_path().map(|p| p.exists()).unwrap_or(false)
 }
 
+/// The binary path the installed `.desktop` entry's `Exec=` line actually
+/// points at — read from that file, not this process's own
+/// `current_exe()`, since they can differ if the registered binary was
+/// moved (or a different `iprolaunch` build is running now) since
+/// `install` last wrote it. `None` if not installed or the file's somehow
+/// unparsable.
+pub fn registered_binary_path() -> Option<String> {
+    let path = desktop_file_path().ok()?;
+    let content = fs::read_to_string(path).ok()?;
+    parse_exec_path(&content)
+}
+
+/// Pure text parse of a `.desktop` file's `Exec="<path>" run %f` line, kept
+/// separate from the real read (`registered_binary_path`) so the parsing
+/// itself — the part actually worth getting right — is unit-testable
+/// without needing a real installed `.desktop` file.
+fn parse_exec_path(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let rest = line.strip_prefix("Exec=\"")?;
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    })
+}
+
 /// Registers `iprolaunch` as the default handler for Windows `.exe` files:
 /// writes a `.desktop` file pointing at this exact binary, then uses
 /// `xdg-mime default` (part of `xdg-utils`, standard on any desktop Linux —
@@ -379,5 +403,19 @@ mod tests {
     fn read_backup_is_empty_when_file_is_missing() {
         let entries = read_backup(Path::new("/nonexistent/integrate-backup.json"));
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_exec_path_extracts_the_quoted_binary_path() {
+        let content = desktop_file_contents(Path::new("/opt/iprolaunch/iprolaunch"));
+        assert_eq!(
+            parse_exec_path(&content),
+            Some("/opt/iprolaunch/iprolaunch".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_exec_path_is_none_without_an_exec_line() {
+        assert_eq!(parse_exec_path("[Desktop Entry]\nType=Application\n"), None);
     }
 }

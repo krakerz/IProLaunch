@@ -5,8 +5,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
 
 use super::app::{
-    App, ConfigField, MapEntryStep, MapField, Mode, ProfileField, ProtonPickerTarget, Tab,
-    TextInputPurpose,
+    App, ConfigField, IntegrateField, MapEntryStep, MapField, Mode, ProfileField,
+    ProtonPickerTarget, Tab, TextInputPurpose,
 };
 
 /// figlet, font "slant". Kept as literal art rather than generated at
@@ -131,12 +131,26 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
+    // 2 (border) + 2 ("> "/blank highlight_symbol column, reserved on every
+    // row whether or not it's selected) — the space actually available for
+    // list-item text inside the block.
+    let inner_width = area.width.saturating_sub(4) as usize;
+
     let items: Vec<ListItem> = app
         .profiles
         .iter()
         .map(|(slug, p)| {
             let last = p.last_launched.as_deref().unwrap_or("never");
-            ListItem::new(format!("{}  [{slug}]  last launched: {last}", p.name))
+            let left = format!(
+                "{}  [{slug}]  [{}]",
+                p.name,
+                shortened_parent_hint(&p.target_path)
+            );
+            let right = format!("last launched: {last}");
+            let pad = inner_width
+                .saturating_sub(left.chars().count() + right.chars().count())
+                .max(1);
+            ListItem::new(format!("{left}{:pad$}{right}", ""))
         })
         .collect();
     let list = List::new(items)
@@ -148,6 +162,28 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(app.library_selected));
+}
+
+/// The exe's last 2 parent directory names, backslash-joined and prefixed
+/// with `..\` — enough context to tell apart two profiles that happen to
+/// share an exe filename (e.g. `a\game.exe` vs `b\game.exe`) without having
+/// to open the profile editor, deliberately truncated rather than showing
+/// the full path (which would usually be too long for one list row). Only
+/// real directory names count — a bare `/` (or a Windows drive prefix) at
+/// the root isn't a meaningful "parent dir" the way `Downloads`/`Programs`
+/// are, so it's filtered out rather than showing up as a literal `/`.
+fn shortened_parent_hint(target_path: &str) -> String {
+    let components: Vec<&str> = std::path::Path::new(target_path)
+        .parent()
+        .into_iter()
+        .flat_map(|p| p.components())
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+    let tail: Vec<&str> = components.iter().rev().take(2).rev().copied().collect();
+    format!("..\\{}", tail.join("\\"))
 }
 
 fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
@@ -164,6 +200,7 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
         .iter()
         .map(|field| {
             let value = match field {
+                ProfileField::TargetPath => profile.target_path.clone(),
                 ProfileField::Title => profile
                     .title
                     .clone()
@@ -237,6 +274,19 @@ y = confirm, any other key = cancel"
 }
 
 fn draw_config(frame: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(IntegrateField::ALL.len() as u16 + 2), // +2 for the block's own borders
+        ])
+        .split(area);
+
+    draw_config_fields(frame, chunks[0], app);
+    draw_integrate_table(frame, chunks[1], app);
+}
+
+fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
     let d = &app.cfg.defaults;
     let l = &app.cfg.logging;
     let g = &app.cfg.gamedb;
@@ -258,20 +308,71 @@ fn draw_config(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::GamedbInterval => g.update_interval_days.to_string(),
                 ConfigField::EnvTable => entry_count(&app.cfg.env),
                 ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
-                ConfigField::Integrate => integration_status_text(),
             };
             ListItem::new(format!("{:<28} {}", field.label(), value))
         })
         .collect();
     let list = List::new(items)
         .block(
-            Block::default().borders(Borders::ALL).title(
-                "Config (Enter = edit/cycle, Left/Right = adjust number) — see bottom for desktop integration",
-            ),
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Config (Enter = edit/cycle, Left/Right = adjust number)"),
         )
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
-    frame.render_stateful_widget(list, area, &mut list_state(app.config_selected));
+    frame.render_stateful_widget(
+        list,
+        area,
+        &mut config_row_state(app, 0, ConfigField::ALL.len()),
+    );
+}
+
+fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = IntegrateField::ALL
+        .iter()
+        .map(|field| {
+            let value = match field {
+                IntegrateField::Status => integration_status_text(),
+                IntegrateField::BinaryPath => crate::integrate::registered_binary_path()
+                    .unwrap_or_else(|| "(not installed)".to_string()),
+                IntegrateField::Setup => {
+                    "Enter = register iprolaunch as the default .exe handler".to_string()
+                }
+                IntegrateField::Reapply => {
+                    "Enter = re-point the registration at this binary's current path".to_string()
+                }
+                IntegrateField::Uninstall => {
+                    "Enter = remove the registration and restore the prior default".to_string()
+                }
+            };
+            ListItem::new(format!("{:<34} {}", field.label(), value))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Desktop integration"),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(
+        list,
+        area,
+        &mut config_row_state(app, ConfigField::ALL.len(), IntegrateField::ALL.len()),
+    );
+}
+
+/// `app.config_selected` spans both of the Config tab's tables as one
+/// continuous index — this picks out which (if either) row within a table
+/// starting at `offset` (with `len` rows) is currently selected, so only
+/// one of the two tables ever shows a highlighted row at a time.
+fn config_row_state(app: &App, offset: usize, len: usize) -> ratatui::widgets::ListState {
+    let mut state = ratatui::widgets::ListState::default();
+    if app.config_selected >= offset && app.config_selected < offset + len {
+        state.select(Some(app.config_selected - offset));
+    }
+    state
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
@@ -301,6 +402,8 @@ Profile editor (Library, after 'e'):
   Esc                      back to the Library list
   A blank text field / the picker's \"inherit\" choice clears that override
   back to the global default. Changes save to that profile.toml immediately.
+  target-path is the exception: it's mandatory, checked against the real
+  filesystem on save, and rejected (left unchanged) if the exe isn't there.
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or
@@ -308,7 +411,17 @@ Config:
                            opens the entry list for env/winedlloverride
   Left/Right               adjust a number field
   Esc                      cancel a text edit without saving
+  Up/Down flow from the field list straight into the separate
+  \"Desktop integration\" table below it — one shared cursor, two blocks.
   Changes save to config.toml immediately.
+
+Desktop integration (Config tab, bottom table):
+  status / binary location  info only, not editable
+  setup                      register iprolaunch as the default .exe handler
+  reapply                    re-point the registration at this binary's
+                             current path, without touching the saved
+                             backup of what the default was before setup
+  uninstall                  remove the registration and restore that backup
 
 env / winedlloverride entry list (global or per-profile):
   a                        add an entry (prompts for name, then value)
@@ -346,6 +459,9 @@ fn draw_text_input_popup(frame: &mut Frame, purpose: &TextInputPurpose, buffer: 
         TextInputPurpose::ProfileTitle(_) => {
             "Game's real title, for GAMEID matching (Enter = save, blank = skip, Esc = skip)"
                 .to_string()
+        }
+        TextInputPurpose::ProfileField(_, ProfileField::TargetPath) => {
+            "Edit target-path (Enter = save, checked against disk — Esc = cancel)".to_string()
         }
         TextInputPurpose::ProfileField(_, field) => {
             format!(
@@ -405,9 +521,9 @@ fn entry_count(map: &std::collections::BTreeMap<String, String>) -> String {
 
 fn integration_status_text() -> String {
     if crate::integrate::is_installed() {
-        "installed — Enter to remove as default handler for .exe files".to_string()
+        "installed".to_string()
     } else {
-        "not installed — Enter to set as default handler for .exe files".to_string()
+        "not installed".to_string()
     }
 }
 
@@ -573,14 +689,48 @@ mod tests {
     }
 
     #[test]
+    fn library_row_shows_the_shortened_parent_hint_and_right_aligns_last_launched() {
+        let mut app = test_app();
+        app.tab = Tab::Library;
+        let mut profile = test_profile("ktsysview#1");
+        profile.target_path = "/media/media/Downloads/Programs/KTSYSVIEW.exe".to_string();
+        app.profiles = vec![("ktsysview".to_string(), profile)];
+        let out = rendered(&app, 100, 24);
+        assert!(out.contains("[..\\Downloads\\Programs]"));
+        // Right-aligned: "last launched:" should land near the row's right
+        // edge, not immediately after the rest of the row's content.
+        let idx = out
+            .find("last launched:")
+            .expect("last launched should render");
+        let row_start = out[..idx].rfind("ktsysview#1").unwrap();
+        assert!(
+            idx - row_start > 60,
+            "expected last launched to be pushed toward the right edge, gap was {}",
+            idx - row_start
+        );
+    }
+
+    #[test]
     fn config_tab_lists_every_field_label() {
         let mut app = test_app();
         app.tab = Tab::Config;
-        let out = rendered(&app, 100, 30);
+        // Tall enough for both the main field list and the separate
+        // "Desktop integration" table below it (see `draw_config`) — a
+        // shorter terminal will legitimately clip content, same as any
+        // other list-heavy screen; that's covered by
+        // `every_tab_renders_without_panicking_at_a_small_size` instead.
+        let out = rendered(&app, 100, 40);
         for field in ConfigField::ALL {
             assert!(
                 out.contains(field.label()),
                 "missing label: {}",
+                field.label()
+            );
+        }
+        for field in IntegrateField::ALL {
+            assert!(
+                out.contains(field.label()),
+                "missing integrate label: {}",
                 field.label()
             );
         }

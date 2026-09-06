@@ -66,7 +66,7 @@ fn activate_selected(app: &mut App, slug: &str) {
             };
         }
         // No profile field uses these kinds.
-        FieldKind::Toggle | FieldKind::Number | FieldKind::IntegrationToggle => {}
+        FieldKind::Toggle | FieldKind::Number => {}
     }
 }
 
@@ -90,6 +90,7 @@ fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
         return String::new();
     };
     match field {
+        ProfileField::TargetPath => profile.target_path.clone(),
         ProfileField::Title => profile.title.clone().unwrap_or_default(),
         ProfileField::Args => profile.args.join(" "),
         ProfileField::PrefixPath => profile.defaults.prefix_path.clone().unwrap_or_default(),
@@ -108,7 +109,10 @@ fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
 /// opened for, then saves. Unlike `TextInputPurpose::ProfileTitle` (the
 /// add-by-path follow-up prompt), a blank buffer here means "clear the
 /// override back to inherit", not "skip" — consistent with every other
-/// override field in this editor.
+/// override field in this editor. `TargetPath` is the exception: it's
+/// mandatory (never "inherit"-able) and gets checked against the real
+/// filesystem before being accepted, so a typo or a moved/deleted exe can't
+/// silently leave the profile pointing at nothing.
 pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: String) {
     let trimmed = value.trim().to_string();
 
@@ -118,12 +122,25 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         ));
         return;
     }
+    if field == ProfileField::TargetPath {
+        if trimmed.is_empty() {
+            app.status = Some("target-path can't be blank — left unchanged.".to_string());
+            return;
+        }
+        if !std::path::Path::new(&trimmed).is_file() {
+            app.status = Some(format!(
+                "\"{trimmed}\" doesn't exist — target-path left unchanged."
+            ));
+            return;
+        }
+    }
 
     let Some(profile) = app.profile_mut(slug) else {
         app.status = Some(format!("couldn't find profile \"{slug}\""));
         return;
     };
     match field {
+        ProfileField::TargetPath => profile.target_path = trimmed.clone(),
         ProfileField::Title => profile.title = (!trimmed.is_empty()).then(|| trimmed.clone()),
         ProfileField::Args => {
             profile.args = trimmed.split_whitespace().map(str::to_string).collect();

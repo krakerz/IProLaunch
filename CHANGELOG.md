@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-09-06
+
+### Added
+- Proton scan (`proton list` and the TUI's proton picker alike) now checks
+  every place this machine might have a Proton build, not just the native
+  `~/.local/share/Steam/compatibilitytools.d`: the `~/.steam/steam`/
+  `~/.steam/root` symlinks some distros set up (deduped), Flatpak Steam's
+  data dir, official Steam-installed Proton under `steamapps/common`
+  (recognized by its `proton` script — an incomplete/pending download is
+  correctly skipped), and the system-wide
+  `/usr/share/steam/compatibilitytools.d` some distro packages install a
+  default build into.
+- TUI profile editor: `target-path` (the exe location) is now an editable
+  field — checked against the real filesystem before being accepted, so a
+  typo or a moved/deleted exe can't silently leave a profile pointing at
+  nothing.
+- TUI Library list now shows each game's last 2 parent directory names
+  (e.g. `[..\Downloads\Programs]`) so two profiles that happen to share an
+  exe filename are easy to tell apart at a glance, and "last launched" is
+  right-aligned to the row's edge instead of immediately following the rest
+  of the row.
+- Config tab: desktop integration is now its own separate table below the
+  main field list (sharing one continuous selection cursor with it), with
+  five rows instead of one toggle: status, binary location (the actual
+  registered path, read from the `.desktop` file itself — not just this
+  process's own binary path, so it's accurate even if the registered
+  binary was moved since), setup, reapply (re-points the registration at
+  the current binary's path without touching the saved backup of the prior
+  default), and uninstall.
+
+### Changed
+- `Profile.last_launched`'s date now reads `DD-Mon-YYYY` (e.g. `06-Sep-2026`)
+  instead of `DD-MM-YYYY` — the time part is unchanged (`HH:MM:SS`).
+
 ## [1.6.0] — 2026-09-06
 
 ### Added

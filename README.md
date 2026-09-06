@@ -26,7 +26,9 @@ entry.
 - Per-launch logging with configurable retention, and an option to keep only
   the logs from failed runs.
 - `proton list` / `config init` to detect installed Proton builds and pick a
-  default interactively.
+  default interactively — checks every common install location (native and
+  Flatpak Steam, official Steam-installed builds, and distro-packaged
+  system-wide builds), not just `compatibilitytools.d`.
 - Automatic GAMEID matching against the community
   [umu-database](https://umu.openwinecomponents.org), refreshed periodically
   in the background — so protonfixes has a real shot at finding a fix instead
@@ -35,13 +37,15 @@ entry.
   reliably stop the whole sandboxed game tree, not just `iprolaunch` itself.
 - A full TUI (run `iprolaunch` with no arguments) — running-games/quick-kill,
   a game library (launch, add by path with a follow-up title prompt,
-  refresh, and a per-game profile editor — title/args/proton/prefix_path/
-  windows-version/logging/env/winedlloverride overrides, each independently
-  settable back to "inherit the global default" — plus delete, with a
-  confirmation first), a live config editor (including managing global
-  `env`/`winedlloverride` entries one at a time — add, edit, delete — and a
-  desktop-integration toggle), and help — for everything above without
-  needing to remember the CLI subcommands.
+  refresh, and a per-game profile editor — target-path (validated against
+  the real filesystem on save)/title/args/proton/prefix_path/windows-version/
+  logging/env/winedlloverride overrides, each independently settable back to
+  "inherit the global default" — plus delete, with a confirmation first), a
+  live config editor (including managing global `env`/`winedlloverride`
+  entries one at a time — add, edit, delete — and a separate desktop
+  integration table: status, binary location, setup, reapply, uninstall),
+  and help — for everything above without needing to remember the CLI
+  subcommands.
 - `iprolaunch integrate install` — registers IProLaunch as the default
   handler for Windows `.exe` files, so double-clicking one in a file manager
   (Dolphin, Nautilus, Thunar, ...) runs it through IProLaunch automatically.
