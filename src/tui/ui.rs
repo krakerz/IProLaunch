@@ -4,7 +4,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
 
-use super::app::{App, ConfigField, MapEntryStep, MapField, Mode, Tab};
+use super::app::{
+    App, ConfigField, MapEntryStep, MapField, Mode, ProfileField, ProtonPickerTarget, Tab,
+    TextInputPurpose,
+};
 
 /// figlet, font "slant". Kept as literal art rather than generated at
 /// runtime — it's decoration, not something that needs to adapt to the
@@ -34,7 +37,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     match app.tab {
         Tab::Running => draw_running(frame, chunks[2], app),
-        Tab::Library => draw_library(frame, chunks[2], app),
+        Tab::Library => match &app.profile_editor {
+            Some(slug) => draw_profile_editor(frame, chunks[2], app, slug),
+            None => draw_library(frame, chunks[2], app),
+        },
         Tab::Config => draw_config(frame, chunks[2], app),
         Tab::Help => draw_help(frame, chunks[2]),
     }
@@ -42,18 +48,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_status_bar(frame, chunks[3], app);
 
     match &app.mode {
-        Mode::TextInput { buffer, .. } => draw_text_input_popup(frame, buffer),
-        Mode::ProtonPicker { builds, selected } => {
-            draw_proton_picker_popup(frame, builds, *selected)
-        }
-        Mode::MapEditor { field, selected } => draw_map_editor_popup(frame, app, *field, *selected),
+        Mode::TextInput { purpose, buffer } => draw_text_input_popup(frame, purpose, buffer),
+        Mode::ProtonPicker {
+            builds,
+            selected,
+            target,
+        } => draw_proton_picker_popup(frame, builds, *selected, target),
+        Mode::MapEditor { field, selected } => draw_map_editor_popup(frame, app, field, *selected),
         Mode::MapEntryInput {
             field,
             step,
             key,
             value,
             ..
-        } => draw_map_entry_input_popup(frame, *field, *step, key, value),
+        } => draw_map_entry_input_popup(frame, field, *step, key, value),
+        Mode::ConfirmDeleteProfile { name, .. } => draw_confirm_delete_popup(frame, name),
         Mode::Normal => {}
     }
 }
@@ -127,18 +136,104 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|(slug, p)| {
             let last = p.last_launched.as_deref().unwrap_or("never");
-            ListItem::new(format!("{}  [{slug}]  last: {last}", p.name))
+            ListItem::new(format!("{}  [{slug}]  last launched: {last}", p.name))
         })
         .collect();
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Library (Enter = launch, a = add)"),
+                .title("Library (Enter = launch, a = add, r = refresh, e = edit, d = delete)"),
         )
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(app.library_selected));
+}
+
+fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
+    let Some(profile) = app.profile(slug) else {
+        frame.render_widget(
+            Paragraph::new(format!("Profile \"{slug}\" is gone (Esc to go back)."))
+                .block(Block::default().borders(Borders::ALL)),
+            area,
+        );
+        return;
+    };
+
+    let items: Vec<ListItem> = ProfileField::ALL
+        .iter()
+        .map(|field| {
+            let value = match field {
+                ProfileField::Title => profile
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "(inherit: exe filename)".to_string()),
+                ProfileField::Args => {
+                    if profile.args.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        profile.args.join(" ")
+                    }
+                }
+                ProfileField::Proton => profile
+                    .defaults
+                    .proton
+                    .clone()
+                    .unwrap_or_else(|| "(inherit)".to_string()),
+                ProfileField::PrefixPath => profile
+                    .defaults
+                    .prefix_path
+                    .clone()
+                    .unwrap_or_else(|| "(inherit)".to_string()),
+                ProfileField::WindowsVersion => profile
+                    .defaults
+                    .windows_version
+                    .clone()
+                    .unwrap_or_else(|| "(inherit)".to_string()),
+                ProfileField::LogKeep => profile
+                    .logging
+                    .keep
+                    .map_or_else(|| "(inherit)".to_string(), |k| k.to_string()),
+                ProfileField::LogRecord => profile
+                    .logging
+                    .record
+                    .map_or_else(|| "(inherit)".to_string(), |r| format!("{r:?}")),
+                ProfileField::LogAutoOpen => profile
+                    .logging
+                    .auto_open
+                    .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
+                ProfileField::EnvTable => entry_count(&profile.env),
+                ProfileField::WineDllOverrideTable => entry_count(&profile.winedlloverride),
+            };
+            ListItem::new(format!("{:<34} {}", field.label(), value))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            "Editing {} [{slug}] (Enter = edit, blank = inherit, Esc = back to Library)",
+            profile.name
+        )))
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, area, &mut list_state(app.profile_field_selected));
+}
+
+fn draw_confirm_delete_popup(frame: &mut Frame, name: &str) {
+    let area = centered_rect(60, 20, frame.area());
+    frame.render_widget(Clear, area);
+    let text = format!(
+        "Delete \"{name}\"?\n\
+Removes its profile.toml (settings/history) — not the exe itself.\n\n\
+y = confirm, any other key = cancel"
+    );
+    frame.render_widget(
+        Paragraph::new(text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Confirm delete"),
+        ),
+        area,
+    );
 }
 
 fn draw_config(frame: &mut Frame, area: Rect, app: &App) {
@@ -163,15 +258,16 @@ fn draw_config(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::GamedbInterval => g.update_interval_days.to_string(),
                 ConfigField::EnvTable => entry_count(&app.cfg.env),
                 ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
+                ConfigField::Integrate => integration_status_text(),
             };
             ListItem::new(format!("{:<28} {}", field.label(), value))
         })
         .collect();
     let list = List::new(items)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Config (Enter = edit/cycle, Left/Right = adjust number)"),
+            Block::default().borders(Borders::ALL).title(
+                "Config (Enter = edit/cycle, Left/Right = adjust number) — see bottom for desktop integration",
+            ),
         )
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
@@ -193,7 +289,18 @@ Running:
 Library:
   Enter                    launch the selected game
   a                        add a game by typing its exe path
+  r                        refresh the list from disk
+  e                        edit the selected game's profile overrides
+  d                        delete the selected game's profile (confirms first)
   Esc                      cancel while typing a path
+
+Profile editor (Library, after 'e'):
+  Enter                    edit (text fields), cycle (record/auto_open),
+                           opens a picker for the proton override, or opens
+                           the entry list for env/winedlloverride
+  Esc                      back to the Library list
+  A blank text field / the picker's \"inherit\" choice clears that override
+  back to the global default. Changes save to that profile.toml immediately.
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or
@@ -203,16 +310,11 @@ Config:
   Esc                      cancel a text edit without saving
   Changes save to config.toml immediately.
 
-env / winedlloverride entry list:
+env / winedlloverride entry list (global or per-profile):
   a                        add an entry (prompts for name, then value)
   e                        edit the selected entry
   d                        delete the selected entry
-  Esc                      back to the Config tab
-
-Not editable here — edit profile.toml by hand instead:
-  - a profile's env/winedlloverride overrides, or its windows-version/prefix_path override
-  - a profile's `title` (used to match the umu-database for a GAMEID)
-  - a profile's `args` (extra launch args always passed to that exe, e.g. `--dx11`)
+  Esc                      back to whichever screen opened it
 
 Config file: ~/.config/iprolaunch/config.toml
 Profiles:    ~/.config/iprolaunch/profiles/<slug>/profile.toml
@@ -231,12 +333,28 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(text)), area);
 }
 
-fn draw_text_input_popup(frame: &mut Frame, buffer: &str) {
+fn draw_text_input_popup(frame: &mut Frame, purpose: &TextInputPurpose, buffer: &str) {
     let area = centered_rect(60, 20, frame.area());
     frame.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Edit (Enter = save, Esc = cancel)");
+    let title = match purpose {
+        TextInputPurpose::ConfigField(field) => {
+            format!("Edit {} (Enter = save, Esc = cancel)", field.label())
+        }
+        TextInputPurpose::AddLibraryPath => {
+            "Path to .exe (Enter = add & launch, Esc = cancel)".to_string()
+        }
+        TextInputPurpose::ProfileTitle(_) => {
+            "Game's real title, for GAMEID matching (Enter = save, blank = skip, Esc = skip)"
+                .to_string()
+        }
+        TextInputPurpose::ProfileField(_, field) => {
+            format!(
+                "Edit {} (Enter = save, blank = inherit, Esc = cancel)",
+                field.label()
+            )
+        }
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(Paragraph::new(format!("{buffer}_")).block(block), area);
 }
 
@@ -244,24 +362,34 @@ fn draw_proton_picker_popup(
     frame: &mut Frame,
     builds: &[crate::proton::ProtonBuild],
     selected: usize,
+    target: &ProtonPickerTarget,
 ) {
     let area = centered_rect(60, 60, frame.area());
     frame.render_widget(Clear, area);
 
-    let mut items = vec![ListItem::new(
-        "system  (let umu-run auto-manage UMU-Proton)",
-    )];
+    let mut items = Vec::new();
+    let title = match target {
+        ProtonPickerTarget::Global => {
+            items.push(ListItem::new(
+                "system  (let umu-run auto-manage UMU-Proton)",
+            ));
+            "Pick a Proton build (Enter, Esc = cancel)".to_string()
+        }
+        ProtonPickerTarget::Profile(slug) => {
+            items.push(ListItem::new("(inherit — use the global default)"));
+            items.push(ListItem::new(
+                "system  (let umu-run auto-manage UMU-Proton)",
+            ));
+            format!("Pick a Proton override for {slug} (Enter, Esc = cancel)")
+        }
+    };
     items.extend(
         builds
             .iter()
             .map(|b| ListItem::new(format!("{}  [{}]", b.display_name, b.id))),
     );
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Pick a Proton build (Enter, Esc = cancel)"),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(selected));
@@ -275,7 +403,15 @@ fn entry_count(map: &std::collections::BTreeMap<String, String>) -> String {
     }
 }
 
-fn draw_map_editor_popup(frame: &mut Frame, app: &App, field: MapField, selected: usize) {
+fn integration_status_text() -> String {
+    if crate::integrate::is_installed() {
+        "installed — Enter to remove as default handler for .exe files".to_string()
+    } else {
+        "not installed — Enter to set as default handler for .exe files".to_string()
+    }
+}
+
+fn draw_map_editor_popup(frame: &mut Frame, app: &App, field: &MapField, selected: usize) {
     let area = centered_rect(70, 60, frame.area());
     frame.render_widget(Clear, area);
 
@@ -300,7 +436,7 @@ fn draw_map_editor_popup(frame: &mut Frame, app: &App, field: MapField, selected
 
 fn draw_map_entry_input_popup(
     frame: &mut Frame,
-    field: MapField,
+    field: &MapField,
     step: MapEntryStep,
     key: &str,
     value: &str,
@@ -461,6 +597,60 @@ mod tests {
     }
 
     #[test]
+    fn profile_title_popup_explains_what_its_for_not_just_generic_edit() {
+        let mut app = test_app();
+        app.mode = Mode::TextInput {
+            purpose: super::super::app::TextInputPurpose::ProfileTitle("some-slug".to_string()),
+            buffer: String::new(),
+        };
+        let out = rendered(&app, 80, 24);
+        assert!(out.contains("real title"));
+        assert!(out.contains("GAMEID"));
+    }
+
+    fn test_profile(name: &str) -> crate::config::Profile {
+        crate::config::Profile {
+            name: name.to_string(),
+            target_path: "/tmp/game.exe".to_string(),
+            title: None,
+            last_launched: None,
+            args: Vec::new(),
+            defaults: Default::default(),
+            logging: Default::default(),
+            env: Default::default(),
+            winedlloverride: Default::default(),
+        }
+    }
+
+    #[test]
+    fn profile_editor_lists_every_field_label() {
+        let mut app = test_app();
+        app.tab = Tab::Library;
+        app.profiles = vec![("game-1".to_string(), test_profile("Game#1"))];
+        app.profile_editor = Some("game-1".to_string());
+        let out = rendered(&app, 100, 30);
+        assert!(out.contains("Game#1"));
+        for field in ProfileField::ALL {
+            assert!(
+                out.contains(field.label()),
+                "missing label: {}",
+                field.label()
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_delete_popup_names_the_profile() {
+        let mut app = test_app();
+        app.mode = Mode::ConfirmDeleteProfile {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+        };
+        let out = rendered(&app, 80, 24);
+        assert!(out.contains("Game#1"));
+    }
+
+    #[test]
     fn proton_picker_popup_lists_system_and_every_build() {
         let mut app = test_app();
         app.mode = Mode::ProtonPicker {
@@ -469,6 +659,7 @@ mod tests {
                 display_name: "GE-Proton10-34".to_string(),
             }],
             selected: 0,
+            target: super::super::app::ProtonPickerTarget::Global,
         };
         let out = rendered(&app, 80, 24);
         assert!(out.contains("system"));

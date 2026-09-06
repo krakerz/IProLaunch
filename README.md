@@ -34,10 +34,20 @@ entry.
 - `Ctrl+C` during a launch, and `running list` / `running kill`, both
   reliably stop the whole sandboxed game tree, not just `iprolaunch` itself.
 - A full TUI (run `iprolaunch` with no arguments) — running-games/quick-kill,
-  game library (launch or add by path), a live config editor (including
-  managing global `env`/`winedlloverride` entries one at a time — add, edit,
-  delete), and help — for everything above without needing to remember the
-  CLI subcommands.
+  a game library (launch, add by path with a follow-up title prompt,
+  refresh, and a per-game profile editor — title/args/proton/prefix_path/
+  windows-version/logging/env/winedlloverride overrides, each independently
+  settable back to "inherit the global default" — plus delete, with a
+  confirmation first), a live config editor (including managing global
+  `env`/`winedlloverride` entries one at a time — add, edit, delete — and a
+  desktop-integration toggle), and help — for everything above without
+  needing to remember the CLI subcommands.
+- `iprolaunch integrate install` — registers IProLaunch as the default
+  handler for Windows `.exe` files, so double-clicking one in a file manager
+  (Dolphin, Nautilus, Thunar, ...) runs it through IProLaunch automatically.
+  `integrate uninstall` removes that registration and restores whatever was
+  the default before `install` ran. Both are also available from the TUI's
+  Config tab, below the rest of the config fields.
 
 ## Installation
 
@@ -81,22 +91,26 @@ iprolaunch config init
 
 # Inspect the resolved config
 iprolaunch config show
+
+# Make double-clicking a .exe in your file manager launch it via IProLaunch
+iprolaunch integrate install
+iprolaunch integrate uninstall
 ```
 
 Global config lives at `~/.config/iprolaunch/config.toml` (created with
 defaults on first run — see `config/config.example.toml` for the shipped
 defaults). Per-game overrides live at
 `~/.config/iprolaunch/profiles/<slug>/profile.toml`, created automatically
-the first time you run that exe; edit it by hand to override proton
-version, prefix path, Windows version (per-exe prefix mode only), logging,
-environment variables, DLL overrides (`[winedlloverride]`, e.g.
-`winhttp = "n,b"` — joined into a single `WINEDLLOVERRIDES` at launch), or
-extra launch args (`args = ["--dx11"]`, always forwarded to that exe, in
-addition to anything passed on the command line) for that one game — or set
-`title` to the game's real name (e.g. `"Grand Theft Auto V"`) so it can be
-matched against the umu-database for a GAMEID, which is what lets
-`umu-run`'s automatic protonfixes actually find a fix instead of a generic
-default.
+the first time you run that exe — edit it via the TUI's Library tab (`e` on
+a game) or by hand: override proton version, prefix path, Windows version
+(per-exe prefix mode only), logging, environment variables, DLL overrides
+(`[winedlloverride]`, e.g. `winhttp = "n,b"` — joined into a single
+`WINEDLLOVERRIDES` at launch), or extra launch args (`args = ["--dx11"]`,
+always forwarded to that exe, in addition to anything passed on the command
+line) for that one game — or set `title` to the game's real name (e.g.
+`"Grand Theft Auto V"`) so it can be matched against the umu-database for a
+GAMEID, which is what lets `umu-run`'s automatic protonfixes actually find a
+fix instead of a generic default.
 
 ## FAQ
 
@@ -112,6 +126,15 @@ point of the quick-launch form. Point the shortcut at
 `update_interval_days`) and, separately, whatever `umu-run` itself needs to
 download a Proton build. Neither blocks a launch if the network's
 unavailable — the launch just proceeds without a GAMEID match.
+
+**After `integrate uninstall`, `.exe` files open with something else again —
+is that a bug?** No — that's by design. `install` backs up whichever app was
+the default before it ran (per mimetype), and `uninstall` restores that
+backup, then deletes it — so if you `install` again later, it captures
+whatever's current at that point, not the stale pre-IProLaunch state. If
+nothing was set before `install`, `uninstall` leaves it unset too, and your
+file manager will prompt you to pick an app, same as if nothing had ever
+been set.
 
 ---
 

@@ -1,9 +1,13 @@
 use crossterm::event::KeyCode;
 
-use super::app::{self, App, ConfigField, FieldKind, MapField, Mode, TextInputPurpose};
+use super::app::{
+    self, App, ConfigField, FieldKind, MapField, Mode, ProtonPickerTarget, TextInputPurpose,
+};
+use super::profile_editor;
+use super::{Term, resume, suspend};
 use crate::proton;
 
-pub fn on_key(app: &mut App, code: KeyCode) {
+pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     match code {
         KeyCode::Up => {
             app.config_selected =
@@ -15,12 +19,12 @@ pub fn on_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Left => adjust_number(app, -1),
         KeyCode::Right => adjust_number(app, 1),
-        KeyCode::Enter => activate_selected(app),
+        KeyCode::Enter => activate_selected(app, terminal),
         _ => {}
     }
 }
 
-fn activate_selected(app: &mut App) {
+fn activate_selected(app: &mut App, terminal: &mut Term) {
     let field = ConfigField::ALL[app.config_selected];
     match field.kind() {
         FieldKind::Cycle => cycle_field(app, field),
@@ -42,7 +46,11 @@ fn activate_selected(app: &mut App) {
                     .iter()
                     .position(|b| b.id == app.cfg.defaults.proton)
                     .map_or(0, |i| i + 1); // +1: index 0 is the "system" entry
-                app.mode = Mode::ProtonPicker { builds, selected };
+                app.mode = Mode::ProtonPicker {
+                    builds,
+                    selected,
+                    target: ProtonPickerTarget::Global,
+                };
             }
             Err(err) => app.status = Some(format!("proton scan failed: {err:#}")),
         },
@@ -57,7 +65,47 @@ fn activate_selected(app: &mut App) {
                 selected: 0,
             };
         }
+        FieldKind::IntegrationToggle => run_integrate_toggle(app, terminal),
     }
+}
+
+/// Suspends the TUI around `integrate::install`/`uninstall` — both print
+/// their own informational output via `println!` (which mimetypes were
+/// touched, or "nothing to uninstall"), which would otherwise be invisible
+/// or corrupt the alternate screen if called while the TUI is drawing.
+/// Mirrors `library::launch_path`'s suspend/run/wait-for-enter/resume shape.
+fn run_integrate_toggle(app: &mut App, terminal: &mut Term) {
+    if suspend(terminal).is_err() {
+        app.status = Some("Failed to suspend the TUI.".to_string());
+        return;
+    }
+
+    let was_installed = crate::integrate::is_installed();
+    let result = if was_installed {
+        crate::integrate::uninstall()
+    } else {
+        crate::integrate::install()
+    };
+    if let Err(err) = &result {
+        println!("Error: {err:#}");
+    }
+
+    use std::io::Write;
+    print!("\nPress Enter to return to iprolaunch. ");
+    std::io::stdout().flush().ok();
+    let mut discard = String::new();
+    std::io::stdin().read_line(&mut discard).ok();
+
+    if resume(terminal).is_err() {
+        app.status = Some("Failed to restore the TUI.".to_string());
+        return;
+    }
+
+    app.status = Some(match result {
+        Ok(()) if was_installed => "Removed as default handler.".to_string(),
+        Ok(()) => "Set as default handler.".to_string(),
+        Err(err) => format!("Desktop integration failed: {err:#}"),
+    });
 }
 
 fn cycle_field(app: &mut App, field: ConfigField) {
@@ -89,7 +137,8 @@ fn current_text_value(app: &App, field: ConfigField) -> String {
 /// Applies a confirmed text-input popup value to the field it was opened
 /// for, then saves. Called from the shared `Mode::TextInput` handler in
 /// `tui::mod`, since that mode is also used by the Library tab's "add by
-/// path" — this only handles the `ConfigField` purpose.
+/// path" and the profile editor — this only handles the `ConfigField`
+/// purpose.
 pub fn apply_text_field(app: &mut App, field: ConfigField, value: String) {
     match field {
         ConfigField::PrefixPath => app.cfg.defaults.prefix_path = value,
@@ -101,17 +150,41 @@ pub fn apply_text_field(app: &mut App, field: ConfigField, value: String) {
     save_config(app);
 }
 
-/// Applies a confirmed proton-picker selection (`0` = "system", else
-/// `builds[selected - 1]`) to `defaults.proton`, then saves.
-pub fn apply_proton_choice(app: &mut App, builds: &[proton::ProtonBuild], selected: usize) {
-    app.cfg.defaults.proton = if selected == 0 {
-        "system".to_string()
-    } else {
-        builds
-            .get(selected - 1)
-            .map_or_else(|| "system".to_string(), |b| b.id.clone())
-    };
-    save_config(app);
+/// Applies a confirmed proton-picker selection to whichever config `target`
+/// says: the global default (`0` = "system", else `builds[selected - 1]`),
+/// or one profile's override (`0` = inherit/`None`, `1` = "system", else
+/// `builds[selected - 2]`), then saves the right file.
+pub fn apply_proton_choice(
+    app: &mut App,
+    builds: &[proton::ProtonBuild],
+    selected: usize,
+    target: &ProtonPickerTarget,
+) {
+    match target {
+        ProtonPickerTarget::Global => {
+            app.cfg.defaults.proton = if selected == 0 {
+                "system".to_string()
+            } else {
+                builds
+                    .get(selected - 1)
+                    .map_or_else(|| "system".to_string(), |b| b.id.clone())
+            };
+            save_config(app);
+        }
+        ProtonPickerTarget::Profile(slug) => {
+            let value = if selected == 0 {
+                None
+            } else if selected == 1 {
+                Some("system".to_string())
+            } else {
+                builds.get(selected - 2).map(|b| b.id.clone())
+            };
+            if let Some(profile) = app.profile_mut(slug) {
+                profile.defaults.proton = value;
+            }
+            profile_editor::save_profile(app, slug);
+        }
+    }
 }
 
 fn adjust_number(app: &mut App, delta: i64) {
@@ -145,14 +218,29 @@ fn save_config(app: &mut App) {
     }
 }
 
+/// Saves whichever config a `MapField` belongs to — the global config for
+/// `Env`/`WineDllOverride`, or the named profile for a `Profile*` variant.
+fn save_map_owner(app: &mut App, field: &MapField) {
+    match field {
+        MapField::Env | MapField::WineDllOverride => save_config(app),
+        MapField::ProfileEnv(slug) | MapField::ProfileWineDllOverride(slug) => {
+            profile_editor::save_profile(app, &slug.clone());
+        }
+    }
+}
+
 /// Keys while browsing one map's entries (`Mode::MapEditor`): `a` add,
-/// `e` edit the selected entry, `d` delete it, Esc back to the Config tab.
+/// `e` edit the selected entry, `d` delete it, Esc back (to the Config tab,
+/// or to the profile editor if `app.profile_editor` is set — both just
+/// return to `Mode::Normal`, and whichever screen that resolves to is
+/// decided entirely by `app.profile_editor`, not by anything in `Mode`).
 pub fn map_editor_key(app: &mut App, code: KeyCode) {
-    let (field, selected) = match app.mode {
-        Mode::MapEditor { field, selected } => (field, selected),
-        _ => return,
+    let Mode::MapEditor { field, selected } = &app.mode else {
+        return;
     };
-    let entries = app.map_entries(field);
+    let field = field.clone();
+    let selected = *selected;
+    let entries = app.map_entries(&field);
 
     match code {
         KeyCode::Esc => app.mode = Mode::Normal,
@@ -185,12 +273,13 @@ pub fn map_editor_key(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Char('d') => {
-            if let Some((k, _)) = entries.get(selected) {
-                let k = k.clone();
-                app.map_mut(field).remove(&k);
-                save_config(app);
+            if let Some((k, _)) = entries.get(selected)
+                && let Some(map) = app.map_mut(&field)
+            {
+                map.remove(k);
+                save_map_owner(app, &field);
             }
-            let new_len = app.map_entries(field).len();
+            let new_len = app.map_entries(&field).len();
             let selected = selected.min(new_len.saturating_sub(1));
             app.mode = Mode::MapEditor { field, selected };
         }
@@ -205,7 +294,8 @@ pub fn map_editor_key(app: &mut App, code: KeyCode) {
 pub fn map_entry_input_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => {
-            if let Mode::MapEntryInput { field, .. } = app.mode {
+            if let Mode::MapEntryInput { field, .. } = &app.mode {
+                let field = field.clone();
                 app.mode = Mode::MapEditor { field, selected: 0 };
             }
             return;
@@ -277,14 +367,16 @@ pub fn map_entry_input_key(app: &mut App, code: KeyCode) {
         }
         app::MapEntryStep::Value => {
             let key = key.trim().to_string();
-            if !key.is_empty() {
+            if !key.is_empty()
+                && let Some(map) = app.map_mut(&field)
+            {
                 if let Some(old_key) = &original_key
                     && *old_key != key
                 {
-                    app.map_mut(field).remove(old_key);
+                    map.remove(old_key);
                 }
-                app.map_mut(field).insert(key, value);
-                save_config(app);
+                map.insert(key, value);
+                save_map_owner(app, &field);
             }
             app.mode = Mode::MapEditor { field, selected: 0 };
         }
@@ -294,6 +386,7 @@ pub fn map_entry_input_key(app: &mut App, code: KeyCode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app::MapField;
 
     #[test]
     fn adjust_u32_saturates_instead_of_underflowing() {
@@ -302,14 +395,15 @@ mod tests {
         assert_eq!(adjust_u32(3, 1), 4);
     }
 
-    // The tests below only exercise paths that don't call `save_config` (and
-    // so never touch `Config::save()`, which writes to the *real*
-    // `~/.config/iprolaunch/config.toml` — there is no test-only override of
-    // `project_dirs()`). Add ('a'), edit ('e'), delete ('d'), and the final
-    // confirm-on-Value step all call it and are deliberately NOT covered
-    // here; verify those by hand instead. Never add a test that reaches
-    // `save_config`/`app.cfg.save()` without a way to redirect it away from
-    // the real config file first.
+    // The tests below only exercise paths that don't call `save_config`/
+    // `save_map_owner` (and so never touch `Config::save()` or
+    // `Profile::save()`, which write to the *real* `~/.config/iprolaunch/`
+    // tree — there is no test-only override of `project_dirs()`). Add
+    // ('a'), edit ('e'), delete ('d'), and the final confirm-on-Value step
+    // all call one of those and are deliberately NOT covered here; verify
+    // those by hand instead. Never add a test that reaches `app.cfg.save()`
+    // or `Profile::save()` without a way to redirect it away from the real
+    // files first.
 
     fn test_app() -> App {
         App::new(crate::config::Config::default())
