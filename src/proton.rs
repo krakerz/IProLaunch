@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use directories::UserDirs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +84,35 @@ pub fn scan() -> Result<Vec<ProtonBuild>> {
     });
     builds.dedup_by(|a, b| a.id == b.id);
     Ok(builds)
+}
+
+/// Resolves a stored `defaults.proton`/profile-override value (as returned
+/// by `ProtonBuild::id`, or the special "system"/empty value) into the
+/// directory containing that build's own `files/bin/wine` — needed for
+/// anything (like winetricks) that has to invoke wine directly rather than
+/// going through `umu-run`'s own resolution. Mirrors `umu-run`'s own
+/// `resolve_runtime` logic for a *bare* name (join against `STEAM_COMPAT`,
+/// i.e. the user's own Steam root's `compatibilitytools.d` — never a
+/// system-wide dir, see `ProtonBuild::id`'s doc comment); an
+/// already-absolute `id` (an official Steam build, or a system-wide compat
+/// dir) is used as-is. Errors for "system"/empty — `umu-run` auto-manages
+/// its own UMU-Proton then, with no fixed directory to point at.
+pub fn resolve_binary_dir(id: &str) -> Result<PathBuf> {
+    if id.is_empty() || id == "system" {
+        bail!(
+            "no explicit Proton build selected (defaults.proton is \"system\") — \
+             pick one first via `proton list`/the TUI's proton picker"
+        );
+    }
+    let path = Path::new(id);
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let home = UserDirs::new().context("could not determine home directory")?;
+    Ok(home
+        .home_dir()
+        .join(".local/share/Steam/compatibilitytools.d")
+        .join(id))
 }
 
 /// Community Proton builds (GE-Proton, CachyOS Proton, umu's own
@@ -228,6 +257,32 @@ mod tests {
             scan_official_proton(Path::new("/nonexistent")).unwrap(),
             Vec::new()
         );
+    }
+
+    #[test]
+    fn resolve_binary_dir_passes_an_absolute_id_through_unchanged() {
+        let dir =
+            resolve_binary_dir("/usr/share/steam/compatibilitytools.d/proton-cachyos-slr").unwrap();
+        assert_eq!(
+            dir,
+            Path::new("/usr/share/steam/compatibilitytools.d/proton-cachyos-slr")
+        );
+    }
+
+    #[test]
+    fn resolve_binary_dir_joins_a_bare_name_against_the_users_steam_root() {
+        let dir = resolve_binary_dir("GE-Proton10-34").unwrap();
+        assert!(
+            dir.ends_with(".local/share/Steam/compatibilitytools.d/GE-Proton10-34"),
+            "got {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn resolve_binary_dir_rejects_system_and_empty() {
+        assert!(resolve_binary_dir("system").is_err());
+        assert!(resolve_binary_dir("").is_err());
     }
 
     /// Regression test for a real failure: a build found under a

@@ -53,6 +53,9 @@ entry.
   Running/Library by name; Enter locks the narrowed list (every other key
   works normally again, scoped to it), Esc or switching tabs clears it.
   The status bar shows the global keys when there's nothing else to report.
+- Library `p` runs `winetricks` against the exact prefix a real launch of
+  that game would use (confirms first) — the shared prefix, or that game's
+  own if in per-slug mode.
 - `iprolaunch integrate install` — registers as the default handler for
   `.exe`/`.bat`/`.cmd`/`.msi`, adds an app-menu entry with an icon, and the
   right-click "Add to Library" action for whichever DE is present —
@@ -90,6 +93,7 @@ degrades gracefully (usually a clear error) if missing:
   the right-click action).
 - **[`gamescope`](https://github.com/ValveSoftware/gamescope)** — `-f`/`-m`.
   Already on SteamOS/a Deck; otherwise a distro package.
+- **`winetricks`** — Library's `p` key.
 
 ## Building from source
 

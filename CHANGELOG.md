@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.18.0] — 2026-09-06
+
+### Added
+- TUI Library: `p` runs `winetricks` against the exact prefix a real launch
+  of the selected game would use (confirms first) — resolved through the
+  same `WINEPREFIX`/Proton logic as a real launch, so it can never drift
+  onto a different prefix. Works in both the plain and locked-filter list;
+  the shortcut legend was checked to keep showing every key in both states.
+
 ## [1.17.2] — 2026-09-06
 
 ### Fixed

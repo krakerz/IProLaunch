@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::path::Path;
+use std::process::Command;
 
 use crossterm::event::KeyCode;
 
@@ -7,6 +8,7 @@ use super::app::{self, App, Mode, TextInputPurpose};
 use super::{Term, resume, suspend};
 use crate::config::Profile;
 use crate::launch::{self, RunOptions};
+use crate::{prefix, proton};
 
 pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     if let Some(slug) = app.profile_editor.clone() {
@@ -37,6 +39,7 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         KeyCode::Char('d') => prompt_delete_selected(app),
         KeyCode::Char('f') => start_filter(app),
         KeyCode::Char('c') => copy_quick_launch(app),
+        KeyCode::Char('p') => prompt_winetricks(app),
         KeyCode::Enter => launch_selected(app, terminal),
         // Only meaningful once a filter is locked (still-typing Esc is
         // handled by `edit_filter` instead, via the early return above) —
@@ -121,6 +124,95 @@ fn copy_quick_launch(app: &mut App) {
     app.status = Some(match crate::quick_launch_cmd::copy_for_slug(&slug) {
         Ok(command) => format!("Copied: {command}"),
         Err(err) => format!("{err:#}"),
+    });
+}
+
+fn prompt_winetricks(app: &mut App) {
+    let Some((slug, profile)) = selected_slug_and_profile(app) else {
+        return;
+    };
+    app.mode = Mode::ConfirmWinetricks {
+        slug,
+        name: profile.name,
+    };
+}
+
+/// Keys while `Mode::ConfirmWinetricks` is up: `y` confirms, anything else
+/// (including Esc) cancels. Not a one-keystroke action since it launches an
+/// external GUI tool — a stray `p` shouldn't fire it silently.
+pub fn confirm_winetricks_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
+    let Mode::ConfirmWinetricks { slug, name } = &app.mode else {
+        return;
+    };
+    match code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let slug = slug.clone();
+            let name = name.clone();
+            app.mode = Mode::Normal;
+            run_winetricks(app, terminal, &slug, &name);
+        }
+        _ => app.mode = Mode::Normal,
+    }
+}
+
+/// Runs `winetricks` against the *exact* prefix a normal launch of `slug`
+/// would use — resolved through the same `Config::effective`/`prefix::resolve`
+/// path as `launch::run`, so there's no chance of it drifting onto a
+/// different prefix than the game itself runs in. In `Single` prefix mode a
+/// profile's own `proton` override is ignored (mirrors `Config::effective`),
+/// so this always resolves to the one shared prefix/Proton pair regardless
+/// of which profile was selected when `p` was pressed.
+fn run_winetricks(app: &mut App, terminal: &mut Term, slug: &str, name: &str) {
+    let Some(profile) = app
+        .profiles
+        .iter()
+        .find(|(s, _)| s == slug)
+        .map(|(_, p)| p.clone())
+    else {
+        return;
+    };
+    let effective = app.cfg.effective(Some(&profile));
+    let prefix_path = prefix::resolve(&effective, slug);
+    let proton_dir = match proton::resolve_binary_dir(&effective.proton) {
+        Ok(dir) => dir,
+        Err(err) => {
+            app.status = Some(format!("Can't run winetricks: {err:#}"));
+            return;
+        }
+    };
+    let wine = proton_dir.join("files/bin/wine");
+    let wineserver = proton_dir.join("files/bin/wineserver");
+
+    if suspend(terminal).is_err() {
+        app.status = Some("Failed to suspend the TUI for winetricks.".to_string());
+        return;
+    }
+
+    println!("Launching winetricks for {name}...");
+    let result = Command::new("winetricks")
+        .env("WINEPREFIX", &prefix_path)
+        .env("WINE", &wine)
+        .env("WINESERVER", &wineserver)
+        .status();
+    match &result {
+        Ok(status) if status.success() => println!("\nwinetricks exited normally."),
+        Ok(status) => println!("\nwinetricks exited with {status}."),
+        Err(err) => println!("\nfailed to launch winetricks: {err}"),
+    }
+    print!("\nPress Enter to return to iprolaunch. ");
+    io::stdout().flush().ok();
+    let mut discard = String::new();
+    io::stdin().read_line(&mut discard).ok();
+
+    if resume(terminal).is_err() {
+        app.status = Some("Failed to restore the TUI after winetricks.".to_string());
+        return;
+    }
+
+    app.status = Some(match result {
+        Ok(status) if status.success() => format!("winetricks for {name} exited normally."),
+        Ok(status) => format!("winetricks for {name} exited with {status}."),
+        Err(err) => format!("failed to launch winetricks for {name}: {err:#}"),
     });
 }
 
