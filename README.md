@@ -1,15 +1,17 @@
-# iprolaunch
+# IProLaunch
 
 A small CLI/TUI launcher for running Windows apps and games through Proton on
 Linux, without going through Steam.
 
 ## Description
 
-Steam's own Proton integration only covers games added to your Steam
-library. `iprolaunch` wraps [`umu-launcher`](https://github.com/Open-Wine-Components/umu-launcher)
+IProLaunch — short for **Instant Proton Launch** — wraps
+[`umu-launcher`](https://github.com/Open-Wine-Components/umu-launcher)
 (`umu-run`) so you can launch any Windows `.exe` through Proton from outside
-Steam — with per-game config, log retention, and a quick-launch shortcut
-that's a natural fit for a Steam (Deck or desktop) non-Steam-game entry.
+Steam, since Steam's own Proton integration only covers games added to your
+Steam library — with per-game config, log retention, and a quick-launch
+shortcut that's a natural fit for a Steam (Deck or desktop) non-Steam-game
+entry.
 
 ## Features
 
