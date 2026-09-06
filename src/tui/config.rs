@@ -178,17 +178,43 @@ fn cycle_field(app: &mut App, field: ConfigField) {
         ConfigField::Gamescope => {
             app.cfg.defaults.gamescope = app::next_gamescope_setting(app.cfg.defaults.gamescope);
         }
+        ConfigField::GamescopeFilter => {
+            app.cfg.defaults.gamescope_settings.filter =
+                app::next_gamescope_filter(app.cfg.defaults.gamescope_settings.filter);
+        }
+        ConfigField::GamescopeBorderless => {
+            app.cfg.defaults.gamescope_settings.borderless =
+                app::next_optional_bool(app.cfg.defaults.gamescope_settings.borderless);
+        }
+        ConfigField::GamescopeGrabCursor => {
+            app.cfg.defaults.gamescope_settings.grab_cursor =
+                app::next_optional_bool(app.cfg.defaults.gamescope_settings.grab_cursor);
+        }
         _ => {}
     }
     save_config(app);
 }
 
 fn current_text_value(app: &App, field: ConfigField) -> String {
+    let gs = &app.cfg.defaults.gamescope_settings;
     match field {
         ConfigField::PrefixPath => app.cfg.defaults.prefix_path.clone(),
         ConfigField::PrefixesRoot => app.cfg.defaults.prefixes_root.clone(),
         ConfigField::WindowsVersion => app.cfg.defaults.windows_version.clone(),
         ConfigField::LogPath => app.cfg.logging.path.clone(),
+        ConfigField::GamescopeOutputWidth => {
+            gs.output_width.map_or(String::new(), |v| v.to_string())
+        }
+        ConfigField::GamescopeOutputHeight => {
+            gs.output_height.map_or(String::new(), |v| v.to_string())
+        }
+        ConfigField::GamescopeRefresh => gs.refresh.map_or(String::new(), |v| v.to_string()),
+        ConfigField::GamescopeNestedWidth => {
+            gs.nested_width.map_or(String::new(), |v| v.to_string())
+        }
+        ConfigField::GamescopeNestedHeight => {
+            gs.nested_height.map_or(String::new(), |v| v.to_string())
+        }
         _ => String::new(),
     }
 }
@@ -197,13 +223,49 @@ fn current_text_value(app: &App, field: ConfigField) -> String {
 /// for, then saves. Called from the shared `Mode::TextInput` handler in
 /// `tui::mod`, since that mode is also used by the Library tab's "add by
 /// path" and the profile editor — this only handles the `ConfigField`
-/// purpose.
+/// purpose. The 5 numeric gamescope fields are validated the same way the
+/// profile editor's equivalents are (see `profile_editor::apply_text_field`)
+/// — blank clears back to "unset" (don't pass that flag to gamescope at
+/// all), a non-numeric value is rejected with a status message instead of
+/// silently discarded.
 pub fn apply_text_field(app: &mut App, field: ConfigField, value: String) {
+    let trimmed = value.trim().to_string();
+    let is_numeric_field = matches!(
+        field,
+        ConfigField::GamescopeOutputWidth
+            | ConfigField::GamescopeOutputHeight
+            | ConfigField::GamescopeRefresh
+            | ConfigField::GamescopeNestedWidth
+            | ConfigField::GamescopeNestedHeight
+    );
+    if is_numeric_field && !trimmed.is_empty() && trimmed.parse::<u32>().is_err() {
+        app.status = Some(format!(
+            "\"{trimmed}\" isn't a whole number — {} left unchanged.",
+            field.label()
+        ));
+        return;
+    }
+
     match field {
         ConfigField::PrefixPath => app.cfg.defaults.prefix_path = value,
         ConfigField::PrefixesRoot => app.cfg.defaults.prefixes_root = value,
         ConfigField::WindowsVersion => app.cfg.defaults.windows_version = value,
         ConfigField::LogPath => app.cfg.logging.path = value,
+        ConfigField::GamescopeOutputWidth => {
+            app.cfg.defaults.gamescope_settings.output_width = trimmed.parse::<u32>().ok();
+        }
+        ConfigField::GamescopeOutputHeight => {
+            app.cfg.defaults.gamescope_settings.output_height = trimmed.parse::<u32>().ok();
+        }
+        ConfigField::GamescopeRefresh => {
+            app.cfg.defaults.gamescope_settings.refresh = trimmed.parse::<u32>().ok();
+        }
+        ConfigField::GamescopeNestedWidth => {
+            app.cfg.defaults.gamescope_settings.nested_width = trimmed.parse::<u32>().ok();
+        }
+        ConfigField::GamescopeNestedHeight => {
+            app.cfg.defaults.gamescope_settings.nested_height = trimmed.parse::<u32>().ok();
+        }
         _ => {}
     }
     save_config(app);

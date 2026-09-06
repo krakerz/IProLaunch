@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.19.4] — 2026-09-06
+
+### Added
+- Configurable gamescope output size, refresh rate, nested render resolution, upscale filter, borderless mode, and relative-mouse-mode (global default + per-profile override) — fixes `-m`/`-w` producing a small window instead of filling the screen on a normal desktop.
+- `-b`: wraps a launch in a nested `gamescope -b`/`--borderless` session, combinable with `-f`/`-w`.
+
+### Changed
+- `-m` renamed to `-w` (long flag `--maximize` unchanged) — frees up `-m` for a future flag.
+- README/CLI help: `-f`/`-w`/`-b` documented as not working from inside Steam Game Mode itself (a real gamescope limitation, not an overlay conflict) — only from a non-gamescope session (Desktop Mode, a bare console/SSH).
+
 ## [1.19.3] — 2026-09-06
 
 ### Fixed

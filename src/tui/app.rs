@@ -1,4 +1,6 @@
-use crate::config::{Config, GamescopeSetting, LogMode, PrefixMode, Profile, RecordMode};
+use crate::config::{
+    Config, GamescopeFilter, GamescopeSetting, LogMode, PrefixMode, Profile, RecordMode,
+};
 use crate::proton::ProtonBuild;
 use crate::running::{self, RunningEntry};
 
@@ -48,6 +50,14 @@ pub enum ConfigField {
     PrefixesRoot,
     WindowsVersion,
     Gamescope,
+    GamescopeOutputWidth,
+    GamescopeOutputHeight,
+    GamescopeRefresh,
+    GamescopeNestedWidth,
+    GamescopeNestedHeight,
+    GamescopeFilter,
+    GamescopeBorderless,
+    GamescopeGrabCursor,
     LogMode,
     LogPath,
     LogKeep,
@@ -59,13 +69,21 @@ pub enum ConfigField {
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 14] = [
+    pub const ALL: [ConfigField; 22] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
         ConfigField::PrefixesRoot,
         ConfigField::WindowsVersion,
         ConfigField::Gamescope,
+        ConfigField::GamescopeOutputWidth,
+        ConfigField::GamescopeOutputHeight,
+        ConfigField::GamescopeRefresh,
+        ConfigField::GamescopeNestedWidth,
+        ConfigField::GamescopeNestedHeight,
+        ConfigField::GamescopeFilter,
+        ConfigField::GamescopeBorderless,
+        ConfigField::GamescopeGrabCursor,
         ConfigField::LogMode,
         ConfigField::LogPath,
         ConfigField::LogKeep,
@@ -84,6 +102,14 @@ impl ConfigField {
             ConfigField::PrefixesRoot => "defaults.prefixes_root",
             ConfigField::WindowsVersion => "defaults.windows-version",
             ConfigField::Gamescope => "defaults.gamescope",
+            ConfigField::GamescopeOutputWidth => "gamescope_settings.output_width",
+            ConfigField::GamescopeOutputHeight => "gamescope_settings.output_height",
+            ConfigField::GamescopeRefresh => "gamescope_settings.refresh",
+            ConfigField::GamescopeNestedWidth => "gamescope_settings.nested_width",
+            ConfigField::GamescopeNestedHeight => "gamescope_settings.nested_height",
+            ConfigField::GamescopeFilter => "gamescope_settings.filter",
+            ConfigField::GamescopeBorderless => "gamescope_settings.borderless",
+            ConfigField::GamescopeGrabCursor => "gamescope_settings.grab_cursor",
             ConfigField::LogMode => "logging.mode",
             ConfigField::LogPath => "logging.path (blank = default)",
             ConfigField::LogKeep => "logging.keep",
@@ -105,13 +131,21 @@ impl ConfigField {
             ConfigField::PrefixMode
             | ConfigField::LogMode
             | ConfigField::LogRecord
-            | ConfigField::Gamescope => FieldKind::Cycle,
+            | ConfigField::Gamescope
+            | ConfigField::GamescopeFilter
+            | ConfigField::GamescopeBorderless
+            | ConfigField::GamescopeGrabCursor => FieldKind::Cycle,
             ConfigField::LogAutoOpen => FieldKind::Toggle,
             ConfigField::LogKeep | ConfigField::GamedbInterval => FieldKind::Number,
             ConfigField::PrefixPath
             | ConfigField::PrefixesRoot
             | ConfigField::WindowsVersion
-            | ConfigField::LogPath => FieldKind::Text,
+            | ConfigField::LogPath
+            | ConfigField::GamescopeOutputWidth
+            | ConfigField::GamescopeOutputHeight
+            | ConfigField::GamescopeRefresh
+            | ConfigField::GamescopeNestedWidth
+            | ConfigField::GamescopeNestedHeight => FieldKind::Text,
             ConfigField::EnvTable | ConfigField::WineDllOverrideTable => FieldKind::MapEditor,
         }
     }
@@ -194,6 +228,14 @@ pub enum ProfileField {
     PrefixPath,
     WindowsVersion,
     Gamescope,
+    GamescopeOutputWidth,
+    GamescopeOutputHeight,
+    GamescopeRefresh,
+    GamescopeNestedWidth,
+    GamescopeNestedHeight,
+    GamescopeFilter,
+    GamescopeBorderless,
+    GamescopeGrabCursor,
     LogKeep,
     LogRecord,
     LogAutoOpen,
@@ -202,7 +244,7 @@ pub enum ProfileField {
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 14] = [
+    pub const ALL: [ProfileField; 22] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
@@ -212,6 +254,14 @@ impl ProfileField {
         ProfileField::PrefixPath,
         ProfileField::WindowsVersion,
         ProfileField::Gamescope,
+        ProfileField::GamescopeOutputWidth,
+        ProfileField::GamescopeOutputHeight,
+        ProfileField::GamescopeRefresh,
+        ProfileField::GamescopeNestedWidth,
+        ProfileField::GamescopeNestedHeight,
+        ProfileField::GamescopeFilter,
+        ProfileField::GamescopeBorderless,
+        ProfileField::GamescopeGrabCursor,
         ProfileField::LogKeep,
         ProfileField::LogRecord,
         ProfileField::LogAutoOpen,
@@ -230,6 +280,14 @@ impl ProfileField {
             ProfileField::PrefixPath => "defaults.prefix_path override",
             ProfileField::WindowsVersion => "defaults.windows-version override",
             ProfileField::Gamescope => "defaults.gamescope override",
+            ProfileField::GamescopeOutputWidth => "gamescope_settings.output_width override",
+            ProfileField::GamescopeOutputHeight => "gamescope_settings.output_height override",
+            ProfileField::GamescopeRefresh => "gamescope_settings.refresh override",
+            ProfileField::GamescopeNestedWidth => "gamescope_settings.nested_width override",
+            ProfileField::GamescopeNestedHeight => "gamescope_settings.nested_height override",
+            ProfileField::GamescopeFilter => "gamescope_settings.filter override",
+            ProfileField::GamescopeBorderless => "gamescope_settings.borderless override",
+            ProfileField::GamescopeGrabCursor => "gamescope_settings.grab_cursor override",
             ProfileField::LogKeep => "logging.keep override",
             ProfileField::LogRecord => "logging.record override",
             ProfileField::LogAutoOpen => "logging.auto_open override",
@@ -248,9 +306,12 @@ impl ProfileField {
     pub fn kind(self) -> FieldKind {
         match self {
             ProfileField::Proton => FieldKind::ProtonPicker,
-            ProfileField::LogRecord | ProfileField::LogAutoOpen | ProfileField::Gamescope => {
-                FieldKind::Cycle
-            }
+            ProfileField::LogRecord
+            | ProfileField::LogAutoOpen
+            | ProfileField::Gamescope
+            | ProfileField::GamescopeFilter
+            | ProfileField::GamescopeBorderless
+            | ProfileField::GamescopeGrabCursor => FieldKind::Cycle,
             ProfileField::TargetPath
             | ProfileField::Slug
             | ProfileField::Name
@@ -258,7 +319,12 @@ impl ProfileField {
             | ProfileField::Args
             | ProfileField::PrefixPath
             | ProfileField::WindowsVersion
-            | ProfileField::LogKeep => FieldKind::Text,
+            | ProfileField::LogKeep
+            | ProfileField::GamescopeOutputWidth
+            | ProfileField::GamescopeOutputHeight
+            | ProfileField::GamescopeRefresh
+            | ProfileField::GamescopeNestedWidth
+            | ProfileField::GamescopeNestedHeight => FieldKind::Text,
             ProfileField::EnvTable | ProfileField::WineDllOverrideTable => FieldKind::MapEditor,
         }
     }
@@ -728,8 +794,11 @@ pub fn next_profile_record_mode(m: Option<RecordMode>) -> Option<RecordMode> {
     }
 }
 
-/// Cycles a profile's `logging.auto_open` override: inherit → on → off → inherit.
-pub fn next_profile_auto_open(v: Option<bool>) -> Option<bool> {
+/// Cycles any `Option<bool>` profile override the same way: inherit → on →
+/// off → inherit. Shared by `logging.auto_open`, `gamescope_settings.
+/// borderless`, and `gamescope_settings.grab_cursor` — all three are a
+/// plain on/off toggle with the same "inherit the global default" state.
+pub fn next_optional_bool(v: Option<bool>) -> Option<bool> {
     match v {
         None => Some(true),
         Some(true) => Some(false),
@@ -754,6 +823,23 @@ pub fn next_profile_gamescope_setting(m: Option<GamescopeSetting>) -> Option<Gam
         Some(GamescopeSetting::None) => Some(GamescopeSetting::Fullscreen),
         Some(GamescopeSetting::Fullscreen) => Some(GamescopeSetting::Maximize),
         Some(GamescopeSetting::Maximize) => None,
+    }
+}
+
+/// Cycles `gamescope_settings.filter` — used identically for the global
+/// default and a profile override, since both are already `Option`-wrapped
+/// (unlike `GamescopeSetting`, there's no separate "inherit" state to
+/// distinguish from "explicitly unset": `None` means "don't pass `-F`" at
+/// either level, which is a perfectly sensible thing for the global default
+/// to be too).
+pub fn next_gamescope_filter(m: Option<GamescopeFilter>) -> Option<GamescopeFilter> {
+    match m {
+        None => Some(GamescopeFilter::Linear),
+        Some(GamescopeFilter::Linear) => Some(GamescopeFilter::Nearest),
+        Some(GamescopeFilter::Nearest) => Some(GamescopeFilter::Fsr),
+        Some(GamescopeFilter::Fsr) => Some(GamescopeFilter::Nis),
+        Some(GamescopeFilter::Nis) => Some(GamescopeFilter::Pixel),
+        Some(GamescopeFilter::Pixel) => None,
     }
 }
 
@@ -846,6 +932,23 @@ mod tests {
     }
 
     #[test]
+    fn gamescope_filter_cycle_covers_every_variant_and_returns_to_none() {
+        let mut f = None;
+        f = next_gamescope_filter(f);
+        assert_eq!(f, Some(GamescopeFilter::Linear));
+        f = next_gamescope_filter(f);
+        assert_eq!(f, Some(GamescopeFilter::Nearest));
+        f = next_gamescope_filter(f);
+        assert_eq!(f, Some(GamescopeFilter::Fsr));
+        f = next_gamescope_filter(f);
+        assert_eq!(f, Some(GamescopeFilter::Nis));
+        f = next_gamescope_filter(f);
+        assert_eq!(f, Some(GamescopeFilter::Pixel));
+        f = next_gamescope_filter(f);
+        assert_eq!(f, None);
+    }
+
+    #[test]
     fn profile_record_mode_cycle_includes_inherit_and_returns_to_it() {
         let mut r = None;
         r = next_profile_record_mode(r);
@@ -859,13 +962,15 @@ mod tests {
     }
 
     #[test]
-    fn profile_auto_open_cycle_includes_inherit_and_returns_to_it() {
+    fn optional_bool_cycle_includes_inherit_and_returns_to_it() {
+        // Shared by logging.auto_open, gamescope_settings.borderless, and
+        // gamescope_settings.grab_cursor overrides — see `next_optional_bool`.
         let mut v = None;
-        v = next_profile_auto_open(v);
+        v = next_optional_bool(v);
         assert_eq!(v, Some(true));
-        v = next_profile_auto_open(v);
+        v = next_optional_bool(v);
         assert_eq!(v, Some(false));
-        v = next_profile_auto_open(v);
+        v = next_optional_bool(v);
         assert_eq!(v, None);
     }
 

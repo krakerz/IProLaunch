@@ -32,10 +32,24 @@ entry.
   IProLaunch Library" action (KDE, GNOME/Cinnamon/MATE, XFCE); both it and
   `add` copy a ready-to-paste quick-launch command to the clipboard.
 - Quick launch by name or slug (`iprolaunch <name>`) — points a Steam
-  shortcut straight at a game. `-f`/`-m` wrap the launch in a nested
-  `gamescope` session (real fullscreen / stretch-to-fill) for Steam Game
-  Mode — remembered per-game (global default or profile override) so you
-  don't need to retype them.
+  shortcut straight at a game. `-f`/`-w`/`-b` wrap the launch in a nested
+  `gamescope` session (real fullscreen / stretch-to-fill / borderless,
+  combinable) — remembered per-game (global default or profile override)
+  so you don't need to retype them. Only works from a session that isn't
+  *already* gamescope (Desktop Mode, a bare console/SSH); **not** from
+  inside Steam Game Mode itself — gamescope's own WSI layer deliberately
+  disables its swapchain hook when it detects it's nested inside another
+  gamescope session, which Game Mode always is (confirmed against
+  gamescope's own source, not assumed) — this shows up as "Gamescope WSI
+  Layer Error / Hooking has failed somewhere," not fixable by disabling any
+  overlay. `-w`'s real output size (global default or profile override,
+  config only — gamescope only auto-detects this when it owns the display
+  directly, not nested inside a desktop session, so without it `-w`
+  produces a small window instead of actually filling the screen), the
+  game's own internal render resolution, a refresh cap, the upscale
+  filter, and relative-mouse-mode (`--force-grab-cursor`) are all
+  configurable too (Config tab / profile editor, blank = let gamescope
+  decide).
 - Per-launch logging with configurable retention, one shared log folder or
   one per profile.
 - `proton list` / `config init` detect installed Proton builds everywhere
@@ -97,8 +111,11 @@ degrades gracefully (usually a clear error) if missing:
   `context-menu install`.
 - **`wl-copy`** (Wayland) or **`xclip`** (X11) — clipboard copy (`c`, `add`,
   the right-click action).
-- **[`gamescope`](https://github.com/ValveSoftware/gamescope)** — `-f`/`-m`.
-  Already on SteamOS/a Deck; otherwise a distro package.
+- **[`gamescope`](https://github.com/ValveSoftware/gamescope)** — `-f`/`-w`/`-b`.
+  Already on SteamOS/a Deck; otherwise a distro package. Only reliable from
+  a session that isn't already gamescope itself — see the `-f`/`-w`/`-b`
+  note under Features for why it fails from inside Steam Game Mode
+  ("Gamescope WSI Layer Error").
 - **`winetricks`** — Library's `p` key.
 
 ## Building from source
@@ -136,9 +153,10 @@ iprolaunch library list
 iprolaunch "eldenring#1"
 
 # Same, wrapped in a nested gamescope session — real fullscreen, or
-# stretch-to-fill (gamescope's closest thing to "maximized")
+# stretch-to-fill (gamescope's closest thing to "maximized"), or borderless
 iprolaunch -f "eldenring#1"
-iprolaunch -m "eldenring#1"
+iprolaunch -w "eldenring#1"
+iprolaunch -b "eldenring#1"
 
 # See what's currently running, and stop one
 iprolaunch running list
