@@ -302,6 +302,18 @@ pub enum Mode {
         slug: String,
         name: String,
     },
+    /// Confirming a profile-editor slug rename that will *also* rename a
+    /// real, already-existing prefix directory (only reached in
+    /// `PrefixMode::PerSlug`, and only when that directory actually exists
+    /// yet — see `profile_editor::rename_slug`). Kept separate from
+    /// `ConfirmDeleteProfile` since the two paths on confirm are entirely
+    /// different (rename two directories vs. delete one).
+    ConfirmRenameSlug {
+        slug: String,
+        candidate: String,
+        old_prefix_dir: std::path::PathBuf,
+        new_prefix_dir: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -549,8 +561,8 @@ pub fn move_selection(selected: usize, len: usize, delta: isize) -> usize {
 /// Cycles an enum value forward, for `FieldKind::Cycle` fields.
 pub fn next_prefix_mode(m: PrefixMode) -> PrefixMode {
     match m {
-        PrefixMode::Single => PrefixMode::PerExe,
-        PrefixMode::PerExe => PrefixMode::Single,
+        PrefixMode::Single => PrefixMode::PerSlug,
+        PrefixMode::PerSlug => PrefixMode::Single,
     }
 }
 
@@ -643,7 +655,7 @@ mod tests {
     fn enum_cycles_cover_every_variant_and_return_to_start() {
         let mut m = PrefixMode::Single;
         m = next_prefix_mode(m);
-        assert_eq!(m, PrefixMode::PerExe);
+        assert_eq!(m, PrefixMode::PerSlug);
         m = next_prefix_mode(m);
         assert_eq!(m, PrefixMode::Single);
 

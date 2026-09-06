@@ -24,7 +24,9 @@ entry.
 - Global config for default Proton version, prefix mode, and environment
   variables, with per-game overrides.
 - Two prefix strategies: one shared prefix for everything, or one prefix
-  auto-created per exe.
+  auto-created per profile — keyed by the profile's own slug, so renaming a
+  profile's slug renames its prefix directory to match (the TUI warns and
+  confirms first, since it's a real directory move).
 - A game library: every exe you launch gets a profile automatically, listed
   by a friendly, editable name.
 - Quick launch by name — `iprolaunch <name>` — for pointing a Steam
@@ -119,7 +121,7 @@ defaults). Per-game overrides live at
 `~/.config/iprolaunch/profiles/<slug>/profile.toml`, created automatically
 the first time you run that exe — edit it via the TUI's Library tab (`e` on
 a game) or by hand: override proton version, prefix path, Windows version
-(per-exe prefix mode only), logging, environment variables, DLL overrides
+(per-slug prefix mode only), logging, environment variables, DLL overrides
 (`[winedlloverride]`, e.g. `winhttp = "n,b"` — joined into a single
 `WINEDLLOVERRIDES` at launch), or extra launch args (`args = ["--dx11"]`,
 always forwarded to that exe, in addition to anything passed on the command

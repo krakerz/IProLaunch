@@ -73,6 +73,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ..
         } => draw_map_entry_input_popup(frame, field, *step, key, value, tick),
         Mode::ConfirmDeleteProfile { name, .. } => draw_confirm_delete_popup(frame, name),
+        Mode::ConfirmRenameSlug {
+            old_prefix_dir,
+            new_prefix_dir,
+            ..
+        } => draw_confirm_rename_slug_popup(frame, old_prefix_dir, new_prefix_dir),
         Mode::Normal => {}
     }
 }
@@ -303,6 +308,29 @@ y = confirm, any other key = cancel"
     );
 }
 
+fn draw_confirm_rename_slug_popup(
+    frame: &mut Frame,
+    old_prefix_dir: &std::path::Path,
+    new_prefix_dir: &std::path::Path,
+) {
+    let area = centered_rect(76, 30, frame.area());
+    frame.render_widget(Clear, area);
+    let text = format!(
+        "Renaming this slug also renames its prefix directory:\n\n  {}\n  → {}\n\n\
+y = confirm (renames both), any other key = cancel",
+        old_prefix_dir.display(),
+        new_prefix_dir.display()
+    );
+    frame.render_widget(
+        Paragraph::new(text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Confirm prefix rename"),
+        ),
+        area,
+    );
+}
+
 fn draw_config(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -459,6 +487,9 @@ Profile editor (Library, after 'e'):
     - slug is the profile's folder name — edit just the base text; renames
       the folder on disk, auto-appending \"-N\" only if that exact text is
       already taken by another profile (never something you type yourself).
+      In defaults.prefix_mode = per-slug, if a prefix directory already
+      exists under the old slug, you're asked to confirm first — renaming
+      moves that directory too, since prefixes are keyed by slug.
     - name is what the Library list shows — edit just the base text (its
       \"#N\" is stripped for editing and never shown in the box); saving
       auto-fills the lowest \"#N\" not already used by another profile's
@@ -721,6 +752,11 @@ fn marquee_signature(app: &App) -> String {
         Mode::MapEditor { field, selected } => format!("map:{field:?}:{selected}"),
         Mode::MapEntryInput { field, step, .. } => format!("mapentry:{field:?}:{step:?}"),
         Mode::ConfirmDeleteProfile { slug, .. } => format!("confirmdelete:{slug}"),
+        Mode::ConfirmRenameSlug {
+            slug, candidate, ..
+        } => {
+            format!("confirmrenameslug:{slug}:{candidate}")
+        }
     };
     format!(
         "{:?}|{}|{}|{}|{:?}|{mode_part}",
