@@ -172,7 +172,24 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     if let Some(overrides) = winedlloverrides_value(&effective.winedlloverride) {
         command.env("WINEDLLOVERRIDES", overrides);
     }
-    for (k, v) in merge_env(&effective.env, &opts.env) {
+    let mut env = merge_env(&effective.env, &opts.env);
+    // `umu-run` defaults to Proton's `waitforexitandrun` verb, which waits
+    // for the prefix's *existing* wineserver to fully exit before starting —
+    // confirmed straight from Proton's own script: `wineserver -w` then run.
+    // That's fine when nothing else is using this prefix, but in `single`
+    // mode running a second, different game concurrently means that
+    // wineserver never exits, so the new launch would just hang forever
+    // waiting on it (a real reported bug). If something's already running
+    // against this exact prefix, skip the wait (`PROTON_VERB=run`) instead —
+    // wineserver already supports multiple simultaneous client processes
+    // (that's its whole job), confirmed for real: 3 concurrent launches
+    // sharing one wineserver, killing one leaving the other two untouched.
+    // Never overrides an explicit `PROTON_VERB` the user already set.
+    if !env.contains_key("PROTON_VERB") && running::is_prefix_active(&prefix_path.to_string_lossy())
+    {
+        env.insert("PROTON_VERB".to_string(), "run".to_string());
+    }
+    for (k, v) in env {
         command.env(k, v);
     }
 
