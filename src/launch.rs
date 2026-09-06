@@ -77,6 +77,9 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     if let Some(id) = &gameid {
         command.env("GAMEID", id);
     }
+    if let Some(overrides) = winedlloverrides_value(&effective.winedlloverride) {
+        command.env("WINEDLLOVERRIDES", overrides);
+    }
     for (k, v) in merge_env(&effective.env, &opts.env) {
         command.env(k, v);
     }
@@ -154,6 +157,7 @@ fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
         defaults: Default::default(),
         logging: Default::default(),
         env: Default::default(),
+        winedlloverride: Default::default(),
     };
     profile.save(&slug)?;
     Ok((slug, profile))
@@ -286,9 +290,42 @@ fn merge_env(
     merged
 }
 
+/// Joins a per-DLL override table into one `WINEDLLOVERRIDES` value:
+/// `dll1=modes1;dll2=modes2`. `BTreeMap` iterates in key order, so the
+/// result is deterministic. `None` when empty — nothing to set.
+fn winedlloverrides_value(overrides: &BTreeMap<String, String>) -> Option<String> {
+    if overrides.is_empty() {
+        return None;
+    }
+    Some(
+        overrides
+            .iter()
+            .map(|(dll, modes)| format!("{dll}={modes}"))
+            .collect::<Vec<_>>()
+            .join(";"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn winedlloverrides_joins_deterministically_by_key_order() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("LunaHook64".to_string(), "n,b".to_string());
+        overrides.insert("winhttp".to_string(), "n,b".to_string());
+
+        assert_eq!(
+            winedlloverrides_value(&overrides),
+            Some("LunaHook64=n,b;winhttp=n,b".to_string())
+        );
+    }
+
+    #[test]
+    fn winedlloverrides_none_when_empty() {
+        assert_eq!(winedlloverrides_value(&BTreeMap::new()), None);
+    }
 
     #[test]
     fn cli_env_overrides_only_the_keys_it_sets() {

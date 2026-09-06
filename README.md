@@ -31,6 +31,9 @@ that's a natural fit for a Steam (Deck or desktop) non-Steam-game entry.
   of always falling back to a generic default.
 - `Ctrl+C` during a launch, and `running list` / `running kill`, both
   reliably stop the whole sandboxed game tree, not just `iprolaunch` itself.
+- A full TUI (run `iprolaunch` with no arguments) — running-games/quick-kill,
+  game library (launch or add by path), a live config editor, and help —
+  for everything above without needing to remember the CLI subcommands.
 
 ## Installation
 
@@ -52,6 +55,9 @@ cargo build --release
 ## Usage
 
 ```sh
+# Launch the TUI — running games, library, config editor, help
+iprolaunch
+
 # Launch an exe directly — creates its library profile on first run
 iprolaunch run ~/Games/EldenRing/Game/eldenring.exe
 
@@ -79,10 +85,12 @@ defaults). Per-game overrides live at
 `~/.config/iprolaunch/profiles/<slug>/profile.toml`, created automatically
 the first time you run that exe; edit it by hand to override proton
 version, prefix path, Windows version (per-exe prefix mode only), logging,
-or environment variables for that one game — or set `title` to the game's
-real name (e.g. `"Grand Theft Auto V"`) so it can be matched against the
-umu-database for a GAMEID, which is what lets `umu-run`'s automatic
-protonfixes actually find a fix instead of a generic default.
+environment variables, or DLL overrides (`[winedlloverride]`, e.g.
+`winhttp = "n,b"` — joined into a single `WINEDLLOVERRIDES` at launch) for
+that one game — or set `title` to the game's real name (e.g.
+`"Grand Theft Auto V"`) so it can be matched against the umu-database for a
+GAMEID, which is what lets `umu-run`'s automatic protonfixes actually find a
+fix instead of a generic default.
 
 ## FAQ
 
@@ -98,12 +106,6 @@ point of the quick-launch form. Point the shortcut at
 `update_interval_days`) and, separately, whatever `umu-run` itself needs to
 download a Proton build. Neither blocks a launch if the network's
 unavailable — the launch just proceeds without a GAMEID match.
-
-## Status
-
-The TUI (running processes / game library / config / help) isn't built yet
-— `run`, `library list`, `config show`, and quick launch are the current CLI
-surface.
 
 ---
 

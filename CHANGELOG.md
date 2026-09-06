@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-06
+
 ### Added
 - Ctrl+C (and SIGTERM) during `run` now forwards into and stops the
   sandboxed game tree, instead of only killing `iprolaunch` itself
@@ -14,6 +16,13 @@
   local cache is refreshed; never blocks a launch on network failure) — a
   profile's optional `title` field is the lookup query, falling back to the
   exe's file stem when unset
+- Full TUI (`iprolaunch`, no arguments): running-games list with quick-kill,
+  a game library (launch existing entries or add a new one by exe path), a
+  live config editor (proton picker, prefix mode, logging, gamedb interval),
+  a help screen, and an ASCII wordmark header showing the current version
+- `winedlloverride` section, in both global config and a profile override:
+  one line per DLL (e.g. `winhttp = "n,b"`), joined into a single
+  `WINEDLLOVERRIDES` value at launch
 
 ## [1.0.0] — 2026-09-06
 
