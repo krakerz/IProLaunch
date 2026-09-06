@@ -124,6 +124,81 @@ pub enum GamescopeSetting {
     Maximize,
 }
 
+/// `-F`/`--filter` (gamescope's upscaler filter) — real gamescope option
+/// values, confirmed against the actually-installed `gamescope --help`
+/// (3.16.25), not guessed. Always `Option`-wrapped (both globally and per
+/// profile) rather than baking in its own "none" variant like
+/// `GamescopeSetting` does — there's no sensible global default to fall
+/// back to, "don't pass `-F` at all, let gamescope pick" is the only
+/// reasonable unset state at any level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GamescopeFilter {
+    Linear,
+    Nearest,
+    Fsr,
+    Nis,
+    Pixel,
+}
+
+/// Extra `gamescope` launch settings, layered the same way at both the
+/// global and per-profile level (each field independently `None` = "don't
+/// pass this flag, let gamescope use its own default" — there's no
+/// sensible non-`None` global default for a screen resolution, so unlike
+/// most of `Defaults`' other fields this can't just always have a real
+/// value). `output_*` is gamescope's own `-W`/`-H` (the real display size —
+/// gamescope only auto-detects this when it owns the display directly,
+/// e.g. bare DRM/KMS or Steam Game Mode's own outer instance; nested inside
+/// an existing desktop session it defaults to a small fixed window instead,
+/// a real reported bug this exists to fix). `nested_*` is `-w`/`-h` (the
+/// game's own internal render resolution — lets it render lower than the
+/// output and have gamescope upscale, `filter` picks how).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GamescopeSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nested_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nested_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<GamescopeFilter>,
+    /// Gamescope's own `-b`/`--borderless` — merged with the CLI `-b` flag
+    /// at launch time (either one turns it on for that launch, see
+    /// `launch::run`); `None`/`Some(false)` both mean "don't pass it".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub borderless: Option<bool>,
+    /// Gamescope's own `--force-grab-cursor` ("always use relative mouse
+    /// mode instead of flipping dependent on cursor visibility") — real
+    /// option, confirmed against the actually-installed `gamescope --help`
+    /// (3.16.25). Config-only, no CLI flag (distinct from `-g`/`--grab`,
+    /// which grabs the *keyboard* — a different, not-yet-exposed option).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grab_cursor: Option<bool>,
+}
+
+impl GamescopeSettings {
+    /// Field-by-field merge: the profile's own value wins when set, else
+    /// falls back to the global default — same pattern as every other
+    /// per-profile override in `Config::effective`.
+    fn merge(self, profile: Self) -> Self {
+        Self {
+            output_width: profile.output_width.or(self.output_width),
+            output_height: profile.output_height.or(self.output_height),
+            refresh: profile.refresh.or(self.refresh),
+            nested_width: profile.nested_width.or(self.nested_width),
+            nested_height: profile.nested_height.or(self.nested_height),
+            filter: profile.filter.or(self.filter),
+            borderless: profile.borderless.or(self.borderless),
+            grab_cursor: profile.grab_cursor.or(self.grab_cursor),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Defaults {
     pub proton: String,
@@ -134,6 +209,12 @@ pub struct Defaults {
     pub windows_version: String,
     #[serde(default)]
     pub gamescope: GamescopeSetting,
+    #[serde(default, skip_serializing_if = "is_default_gamescope_settings")]
+    pub gamescope_settings: GamescopeSettings,
+}
+
+fn is_default_gamescope_settings(s: &GamescopeSettings) -> bool {
+    *s == GamescopeSettings::default()
 }
 
 impl Default for Defaults {
@@ -145,6 +226,7 @@ impl Default for Defaults {
             prefixes_root: "~/.local/share/iprolaunch/prefixes".into(),
             windows_version: "win10".into(),
             gamescope: GamescopeSetting::None,
+            gamescope_settings: GamescopeSettings::default(),
         }
     }
 }
@@ -274,6 +356,9 @@ impl Config {
             None
         };
         let gamescope = pd.and_then(|pd| pd.gamescope).unwrap_or(d.gamescope);
+        let gamescope_settings = d
+            .gamescope_settings
+            .merge(pd.map_or_else(GamescopeSettings::default, |pd| pd.gamescope_settings));
 
         let keep = pl.and_then(|pl| pl.keep).unwrap_or(l.keep);
         let record = pl.and_then(|pl| pl.record).unwrap_or(l.record);
@@ -298,6 +383,7 @@ impl Config {
             prefixes_root: d.prefixes_root.clone(),
             windows_version,
             gamescope,
+            gamescope_settings,
             log_mode: l.mode,
             keep,
             record,
@@ -318,6 +404,7 @@ pub struct Effective {
     /// `None` whenever `prefix_mode != PerSlug` — see `Config::effective`.
     pub windows_version: Option<String>,
     pub gamescope: GamescopeSetting,
+    pub gamescope_settings: GamescopeSettings,
     pub log_mode: LogMode,
     pub keep: u32,
     pub record: RecordMode,
@@ -336,6 +423,8 @@ pub struct ProfileDefaults {
     pub windows_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gamescope: Option<GamescopeSetting>,
+    #[serde(default, skip_serializing_if = "is_default_gamescope_settings")]
+    pub gamescope_settings: GamescopeSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -504,6 +593,53 @@ mod tests {
         assert_eq!(
             cfg.effective(Some(&profile)).gamescope,
             GamescopeSetting::Fullscreen
+        );
+    }
+
+    #[test]
+    fn gamescope_settings_merge_per_field_profile_wins_when_set() {
+        let mut cfg = Config::default();
+        cfg.defaults.gamescope_settings.output_width = Some(1920);
+        cfg.defaults.gamescope_settings.output_height = Some(1080);
+        cfg.defaults.gamescope_settings.filter = Some(GamescopeFilter::Fsr);
+
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        // Nothing overridden yet — every field falls back to the global default.
+        let effective = cfg.effective(Some(&profile));
+        assert_eq!(effective.gamescope_settings.output_width, Some(1920));
+        assert_eq!(effective.gamescope_settings.output_height, Some(1080));
+        assert_eq!(
+            effective.gamescope_settings.filter,
+            Some(GamescopeFilter::Fsr)
+        );
+        assert_eq!(effective.gamescope_settings.refresh, None);
+
+        // Override just one field — the rest still fall back to the global default.
+        profile.defaults.gamescope_settings.output_width = Some(1280);
+        let effective = cfg.effective(Some(&profile));
+        assert_eq!(effective.gamescope_settings.output_width, Some(1280));
+        assert_eq!(effective.gamescope_settings.output_height, Some(1080));
+
+        cfg.defaults.gamescope_settings.borderless = Some(true);
+        cfg.defaults.gamescope_settings.grab_cursor = Some(true);
+        assert_eq!(
+            cfg.effective(Some(&profile)).gamescope_settings.borderless,
+            Some(true)
+        );
+        profile.defaults.gamescope_settings.grab_cursor = Some(false);
+        assert_eq!(
+            cfg.effective(Some(&profile)).gamescope_settings.grab_cursor,
+            Some(false)
         );
     }
 

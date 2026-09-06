@@ -324,6 +324,46 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .defaults
                     .gamescope
                     .map_or_else(|| "(inherit)".to_string(), |g| format!("{g:?}")),
+                ProfileField::GamescopeOutputWidth => profile
+                    .defaults
+                    .gamescope_settings
+                    .output_width
+                    .map_or_else(|| "(inherit)".to_string(), |v| v.to_string()),
+                ProfileField::GamescopeOutputHeight => profile
+                    .defaults
+                    .gamescope_settings
+                    .output_height
+                    .map_or_else(|| "(inherit)".to_string(), |v| v.to_string()),
+                ProfileField::GamescopeRefresh => profile
+                    .defaults
+                    .gamescope_settings
+                    .refresh
+                    .map_or_else(|| "(inherit)".to_string(), |v| v.to_string()),
+                ProfileField::GamescopeNestedWidth => profile
+                    .defaults
+                    .gamescope_settings
+                    .nested_width
+                    .map_or_else(|| "(inherit)".to_string(), |v| v.to_string()),
+                ProfileField::GamescopeNestedHeight => profile
+                    .defaults
+                    .gamescope_settings
+                    .nested_height
+                    .map_or_else(|| "(inherit)".to_string(), |v| v.to_string()),
+                ProfileField::GamescopeFilter => profile
+                    .defaults
+                    .gamescope_settings
+                    .filter
+                    .map_or_else(|| "(inherit)".to_string(), |f| format!("{f:?}")),
+                ProfileField::GamescopeBorderless => profile
+                    .defaults
+                    .gamescope_settings
+                    .borderless
+                    .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
+                ProfileField::GamescopeGrabCursor => profile
+                    .defaults
+                    .gamescope_settings
+                    .grab_cursor
+                    .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
                 ProfileField::LogKeep => profile
                     .logging
                     .keep
@@ -469,6 +509,38 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::PrefixesRoot => d.prefixes_root.clone(),
                 ConfigField::WindowsVersion => d.windows_version.clone(),
                 ConfigField::Gamescope => format!("{:?}", d.gamescope),
+                ConfigField::GamescopeOutputWidth => d
+                    .gamescope_settings
+                    .output_width
+                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+                ConfigField::GamescopeOutputHeight => d
+                    .gamescope_settings
+                    .output_height
+                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+                ConfigField::GamescopeRefresh => d
+                    .gamescope_settings
+                    .refresh
+                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+                ConfigField::GamescopeNestedWidth => d
+                    .gamescope_settings
+                    .nested_width
+                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+                ConfigField::GamescopeNestedHeight => d
+                    .gamescope_settings
+                    .nested_height
+                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+                ConfigField::GamescopeFilter => d
+                    .gamescope_settings
+                    .filter
+                    .map_or_else(|| "(unset)".to_string(), |f| format!("{f:?}")),
+                ConfigField::GamescopeBorderless => d
+                    .gamescope_settings
+                    .borderless
+                    .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
+                ConfigField::GamescopeGrabCursor => d
+                    .gamescope_settings
+                    .grab_cursor
+                    .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
                 ConfigField::LogMode => format!("{:?}", l.mode),
                 ConfigField::LogPath => l.path.clone(),
                 ConfigField::LogKeep => l.keep.to_string(),
@@ -478,7 +550,7 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::EnvTable => entry_count(&app.cfg.env),
                 ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
             };
-            let combined = format!("{:<28} {}", field.label(), value);
+            let combined = format!("{:<34} {}", field.label(), value);
             let text = if i == app.config_selected && combined.chars().count() > inner_width {
                 marquee(&combined, inner_width, tick)
             } else {
@@ -630,9 +702,24 @@ Profile editor (Library, after 'e'):
       per-slug — in single-prefix mode it's ignored (every profile shares
       one prefix, so a mismatched Proton version there risks corrupting it).
     - gamescope override cycles inherit -> none -> fullscreen -> maximize ->
-      inherit — same as -f/-m on the command line, remembered per game so
-      \"iprolaunch <slug>\" doesn't need retyping it (an explicit -f/-m still
-      wins if passed).
+      inherit — same as -f/-w on the command line, remembered per game so
+      \"iprolaunch <slug>\" doesn't need retyping it (an explicit -f/-w still
+      wins if passed). -b/borderless is independent of this (not mutually
+      exclusive with fullscreen/maximize) — see gamescope_settings.borderless.
+    - gamescope_settings.* overrides (output_width/output_height/refresh/
+      nested_width/nested_height/filter/borderless/grab_cursor) only matter
+      once gamescope is actually wrapping the launch (-f/-w/-b, or the
+      gamescope override above) — blank means \"don't pass that flag, let
+      gamescope pick.\" output_* is gamescope's real output size (-W/-H) —
+      gamescope only auto-detects this when it owns the display directly,
+      not nested inside an existing desktop session, so this is the fix for
+      -w producing a small window on a normal desktop. nested_* (-w/-h,
+      gamescope's own flags — not to be confused with iprolaunch's own -w/
+      --maximize) is the game's own internal render resolution; filter (-F)
+      is the upscale filter (linear/nearest/fsr/nis/pixel) used when nested/
+      output differ; borderless (-b) merges with the CLI -b flag — either
+      one turns it on for that launch; grab_cursor (--force-grab-cursor,
+      relative mouse mode) is config-only, no CLI flag.
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or
@@ -1232,7 +1319,7 @@ mod tests {
         // shorter terminal will legitimately clip content, same as any
         // other list-heavy screen; that's covered by
         // `every_tab_renders_without_panicking_at_a_small_size` instead.
-        let out = rendered(&mut app, 100, 40);
+        let out = rendered(&mut app, 100, 46);
         for field in ConfigField::ALL {
             assert!(
                 out.contains(field.label()),
@@ -1293,7 +1380,7 @@ mod tests {
         app.tab = Tab::Library;
         app.profiles = vec![("game-1".to_string(), test_profile("Game#1"))];
         app.profile_editor = Some("game-1".to_string());
-        let out = rendered(&mut app, 100, 30);
+        let out = rendered(&mut app, 100, 36);
         assert!(out.contains("Game#1"));
         for field in ProfileField::ALL {
             assert!(

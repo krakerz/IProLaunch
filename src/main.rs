@@ -30,11 +30,14 @@ struct Cli {
     command: Option<Command>,
 
     /// Wrap the launch in a nested `gamescope -f` session (real fullscreen
-    /// mode-switch) — useful inside an existing gamescope session (e.g.
-    /// Steam Game Mode/a Deck), the standard trick for forcing one
-    /// non-Steam-game to behave since a plain windowed Wine game won't
-    /// otherwise switch display modes. Applies to `run` and quick-launch
-    /// (`iprolaunch <slug>`) only; needs `gamescope` on `$PATH`.
+    /// mode-switch) — forces a plain windowed Wine game that won't switch
+    /// display modes on its own to actually fill the screen. Only works
+    /// from a session that isn't *already* gamescope (Desktop Mode, a bare
+    /// console/SSH) — NOT from inside Steam Game Mode itself: gamescope's
+    /// own WSI layer deliberately disables its swapchain hook when nested
+    /// inside another gamescope session, which Game Mode always is
+    /// (confirmed against gamescope's own source). Applies to `run` and
+    /// quick-launch (`iprolaunch <slug>`) only; needs `gamescope` on `$PATH`.
     #[arg(short = 'f', long, global = true)]
     fullscreen: bool,
 
@@ -42,9 +45,16 @@ struct Cli {
     /// `--force-windows-fullscreen` (stretches the game's own window to
     /// fill it, regardless of the size it requests) — gamescope has no
     /// literal "maximized" mode; this is the closest real equivalent.
-    /// Combine with -f for both at once.
-    #[arg(short = 'm', long, global = true)]
+    /// Combine with -f (and/or -b) for more than one at once.
+    #[arg(short = 'w', long = "maximize", global = true)]
     maximize: bool,
+
+    /// Wrap the launch in a nested gamescope session with `-b`/
+    /// `--borderless` (no window decorations, no exclusive mode-switch —
+    /// distinct from `-f`'s real fullscreen). Combine with -f/-w for more
+    /// than one at once.
+    #[arg(short = 'b', long, global = true)]
+    borderless: bool,
 }
 
 #[derive(Subcommand)]
@@ -322,6 +332,7 @@ fn main() -> Result<()> {
     let gamescope = GamescopeMode {
         fullscreen: cli.fullscreen,
         maximize: cli.maximize,
+        borderless: cli.borderless,
     };
 
     match cli.command {

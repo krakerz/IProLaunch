@@ -79,11 +79,23 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
                 profile.logging.record = app::next_profile_record_mode(profile.logging.record);
             }
             ProfileField::LogAutoOpen => {
-                profile.logging.auto_open = app::next_profile_auto_open(profile.logging.auto_open);
+                profile.logging.auto_open = app::next_optional_bool(profile.logging.auto_open);
             }
             ProfileField::Gamescope => {
                 profile.defaults.gamescope =
                     app::next_profile_gamescope_setting(profile.defaults.gamescope);
+            }
+            ProfileField::GamescopeFilter => {
+                profile.defaults.gamescope_settings.filter =
+                    app::next_gamescope_filter(profile.defaults.gamescope_settings.filter);
+            }
+            ProfileField::GamescopeBorderless => {
+                profile.defaults.gamescope_settings.borderless =
+                    app::next_optional_bool(profile.defaults.gamescope_settings.borderless);
+            }
+            ProfileField::GamescopeGrabCursor => {
+                profile.defaults.gamescope_settings.grab_cursor =
+                    app::next_optional_bool(profile.defaults.gamescope_settings.grab_cursor);
             }
             _ => {}
         }
@@ -117,6 +129,31 @@ fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
             .logging
             .keep
             .map_or(String::new(), |k| k.to_string()),
+        ProfileField::GamescopeOutputWidth => profile
+            .defaults
+            .gamescope_settings
+            .output_width
+            .map_or(String::new(), |v| v.to_string()),
+        ProfileField::GamescopeOutputHeight => profile
+            .defaults
+            .gamescope_settings
+            .output_height
+            .map_or(String::new(), |v| v.to_string()),
+        ProfileField::GamescopeRefresh => profile
+            .defaults
+            .gamescope_settings
+            .refresh
+            .map_or(String::new(), |v| v.to_string()),
+        ProfileField::GamescopeNestedWidth => profile
+            .defaults
+            .gamescope_settings
+            .nested_width
+            .map_or(String::new(), |v| v.to_string()),
+        ProfileField::GamescopeNestedHeight => profile
+            .defaults
+            .gamescope_settings
+            .nested_height
+            .map_or(String::new(), |v| v.to_string()),
         _ => String::new(),
     }
 }
@@ -317,9 +354,19 @@ fn perform_slug_rename(app: &mut App, slug: &str, candidate: &str) -> bool {
 pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: String) {
     let trimmed = value.trim().to_string();
 
-    if field == ProfileField::LogKeep && !trimmed.is_empty() && trimmed.parse::<u32>().is_err() {
+    let is_numeric_field = matches!(
+        field,
+        ProfileField::LogKeep
+            | ProfileField::GamescopeOutputWidth
+            | ProfileField::GamescopeOutputHeight
+            | ProfileField::GamescopeRefresh
+            | ProfileField::GamescopeNestedWidth
+            | ProfileField::GamescopeNestedHeight
+    );
+    if is_numeric_field && !trimmed.is_empty() && trimmed.parse::<u32>().is_err() {
         app.status = Some(format!(
-            "\"{trimmed}\" isn't a whole number — logging.keep override left unchanged."
+            "\"{trimmed}\" isn't a whole number — {} left unchanged.",
+            field.label()
         ));
         return;
     }
@@ -371,6 +418,21 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
             profile.defaults.windows_version = (!trimmed.is_empty()).then(|| trimmed.clone());
         }
         ProfileField::LogKeep => profile.logging.keep = trimmed.parse::<u32>().ok(),
+        ProfileField::GamescopeOutputWidth => {
+            profile.defaults.gamescope_settings.output_width = trimmed.parse::<u32>().ok();
+        }
+        ProfileField::GamescopeOutputHeight => {
+            profile.defaults.gamescope_settings.output_height = trimmed.parse::<u32>().ok();
+        }
+        ProfileField::GamescopeRefresh => {
+            profile.defaults.gamescope_settings.refresh = trimmed.parse::<u32>().ok();
+        }
+        ProfileField::GamescopeNestedWidth => {
+            profile.defaults.gamescope_settings.nested_width = trimmed.parse::<u32>().ok();
+        }
+        ProfileField::GamescopeNestedHeight => {
+            profile.defaults.gamescope_settings.nested_height = trimmed.parse::<u32>().ok();
+        }
         // `Slug` returns early above. The rest are never actually reached
         // via a text popup — they open a different mode
         // (`ProtonPicker`/`MapEditor`/`Cycle`) instead.
@@ -379,6 +441,9 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::LogRecord
         | ProfileField::LogAutoOpen
         | ProfileField::Gamescope
+        | ProfileField::GamescopeFilter
+        | ProfileField::GamescopeBorderless
+        | ProfileField::GamescopeGrabCursor
         | ProfileField::EnvTable
         | ProfileField::WineDllOverrideTable => {}
     }

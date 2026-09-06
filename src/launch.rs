@@ -21,33 +21,43 @@ pub struct RunOptions {
     pub gamescope: GamescopeMode,
 }
 
-/// `-f`/`-m` (CLI) — wraps the launch in a nested `gamescope` session
-/// instead of spawning `umu-run` directly. Useful when already running
-/// inside an *embedded* gamescope session (Steam Game Mode/a Deck) — that's
-/// the standard, documented trick for forcing one specific non-Steam-game
-/// to behave, since a plain windowed Wine game won't otherwise switch
-/// display modes or fill the screen on its own. Real gamescope flags
-/// confirmed against the actually-installed `gamescope --help` (3.16.25),
-/// not guessed:
+/// `-f`/`-w`/`-b` (CLI) — wraps the launch in a nested `gamescope` session
+/// instead of spawning `umu-run` directly, forcing a plain windowed Wine
+/// game that won't otherwise switch display modes to actually fill the
+/// screen. Only works from a session that isn't *already* gamescope
+/// (Desktop Mode, a bare console/SSH) — confirmed via a real failure
+/// ("Gamescope WSI Layer Error / Hooking has failed somewhere") and
+/// gamescope's own source that it does NOT work from inside Steam Game
+/// Mode: gamescope's WSI layer explicitly detects it's nested inside
+/// another gamescope session (`WAYLAND_DISPLAY` != `GAMESCOPE_WAYLAND_
+/// DISPLAY`) and deliberately disables its own swapchain hook in that
+/// case — not fixable by disabling an overlay, a structural limitation.
+/// Real gamescope flags confirmed against the actually-installed
+/// `gamescope --help` (3.16.25), not guessed:
 /// - `-f` → gamescope's own `-f`/`--fullscreen` (nested mode option — an
 ///   actual display-mode-switching fullscreen for the nested window).
-/// - `-m` → gamescope's `--force-windows-fullscreen` (stretches whatever
+/// - `-w` → gamescope's `--force-windows-fullscreen` (stretches whatever
 ///   window the game itself opens to fill the nested surface, regardless
 ///   of the size it requests) — gamescope has no literal "maximized"
 ///   concept (it's a Wayland compositor, not an X11 window manager); this
 ///   is the closest real equivalent, confirmed with the user directly
-///   rather than guessed.
+///   rather than guessed. (iprolaunch's own `--maximize` long flag name —
+///   only the short letter changed, to leave `-m` free.)
+/// - `-b` → gamescope's own `-b`/`--borderless` (nested mode option — no
+///   window decorations, no exclusive mode-switch; distinct from `-f`'s
+///   real fullscreen).
 ///
-/// Combining both is allowed (`-f -m` stacks their args).
+/// Combining any of the three is allowed (stacks their args, `-f` first).
 #[derive(Default, Clone, Copy)]
 pub struct GamescopeMode {
     pub fullscreen: bool,
     pub maximize: bool,
+    pub borderless: bool,
 }
 
 impl GamescopeMode {
     fn is_active(self) -> bool {
-        self.fullscreen || self.maximize
+        self.fullscreen || self.maximize || self.borderless
     }
 
     fn args(self) -> Vec<&'static str> {
@@ -57,6 +67,9 @@ impl GamescopeMode {
         }
         if self.maximize {
             args.push("--force-windows-fullscreen");
+        }
+        if self.borderless {
+            args.push("-b");
         }
         args
     }
@@ -69,12 +82,68 @@ impl From<crate::config::GamescopeSetting> for GamescopeMode {
             crate::config::GamescopeSetting::Fullscreen => GamescopeMode {
                 fullscreen: true,
                 maximize: false,
+                borderless: false,
             },
             crate::config::GamescopeSetting::Maximize => GamescopeMode {
                 fullscreen: false,
                 maximize: true,
+                borderless: false,
             },
         }
+    }
+}
+
+/// Extra `gamescope` flags from `defaults.gamescope_settings`/a profile
+/// override — `-W`/`-H` (real output size, gamescope only auto-detects this
+/// when it owns the display directly, not nested in an existing desktop
+/// session), `-r` (refresh rate cap), `-w`/`-h` (the game's own internal
+/// render resolution), `-F` (upscale filter when nested/output resolutions
+/// differ), `--force-grab-cursor` (relative mouse mode, config-only — see
+/// `GamescopeSettings::grab_cursor`'s doc comment for why it's not a CLI
+/// flag). `borderless` is handled separately, merged into `GamescopeMode`
+/// alongside the CLI `-b` flag instead (see `run`) — everything else here
+/// is only meaningful, and only ever appended, when `gamescope` is
+/// actually wrapping the launch at all (`GamescopeMode::is_active()`).
+fn gamescope_settings_args(settings: &crate::config::GamescopeSettings) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(w) = settings.output_width {
+        args.push("-W".to_string());
+        args.push(w.to_string());
+    }
+    if let Some(h) = settings.output_height {
+        args.push("-H".to_string());
+        args.push(h.to_string());
+    }
+    if let Some(r) = settings.refresh {
+        args.push("-r".to_string());
+        args.push(r.to_string());
+    }
+    if let Some(w) = settings.nested_width {
+        args.push("-w".to_string());
+        args.push(w.to_string());
+    }
+    if let Some(h) = settings.nested_height {
+        args.push("-h".to_string());
+        args.push(h.to_string());
+    }
+    if let Some(filter) = settings.filter {
+        args.push("-F".to_string());
+        args.push(gamescope_filter_value(filter).to_string());
+    }
+    if settings.grab_cursor == Some(true) {
+        args.push("--force-grab-cursor".to_string());
+    }
+    args
+}
+
+fn gamescope_filter_value(filter: crate::config::GamescopeFilter) -> &'static str {
+    use crate::config::GamescopeFilter::{Fsr, Linear, Nearest, Nis, Pixel};
+    match filter {
+        Linear => "linear",
+        Nearest => "nearest",
+        Fsr => "fsr",
+        Nis => "nis",
+        Pixel => "pixel",
     }
 }
 
@@ -128,21 +197,28 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     let launch_id = running::new_launch_id();
     install_signal_forwarding(&launch_id);
 
-    // CLI-passed `-f`/`-m` win when actually typed (consistent with every
+    // CLI-passed `-f`/`-w` win when actually typed (consistent with every
     // other `opts` override beating the profile/global config); otherwise
     // fall back to whatever the profile/global `gamescope` setting already
-    // remembers, so `iprolaunch <slug>` doesn't need `-f`/`-m` every time.
-    let gamescope = if opts.gamescope.is_active() {
+    // remembers, so `iprolaunch <slug>` doesn't need `-f`/`-w` every time.
+    // `-b`/borderless is independent of that pair (it isn't part of the
+    // mutually-exclusive `GamescopeSetting` enum, so there's no "whole unit"
+    // to override) — it's simply on if *either* the CLI flag or the
+    // remembered `gamescope_settings.borderless` override says so.
+    let mut gamescope = if opts.gamescope.fullscreen || opts.gamescope.maximize {
         opts.gamescope
     } else {
         effective.gamescope.into()
     };
+    gamescope.borderless =
+        opts.gamescope.borderless || effective.gamescope_settings.borderless.unwrap_or(false);
 
     // Per `man umu`: WINEPREFIX/PROTONPATH/GAMEID are all optional env vars;
     // GAMEID defaults to "umu-default" when unset.
     let mut command = if gamescope.is_active() {
         let mut c = Command::new("gamescope");
         c.args(gamescope.args());
+        c.args(gamescope_settings_args(&effective.gamescope_settings));
         c.arg("--").arg("umu-run");
         c
     } else {
@@ -478,6 +554,7 @@ mod tests {
         let mode = GamescopeMode {
             fullscreen: true,
             maximize: false,
+            borderless: false,
         };
         assert!(mode.is_active());
         assert_eq!(mode.args(), vec!["-f"]);
@@ -488,18 +565,31 @@ mod tests {
         let mode = GamescopeMode {
             fullscreen: false,
             maximize: true,
+            borderless: false,
         };
         assert!(mode.is_active());
         assert_eq!(mode.args(), vec!["--force-windows-fullscreen"]);
     }
 
     #[test]
-    fn both_stack_fullscreen_first() {
+    fn borderless_maps_to_gamescopes_own_dash_b() {
+        let mode = GamescopeMode {
+            fullscreen: false,
+            maximize: false,
+            borderless: true,
+        };
+        assert!(mode.is_active());
+        assert_eq!(mode.args(), vec!["-b"]);
+    }
+
+    #[test]
+    fn all_three_stack_fullscreen_then_maximize_then_borderless() {
         let mode = GamescopeMode {
             fullscreen: true,
             maximize: true,
+            borderless: true,
         };
-        assert_eq!(mode.args(), vec!["-f", "--force-windows-fullscreen"]);
+        assert_eq!(mode.args(), vec!["-f", "--force-windows-fullscreen", "-b"]);
     }
 
     #[test]
@@ -514,6 +604,66 @@ mod tests {
             GamescopeMode::from(GamescopeSetting::Maximize).args(),
             vec!["--force-windows-fullscreen"]
         );
+    }
+
+    #[test]
+    fn gamescope_settings_args_is_empty_when_nothing_set() {
+        assert!(gamescope_settings_args(&crate::config::GamescopeSettings::default()).is_empty());
+    }
+
+    #[test]
+    fn gamescope_settings_args_maps_every_field_to_its_real_flag() {
+        use crate::config::{GamescopeFilter, GamescopeSettings};
+        let settings = GamescopeSettings {
+            output_width: Some(1920),
+            output_height: Some(1080),
+            refresh: Some(60),
+            nested_width: Some(1280),
+            nested_height: Some(800),
+            filter: Some(GamescopeFilter::Fsr),
+            borderless: None,
+            grab_cursor: None,
+        };
+        assert_eq!(
+            gamescope_settings_args(&settings),
+            vec![
+                "-W", "1920", "-H", "1080", "-r", "60", "-w", "1280", "-h", "800", "-F", "fsr",
+            ]
+        );
+    }
+
+    #[test]
+    fn gamescope_settings_args_maps_grab_cursor_but_not_borderless() {
+        use crate::config::GamescopeSettings;
+        // `borderless` is deliberately NOT in `gamescope_settings_args`'
+        // output — it's merged into `GamescopeMode` instead (alongside the
+        // CLI `-b` flag), never appended here. `grab_cursor` has no CLI
+        // counterpart, so it's config-only and belongs here.
+        let settings = GamescopeSettings {
+            borderless: Some(true),
+            grab_cursor: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            gamescope_settings_args(&settings),
+            vec!["--force-grab-cursor"]
+        );
+
+        let settings = GamescopeSettings {
+            grab_cursor: Some(false),
+            ..Default::default()
+        };
+        assert!(gamescope_settings_args(&settings).is_empty());
+    }
+
+    #[test]
+    fn gamescope_filter_value_matches_real_gamescope_option_names() {
+        use crate::config::GamescopeFilter::*;
+        assert_eq!(gamescope_filter_value(Linear), "linear");
+        assert_eq!(gamescope_filter_value(Nearest), "nearest");
+        assert_eq!(gamescope_filter_value(Fsr), "fsr");
+        assert_eq!(gamescope_filter_value(Nis), "nis");
+        assert_eq!(gamescope_filter_value(Pixel), "pixel");
     }
 
     #[test]

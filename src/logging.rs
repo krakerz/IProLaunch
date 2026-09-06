@@ -158,6 +158,7 @@ mod tests {
             prefixes_root: "~/unused".to_string(),
             windows_version: None,
             gamescope: Default::default(),
+            gamescope_settings: Default::default(),
             log_mode,
             keep: 3,
             record: RecordMode::Errors,
