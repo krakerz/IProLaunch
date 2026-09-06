@@ -1,0 +1,9 @@
+<action>
+  <icon>iprolaunch</icon>
+  <name>Add to IProLaunch Library</name>
+  <unique-id>com.iprolaunch.add-to-library</unique-id>
+  <command>"{bin}" add %f</command>
+  <description>Add to IProLaunch Library</description>
+  <patterns>*.exe;*.EXE;*.bat;*.BAT;*.cmd;*.CMD;*.msi;*.MSI</patterns>
+  <other-files/>
+</action>

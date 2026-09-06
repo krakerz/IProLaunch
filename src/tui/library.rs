@@ -35,6 +35,7 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         KeyCode::Char('e') => edit_selected(app),
         KeyCode::Char('d') => prompt_delete_selected(app),
         KeyCode::Char('f') => start_filter(app),
+        KeyCode::Char('c') => copy_quick_launch(app),
         KeyCode::Enter => launch_selected(app, terminal),
         _ => {}
     }
@@ -102,6 +103,16 @@ fn filter_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
 fn refresh(app: &mut App) {
     app.refresh_profiles();
     app.status = Some("Refreshed.".to_string());
+}
+
+fn copy_quick_launch(app: &mut App) {
+    let Some((slug, _)) = selected_slug_and_profile(app) else {
+        return;
+    };
+    app.status = Some(match crate::quick_launch_cmd::copy_for_slug(&slug) {
+        Ok(command) => format!("Copied: {command}"),
+        Err(err) => format!("{err:#}"),
+    });
 }
 
 /// Every action below looks the currently-selected entry up through

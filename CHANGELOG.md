@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-09-06
+
+### Added
+- TUI Library: `c` copies a ready-to-paste quick-launch command
+  (`"<iprolaunch binary path>" <slug>`) to the clipboard — meant for
+  pasting straight into a Steam non-Steam-game shortcut's Target field.
+  Becomes a literal search character while a quick-search is active, same
+  as the tab's other shortcuts.
+- `iprolaunch add <exe>` — registers an exe as a library profile without
+  launching it (unlike `run`, which launches and creates the profile as a
+  side effect, or the TUI's own Library `a`, which also launches once).
+  Reuses the existing profile if one already points at that exe.
+- `iprolaunch context-menu install [kde|gnome|xfce]` (and `uninstall`) — a
+  file-manager right-click "Add to IProLaunch Library" action, running
+  `iprolaunch add <clicked file>`. With no DE given, installs all three
+  (best-effort — one that isn't actually present just has nothing read its
+  files): a KIO service menu for Dolphin (both the Plasma 6 and Plasma 5
+  locations, marked executable — KDE refuses to run a service menu that
+  isn't), a Nautilus-Scripts-style script for GNOME/Cinnamon/MATE
+  (Nautilus/Nemo/Caja all share that convention), and a merged `<action>`
+  entry in Thunar's `uca.xml` for XFCE (the only one of the three that has
+  no drop-a-file-in mechanism — every other custom action already in that
+  file is left untouched, matched by a stable id so re-running `install`
+  updates in place instead of duplicating, and `uninstall` removes only
+  that one entry). Also now folded into `integrate install`/`uninstall`
+  (and the TUI's Config-tab "setup"/"reapply"/"uninstall" row, which just
+  calls the same functions) — no DE detection needed, since each DE's files
+  live in their own location and don't conflict with (or get read by) an
+  unrelated DE, so installing every one unconditionally is harmless even on
+  a single-DE system. `context-menu install`/`uninstall` remain available
+  standalone too, for managing just the right-click action on its own.
+- `iprolaunch add`/`context-menu`'s "Add to IProLaunch Library" also copies
+  the quick-launch command to the clipboard (same one the TUI's `c` key
+  produces), so a bare `add` (or the right-click action) leaves you with a
+  ready-to-paste Steam Target-field command without a separate step.
+- TUI: the Help tab (and a new `?` popup, see below) can now scroll —
+  Up/Down by a line, PageUp/PageDown by 10, Home/End to jump to either end.
+  It had grown too long to fit a normal terminal with no way to see the
+  rest.
+- TUI: `?` opens Help as a popup from *any* tab (Esc closes it), sharing
+  the same content and scroll position as the Help tab — a quick reference
+  without switching tabs and losing your place.
+- TUI: the status bar shows the global keys (`q` = quit, `?` = help,
+  `1`-`4`/`Tab`/`Shift-Tab` = switch tabs) whenever there's no real status
+  message to show, instead of a bare "Ready.".
+
+### Changed
+- A freshly-added profile's target exe now has its Linux execute bit
+  cleared automatically (best-effort). On KDE, a `+x` file gets executed
+  directly on open/double-click (`kiorc`'s `[Executable scripts]
+  behaviourOnLaunch=execute`, routed by the kernel's `binfmt_misc` — e.g. a
+  `DOSWin` MZ-header registration straight to `/usr/bin/wine`), completely
+  bypassing xdg-mime/`integrate install`'s file-type association. Windows
+  exes never need `+x` on Linux (`umu-run`/wine take the path as an
+  argument, never `execve` it), so clearing it is safe and is the only
+  actually-scoped fix — KIO's `behaviourOnLaunch` has no per-mimetype
+  override, confirmed from its own source, so anything short of this would
+  mean changing that setting globally for every executable-permission file
+  on the system, not just game exes.
+- Clipboard copying (`c` / `add`) shells out to `wl-copy`/`xclip` instead of
+  a Rust clipboard crate. Both Wayland and X11 clipboards require whoever
+  "owns" the selection to stay alive to answer paste requests — fine for
+  the long-running TUI, but a short-lived process like `iprolaunch add`
+  exits immediately, so the clipboard read back empty afterwards; `wl-copy`/
+  `xclip` already fork into the background to keep serving it, which is
+  exactly what's needed here.
+
+## [1.14.1] — 2026-09-06
+
+### Fixed
+- A Proton build found under a *system-wide* `compatibilitytools.d` (e.g.
+  CachyOS's `proton-cachyos-slr` package under
+  `/usr/share/steam/compatibilitytools.d`) is now stored/used by its
+  absolute path instead of its bare folder name. `umu-run` only resolves a
+  relative `PROTONPATH` against the user's own Steam root
+  (`~/.local/share/Steam/compatibilitytools.d`, confirmed from `umu-run`'s
+  own source) — never a system-wide directory — so a bare name for a
+  system-wide build failed every launch with `PROTONPATH '<name>' is not
+  valid, toolmanifest.vdf not found`. Official Steam-installed Proton
+  (`steamapps/common/Proton*`) was already unaffected — it already used an
+  absolute path. Existing configs/profiles with the old bare name need to
+  be re-picked (TUI proton picker or `config init`) or hand-edited to the
+  absolute path shown by `proton list`.
+
 ## [1.14.0] — 2026-09-06
 
 ### Added

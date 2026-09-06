@@ -45,7 +45,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             None => draw_library(frame, chunks[2], app),
         },
         Tab::Config => draw_config(frame, chunks[2], app),
-        Tab::Help => draw_help(frame, chunks[2]),
+        Tab::Help => draw_help(frame, chunks[2], app),
     }
 
     draw_status_bar(frame, chunks[3], app);
@@ -78,6 +78,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             new_prefix_dir,
             ..
         } => draw_confirm_rename_slug_popup(frame, old_prefix_dir, new_prefix_dir),
+        Mode::Help => draw_help_popup(frame, app),
         Mode::Normal => {}
     }
 }
@@ -173,7 +174,7 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     let inner_width = area.width.saturating_sub(4) as usize;
     let title = filter_title(
         &app.library_filter,
-        "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, f = search)",
+        "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, f = search)",
     );
 
     let indices = app.filtered_profile_indices();
@@ -439,9 +440,7 @@ fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
                 IntegrateField::Status => integration_status_text(),
                 IntegrateField::BinaryPath => crate::integrate::registered_binary_path()
                     .unwrap_or_else(|| "(not installed)".to_string()),
-                IntegrateField::Setup => {
-                    "Enter = register as default handler, add to app menu, install icon".to_string()
-                }
+                IntegrateField::Setup => "Enter = register as default handler, add to app menu, install icon, add right-click \"Add to Library\"".to_string(),
                 IntegrateField::Reapply => {
                     "Enter = re-point the registration at this binary's current path".to_string()
                 }
@@ -485,12 +484,13 @@ fn config_row_state(app: &App, offset: usize, len: usize) -> ratatui::widgets::L
     state
 }
 
-fn draw_help(frame: &mut Frame, area: Rect) {
-    let text = "\
+const HELP_TEXT: &str = "\
 iprolaunch — TUI help
 
 Global:
   1/2/3/4, Tab/Shift-Tab   switch screen
+  ?                        open this help as a popup from any tab (Esc closes it)
+  Up/Down/PageUp/PageDown/Home/End   scroll (Help tab and the ? popup)
   q                        quit
 
 Running:
@@ -506,9 +506,12 @@ Library:
   r                        refresh the list from disk
   e                        edit the selected game's profile overrides
   d                        delete the selected game's profile (confirms first)
+  c                        copy a quick-launch command to the clipboard —
+                           \"<this binary's path>\" <slug> — for pasting into
+                           a Steam non-Steam-game shortcut's Target field
   f                        quick-search — filters by name as you type;
                            while searching, only Enter/Esc/Up/Down work
-                           (a/r/e/d become literal search characters instead)
+                           (a/r/e/d/c become literal search characters instead)
   Esc                      cancel while typing a path, or clear an active
                            quick-search
 
@@ -547,12 +550,15 @@ Config:
 Desktop integration (Config tab, bottom table):
   status / binary location  info only, not editable
   setup                      register iprolaunch as the default .exe/.bat/.cmd/.msi
-                             handler, add it to the app/start menu, and install its icon
-  reapply                    re-point the registration at this binary's
+                             handler, add it to the app/start menu, install its icon,
+                             and add a file-manager right-click \"Add to IProLaunch
+                             Library\" action (KDE/GNOME/Cinnamon/MATE/XFCE, whichever
+                             are actually present — see `iprolaunch context-menu`
+                             for installing/removing just one of those on their own)
+  reapply                    re-point all of the above at this binary's
                              current path, without touching the saved
                              backup of what the default was before setup
-  uninstall                  remove the registration, app-menu entry, and icon,
-                             and restore that backup
+  uninstall                  remove all of the above and restore that backup
 
 env / winedlloverride entry list (global or per-profile):
   a                        add an entry (prompts for name, then value)
@@ -563,16 +569,57 @@ env / winedlloverride entry list (global or per-profile):
 Config file: ~/.config/iprolaunch/config.toml
 Profiles:    ~/.config/iprolaunch/profiles/<slug>/profile.toml
 ";
+
+pub fn help_text_line_count() -> u16 {
+    HELP_TEXT.lines().count() as u16
+}
+
+/// Clamps a requested scroll offset against the actual visible height of a
+/// bordered block — `help_scroll` itself is only soft-clamped against the
+/// total line count (see `mod::help_scroll_key`), so this is what stops it
+/// from scrolling past the real end into blank space.
+fn help_max_scroll(area_height: u16) -> u16 {
+    help_text_line_count().saturating_sub(area_height.saturating_sub(2))
+}
+
+fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
+    let scroll = app.help_scroll.min(help_max_scroll(area.height));
     frame.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help")),
+        Paragraph::new(HELP_TEXT)
+            .block(Block::default().borders(Borders::ALL).title("Help"))
+            .scroll((scroll, 0)),
         area,
     );
 }
 
+/// The `?` popup — same content as the Help tab, in a large centered
+/// overlay so it's usable from any tab without switching away from it.
+fn draw_help_popup(frame: &mut Frame, app: &App) {
+    let area = centered_rect(90, 90, frame.area());
+    frame.render_widget(Clear, area);
+    let scroll = app.help_scroll.min(help_max_scroll(area.height));
+    frame.render_widget(
+        Paragraph::new(HELP_TEXT)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Help (Esc to close)"),
+            )
+            .scroll((scroll, 0)),
+        area,
+    );
+}
+
+/// Global keys that work from (almost) anywhere — shown in the status bar
+/// whenever there's no real status message to display, so they're always
+/// visible without needing to check the Help tab/popup for them
+/// specifically.
+const GLOBAL_KEY_HINTS: &str = "q = quit   ? = help   1-4 / Tab / Shift-Tab = switch tabs";
+
 fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let text = match &app.status {
         Some(s) => Span::styled(s.clone(), Style::default().fg(Color::Yellow)),
-        None => Span::raw("Ready."),
+        None => Span::styled(GLOBAL_KEY_HINTS, Style::default().fg(Color::DarkGray)),
     };
     frame.render_widget(Paragraph::new(Line::from(text)), area);
 }
@@ -797,6 +844,7 @@ fn marquee_signature(app: &App) -> String {
         } => {
             format!("confirmrenameslug:{slug}:{candidate}")
         }
+        Mode::Help => "help".to_string(),
     };
     format!(
         "{:?}|{}|{}|{}|{:?}|{:?}|{:?}|{mode_part}",

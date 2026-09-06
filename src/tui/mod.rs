@@ -79,6 +79,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         Mode::ConfirmRenameSlug { .. } => {
             return profile_editor::confirm_rename_slug_key(app, code);
         }
+        Mode::Help => return help_popup_key(app, code),
         Mode::Normal => {}
     }
 
@@ -88,14 +89,43 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         KeyCode::Char('2') => app.tab = app::Tab::Library,
         KeyCode::Char('3') => app.tab = app::Tab::Config,
         KeyCode::Char('4') => app.tab = app::Tab::Help,
+        KeyCode::Char('?') => app.mode = Mode::Help,
         KeyCode::Tab => app.next_tab(),
         KeyCode::BackTab => app.prev_tab(),
         _ => match app.tab {
             app::Tab::Running => running::on_key(app, code),
             app::Tab::Library => library::on_key(app, code, terminal),
             app::Tab::Config => config::on_key(app, code, terminal),
-            app::Tab::Help => {}
+            app::Tab::Help => help_scroll_key(app, code),
         },
+    }
+}
+
+/// Esc closes the `?` popup (back to `Mode::Normal`); everything else is
+/// just scrolling, shared with the Help tab itself.
+fn help_popup_key(app: &mut App, code: KeyCode) {
+    if code == KeyCode::Esc {
+        app.mode = Mode::Normal;
+        return;
+    }
+    help_scroll_key(app, code);
+}
+
+/// Up/Down by one line, PageUp/PageDown by a full page, Home/End to jump to
+/// either end — used both by the Help tab (`Mode::Normal`) and the `?`
+/// popup (`Mode::Help`). Soft-clamped against the *total* line count here;
+/// `ui::draw_help`/`draw_help_popup` additionally clamp against the actual
+/// visible height at render time, so an exact bound here isn't needed.
+fn help_scroll_key(app: &mut App, code: KeyCode) {
+    let total = ui::help_text_line_count();
+    match code {
+        KeyCode::Up => app.help_scroll = app.help_scroll.saturating_sub(1),
+        KeyCode::Down => app.help_scroll = (app.help_scroll + 1).min(total),
+        KeyCode::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
+        KeyCode::PageDown => app.help_scroll = (app.help_scroll + 10).min(total),
+        KeyCode::Home => app.help_scroll = 0,
+        KeyCode::End => app.help_scroll = total,
+        _ => {}
     }
 }
 
@@ -312,5 +342,56 @@ mod tests {
         let (cursor, buffer) = cursor_and_buffer(&app);
         assert_eq!(buffer, "abc");
         assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn esc_closes_the_help_popup() {
+        let mut app = App::new(crate::config::Config::default());
+        app.mode = Mode::Help;
+        help_popup_key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn down_and_up_move_help_scroll_by_one_line() {
+        let mut app = App::new(crate::config::Config::default());
+        help_scroll_key(&mut app, KeyCode::Down);
+        help_scroll_key(&mut app, KeyCode::Down);
+        assert_eq!(app.help_scroll, 2);
+        help_scroll_key(&mut app, KeyCode::Up);
+        assert_eq!(app.help_scroll, 1);
+    }
+
+    #[test]
+    fn up_at_the_top_does_not_go_negative() {
+        let mut app = App::new(crate::config::Config::default());
+        help_scroll_key(&mut app, KeyCode::Up);
+        assert_eq!(app.help_scroll, 0);
+    }
+
+    #[test]
+    fn page_down_and_page_up_move_by_ten_lines() {
+        let mut app = App::new(crate::config::Config::default());
+        help_scroll_key(&mut app, KeyCode::PageDown);
+        assert_eq!(app.help_scroll, 10);
+        help_scroll_key(&mut app, KeyCode::PageUp);
+        assert_eq!(app.help_scroll, 0);
+    }
+
+    #[test]
+    fn end_jumps_to_the_bottom_and_home_back_to_the_top() {
+        let mut app = App::new(crate::config::Config::default());
+        help_scroll_key(&mut app, KeyCode::End);
+        assert_eq!(app.help_scroll, ui::help_text_line_count());
+        help_scroll_key(&mut app, KeyCode::Home);
+        assert_eq!(app.help_scroll, 0);
+    }
+
+    #[test]
+    fn down_does_not_scroll_past_the_total_line_count() {
+        let mut app = App::new(crate::config::Config::default());
+        app.help_scroll = ui::help_text_line_count();
+        help_scroll_key(&mut app, KeyCode::Down);
+        assert_eq!(app.help_scroll, ui::help_text_line_count());
     }
 }

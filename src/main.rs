@@ -1,10 +1,12 @@
 mod config;
+mod context_menu;
 mod gamedb;
 mod integrate;
 mod launch;
 mod logging;
 mod prefix;
 mod proton;
+mod quick_launch_cmd;
 mod running;
 mod tui;
 
@@ -43,6 +45,12 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Register an exe as a library profile without launching it — unlike
+    /// `run` (which launches, auto-creating the profile as a side effect) or
+    /// the TUI's own Library `a` (add-by-path, which also launches once,
+    /// the existing convention there). Useful for batch-registering
+    /// profiles, or setting one up before ever actually playing it.
+    Add { target: PathBuf },
     /// Inspect or manage the global config.
     Config {
         #[command(subcommand)]
@@ -69,6 +77,13 @@ enum Command {
     Integrate {
         #[command(subcommand)]
         action: IntegrateAction,
+    },
+    /// Install (or remove) a file-manager right-click "Add to IProLaunch
+    /// Library" action — see `helper-script/README.md` for what this does
+    /// per desktop environment (KDE/Dolphin, GNOME/Cinnamon/MATE, XFCE).
+    ContextMenu {
+        #[command(subcommand)]
+        action: ContextMenuAction,
     },
     /// `iprolaunch <name-or-slug> [args...]` — quick-launch a library entry by
     /// its display name or slug, no `run` prefix needed. Exists so a Steam
@@ -98,6 +113,19 @@ enum IntegrateAction {
     Install,
     /// Remove the `.desktop` file and default-handler registration.
     Uninstall,
+}
+
+#[derive(Subcommand)]
+enum ContextMenuAction {
+    /// Install the right-click action — every supported DE by default
+    /// (best-effort, one missing doesn't block the others), or just one.
+    Install {
+        de: Option<context_menu::DesktopEnv>,
+    },
+    /// Remove it — every supported DE by default, or just one.
+    Uninstall {
+        de: Option<context_menu::DesktopEnv>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -148,6 +176,24 @@ fn split_leading_env(args: Vec<String>) -> (Vec<(String, String)>, Vec<String>) 
         }
     }
     (env, Vec::new())
+}
+
+/// Registers `target` as a library profile (creating it if it's not already
+/// one, reusing the existing entry if it is — same lookup `run` uses) without
+/// launching anything. Also copies the quick-launch command to the
+/// clipboard (best-effort — a headless/no-clipboard environment, e.g. a
+/// file-manager script running detached, shouldn't fail the add over it).
+fn add_profile(target: &Path) -> Result<()> {
+    let target = target
+        .canonicalize()
+        .with_context(|| format!("target executable not found: {}", target.display()))?;
+    let (slug, profile) = launch::ensure_profile(&target)?;
+    println!("Added \"{}\" as [{slug}].", profile.name);
+    match quick_launch_cmd::copy_for_slug(&slug) {
+        Ok(command) => println!("Copied to clipboard: {command}"),
+        Err(err) => println!("Quick-launch with: iprolaunch {slug} ({err:#})"),
+    }
+    Ok(())
 }
 
 /// Resolves `query` against a profile's slug or display name (case-insensitive,
@@ -268,6 +314,7 @@ fn main() -> Result<()> {
                 args,
             },
         ),
+        Some(Command::Add { target }) => add_profile(&target),
         Some(Command::Config {
             action: ConfigAction::Show,
         }) => {
@@ -322,6 +369,12 @@ fn main() -> Result<()> {
         Some(Command::Integrate {
             action: IntegrateAction::Uninstall,
         }) => integrate::uninstall(),
+        Some(Command::ContextMenu {
+            action: ContextMenuAction::Install { de },
+        }) => context_menu::install(de),
+        Some(Command::ContextMenu {
+            action: ContextMenuAction::Uninstall { de },
+        }) => context_menu::uninstall(de),
         Some(Command::Quick(mut args)) => {
             if args.is_empty() {
                 anyhow::bail!("usage: iprolaunch <name-or-slug> [args...]");

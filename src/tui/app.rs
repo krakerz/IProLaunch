@@ -314,6 +314,11 @@ pub enum Mode {
         old_prefix_dir: std::path::PathBuf,
         new_prefix_dir: std::path::PathBuf,
     },
+    /// The `?` popup — the Help tab's own content shown as an overlay from
+    /// any tab, without losing your place there. Scroll position
+    /// (`App::help_scroll`) is shared with the Help tab itself, so it's
+    /// just "the same help, viewed a second way", not separate state.
+    Help,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +410,13 @@ pub struct App {
     pub profile_editor: Option<String>,
     pub profile_field_selected: usize,
 
+    /// Scroll offset (in lines) into the Help tab's static text — shared
+    /// between the Help tab itself and the `?` popup (`Mode::Help`), since
+    /// they render the exact same content. Render-time code additionally
+    /// clamps this against the actual visible height, so it's fine for this
+    /// to just be an unclamped running counter here.
+    pub help_scroll: u16,
+
     /// When the current marquee target (whatever `ui::draw` last computed
     /// a selection/mode signature for) started being displayed — reset by
     /// `sync_marquee` whenever that signature changes, so scrolling always
@@ -434,6 +446,7 @@ impl App {
             config_selected: 0,
             profile_editor: None,
             profile_field_selected: 0,
+            help_scroll: 0,
             marquee_reset_at: std::time::Instant::now(),
             marquee_last_signature: String::new(),
         };
