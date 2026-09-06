@@ -4,20 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
 
-use crate::config::{Config, Profile, RecordMode, project_dirs};
+use crate::config::{Config, Profile, RecordMode};
 use crate::logging::LogSession;
 use crate::prefix;
-
-#[derive(Serialize)]
-struct RunningEntry<'a> {
-    pid: u32,
-    name: &'a str,
-    target_path: &'a str,
-    prefix_path: &'a str,
-    started_at: String,
-}
+use crate::running;
 
 #[derive(Default)]
 pub struct RunOptions {
@@ -50,13 +41,11 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     fs::create_dir_all(&prefix_path)
         .with_context(|| format!("creating prefix dir {}", prefix_path.display()))?;
 
-    if let Some(version) = &effective.windows_version {
-        // Applying this means writing the prefix's Wine registry (normally via
-        // `winetricks win10`/`win7`/etc, run once against WINEPREFIX) — not
-        // implemented yet, see project NOTES.md.
-        eprintln!(
-            "iprolaunch: windows-version={version} is configured but not yet applied to the prefix (not implemented)"
-        );
+    if let Some(version) = &effective.windows_version
+        && let Err(err) = apply_windows_version(&prefix_path, version)
+    {
+        // Best-effort: a failed registry tweak shouldn't block the game itself.
+        eprintln!("iprolaunch: warning: failed to apply windows-version={version}: {err:#}");
     }
 
     // Per `man umu`: WINEPREFIX/PROTONPATH/GAMEID are all optional env vars;
@@ -87,13 +76,20 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     let mut child = command
         .spawn()
         .context("failed to spawn umu-run (is it installed and on $PATH?)")?;
-    let state_path = record_running(child.id(), &profile.name, &target, &prefix_path)?;
+    let state_path = running::record(child.id(), &profile.name, &target, &prefix_path)?;
 
     let status = child.wait().context("waiting for umu-run")?;
-    let _ = fs::remove_file(&state_path);
+    running::clear(&state_path);
 
     profile.last_launched = Some(time::OffsetDateTime::now_utc());
     profile.save(&slug)?;
+
+    if let Some(session) = &log_session
+        && let Ok(text) = fs::read_to_string(session.path())
+        && let Some(summary) = summarize_protonfixes(&text)
+    {
+        eprintln!("iprolaunch: {summary}");
+    }
 
     let log_path = match log_session {
         Some(session) => session.finish(status.success())?,
@@ -142,22 +138,83 @@ fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
     Ok((slug, profile))
 }
 
-fn record_running(pid: u32, name: &str, target: &Path, prefix_path: &Path) -> Result<PathBuf> {
-    let dir = project_dirs()?.config_dir().join("state").join("running");
-    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let path = dir.join(format!("{pid}.json"));
-    let entry = RunningEntry {
-        pid,
-        name,
-        target_path: &target.to_string_lossy(),
-        prefix_path: &prefix_path.to_string_lossy(),
-        started_at: time::OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default(),
-    };
-    fs::write(&path, serde_json::to_string_pretty(&entry)?)
-        .with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
+/// Reports whether `umu-run`'s own automatic ProtonFixes run found and
+/// applied anything game-specific, by scanning its captured output. `umu-run`
+/// always runs ProtonFixes itself (confirmed in NOTES.md) — this doesn't
+/// reimplement or trigger it, just surfaces the result, which otherwise only
+/// shows up buried in the log file.
+///
+/// Per protonfixes' own source (`fix.py`'s `_run_fix`), the two messages that
+/// matter are `Using {stage} stage {scope} protonfix for {name} ({id})`
+/// (applied) and `No {stage} stage {scope} protonfix found for {name} ({id})`
+/// (not applied) — deliberately distinct from its `... {scope} defaults for
+/// ...` messages, which are generic per-store setup that runs on every
+/// launch regardless of game and would be noise to report as "a fix was
+/// applied". Returns `None` if ProtonFixes didn't run at all (e.g.
+/// `PROTONFIXES_DISABLE=1`), so this stays silent rather than printing
+/// anything about protonfixes when there's genuinely nothing to say.
+fn summarize_protonfixes(log_text: &str) -> Option<String> {
+    let mut ran_at_all = false;
+    let mut applied = Vec::new();
+
+    for line in log_text.lines() {
+        let Some(msg) = line.split_once("ProtonFixes[").map(|(_, r)| r) else {
+            continue;
+        };
+        ran_at_all = true;
+        if let Some(idx) = msg.find("Using ")
+            && msg[idx..].contains(" protonfix for ")
+        {
+            applied.push(msg[idx..].trim().to_string());
+        }
+    }
+
+    if !ran_at_all {
+        return None;
+    }
+    Some(if applied.is_empty() {
+        "no protonfix found for this game".to_string()
+    } else {
+        format!("protonfix applied — {}", applied.join("; "))
+    })
+}
+
+/// Sets the prefix's reported Windows version via `winetricks -q <version>`.
+/// Uses the system winetricks/wine rather than the Proton build's own bundled
+/// wine (there's no clean way to know which build umu-run resolved to ahead
+/// of its own run) — fine for these verbs specifically, since `win7`/`win10`/
+/// etc. only rewrite a few registry keys rather than run real Windows code,
+/// and winetricks already tracks applied verbs in the prefix and skips
+/// reapplying, so calling this on every launch is cheap once it's set.
+///
+/// Kills any wineserver already bound to this prefix first, but only when
+/// nothing of ours is actually running against it — a previous launch's
+/// Proton-bundled wineserver can be left stale/attached, and if its version
+/// doesn't match the system wine's, winetricks fails outright (observed:
+/// `wine client error:0: version mismatch 856/961` — confirmed by testing,
+/// see project NOTES.md). Checking `running::is_prefix_active` first matters:
+/// unconditionally killing it would just as easily tear down a wineserver
+/// that's genuinely still in use (e.g. the same exe launched twice, or two
+/// exes sharing a prefix in single mode).
+fn apply_windows_version(prefix_path: &Path, version: &str) -> Result<()> {
+    if !running::is_prefix_active(&prefix_path.to_string_lossy()) {
+        Command::new("wineserver")
+            .arg("-k")
+            .env("WINEPREFIX", prefix_path)
+            .status()
+            .ok();
+    }
+
+    let status = Command::new("winetricks")
+        .arg("-q")
+        .arg(version)
+        .env("WINEPREFIX", prefix_path)
+        .status()
+        .context("failed to run winetricks (is it installed and on $PATH?)")?;
+    if !status.success() {
+        bail!("winetricks {version} exited with {status}");
+    }
+    Ok(())
 }
 
 fn open_in_pager(path: &Path) {
@@ -195,5 +252,48 @@ mod tests {
 
         assert_eq!(merged.get("PROTON_LOG").map(String::as_str), Some("0"));
         assert_eq!(merged.get("MANGOHUD").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn protonfix_not_found_reported_from_real_observed_log_excerpt() {
+        // Verbatim excerpt from the 2026-09-05 self-test (GAMEID unset).
+        let log = "\
+ProtonFixes[1298151] INFO: Running protonfixes on \"UMU-Proton-10.0-4\", build at 2026-03-30 07:33:47+00:00.
+ProtonFixes[1298151] INFO: Running checks
+ProtonFixes[1298151] INFO: All checks successful
+ProtonFixes[1298151] WARN: Game title not found in CSV
+ProtonFixes[1298151] INFO: Non-steam game UNKNOWN (umu-default)
+ProtonFixes[1298151] INFO: No store specified, using UMU database
+ProtonFixes[1298151] INFO: Using early stage global defaults for UNKNOWN (umu-default)
+ProtonFixes[1298151] INFO: No early stage global protonfix found for UNKNOWN (umu-default)
+ProtonFixes[1298151] INFO: Using main stage global defaults for UNKNOWN (umu-default)
+ProtonFixes[1298151] INFO: No main stage global protonfix found for UNKNOWN (umu-default)
+";
+        assert_eq!(
+            summarize_protonfixes(log),
+            Some("no protonfix found for this game".to_string())
+        );
+    }
+
+    #[test]
+    fn protonfix_applied_is_distinguished_from_defaults() {
+        // Matches protonfixes' own fix.py message format for a real fix,
+        // not the generic "... defaults for ..." that runs on every launch.
+        let log = "\
+ProtonFixes[1298151] INFO: Using early stage global defaults for Some Game (12345)
+ProtonFixes[1298151] INFO: Using early stage global protonfix for Some Game (12345)
+";
+        let summary = summarize_protonfixes(log).unwrap();
+        assert!(summary.starts_with("protonfix applied"));
+        assert!(summary.contains("Some Game (12345)"));
+        assert!(!summary.contains("defaults"));
+    }
+
+    #[test]
+    fn no_summary_when_protonfixes_never_ran() {
+        assert_eq!(
+            summarize_protonfixes("some unrelated umu-run output\n"),
+            None
+        );
     }
 }

@@ -2,6 +2,7 @@ mod config;
 mod launch;
 mod logging;
 mod prefix;
+mod running;
 mod tui;
 
 use std::path::{Path, PathBuf};
@@ -48,6 +49,11 @@ enum Command {
         #[command(subcommand)]
         action: LibraryAction,
     },
+    /// Inspect or kill launches started by this wrapper.
+    Running {
+        #[command(subcommand)]
+        action: RunningAction,
+    },
     /// `iprolaunch <name-or-slug> [args...]` — quick-launch a library entry by
     /// its display name or slug, no `run` prefix needed. Exists so a Steam
     /// (Deck or desktop) non-Steam-game shortcut can point straight at
@@ -66,6 +72,14 @@ enum ConfigAction {
 enum LibraryAction {
     /// List every known profile.
     List,
+}
+
+#[derive(Subcommand)]
+enum RunningAction {
+    /// List currently-running launches (reaps stale entries as it goes).
+    List,
+    /// Send SIGTERM to a running launch, by pid or by its profile name.
+    Kill { target: String },
 }
 
 fn parse_env_kv(s: &str) -> Result<(String, String), String> {
@@ -136,6 +150,28 @@ fn quick_launch(cfg: &Config, query: &str, extra_args: Vec<String>) -> Result<()
     )
 }
 
+/// Resolves `target` as the displayed pid first, falling back to a
+/// case-insensitive match against a running entry's profile name, then
+/// terminates every process belonging to that launch (see
+/// `running::terminate`'s doc comment for why that's more than one pid).
+fn kill_running(target: &str) -> Result<()> {
+    let entries = running::list_live()?;
+    let matches: Vec<_> = if let Ok(pid) = target.parse::<u32>() {
+        entries.iter().filter(|e| e.pid == pid).collect()
+    } else {
+        entries
+            .iter()
+            .filter(|e| e.name.eq_ignore_ascii_case(target))
+            .collect()
+    };
+
+    match matches.as_slice() {
+        [one] => running::terminate(&one.prefix_path),
+        [] => anyhow::bail!("nothing running matches `{target}` — check `iprolaunch running list`"),
+        _ => anyhow::bail!("`{target}` matches more than one running entry — use its pid"),
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load_or_init()?;
@@ -175,6 +211,21 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some(Command::Running {
+            action: RunningAction::List,
+        }) => {
+            let entries = running::list_live()?;
+            if entries.is_empty() {
+                println!("Nothing running.");
+            }
+            for e in entries {
+                println!("{}  [pid {}]  {}", e.name, e.pid, e.target_path);
+            }
+            Ok(())
+        }
+        Some(Command::Running {
+            action: RunningAction::Kill { target },
+        }) => kill_running(&target),
         Some(Command::Quick(mut args)) => {
             if args.is_empty() {
                 anyhow::bail!("usage: iprolaunch <name-or-slug> [args...]");

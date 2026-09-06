@@ -81,7 +81,7 @@ jobs:
              And quick-launch it by name (e.g. for a Steam shortcut):
                iprolaunch "<name-from-library-list>"
 
-          Repo: https://github.com/<owner>/iprolaunch
+          Repo: https://github.com/krakerz/IProLaunch
           EOF
           tar -czf "$bundle.tar.gz" "$bundle"
 
