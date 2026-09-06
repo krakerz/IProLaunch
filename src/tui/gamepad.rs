@@ -89,6 +89,10 @@ fn translate(button: Button) -> Option<KeyCode> {
         // button can never delete anything, exactly like Enter alone
         // doesn't confirm these on a keyboard either.
         Button::RightTrigger2 => Some(KeyCode::Char('y')),
+        // LT: Library's "add to Steam" — mirrors RT's `y` above (also a
+        // trigger, also its own dedicated button rather than reusing A),
+        // just for a non-destructive action instead of a confirm.
+        Button::LeftTrigger2 => Some(KeyCode::Char('s')),
         _ => None,
     }
 }
@@ -117,6 +121,11 @@ mod tests {
     fn right_trigger_2_confirms_a_destructive_prompt_distinctly_from_south() {
         assert_eq!(translate(Button::RightTrigger2), Some(KeyCode::Char('y')));
         assert_ne!(translate(Button::RightTrigger2), translate(Button::South));
+    }
+
+    #[test]
+    fn left_trigger_2_maps_to_add_to_steam() {
+        assert_eq!(translate(Button::LeftTrigger2), Some(KeyCode::Char('s')));
     }
 
     #[test]

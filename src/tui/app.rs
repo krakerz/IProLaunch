@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::config::{
     Config, GamescopeFilter, GamescopeScaler, GamescopeSetting, LogMode, PrefixMode, Profile,
     RecordMode,
@@ -419,7 +421,26 @@ pub enum Mode {
         slug: String,
         name: String,
     },
+    /// Library `s` on a profile not yet in Steam (`s` on one already in
+    /// Steam just reports "already added" instead of opening this — see
+    /// `library::prompt_add_to_steam`): a small 3-item navigable list
+    /// (Up/Down/Enter, exactly like `ProtonPicker`'s), not a plain y/N
+    /// prompt, since there are 3 real outcomes, not 2.
+    ConfirmAddToSteam {
+        slug: String,
+        name: String,
+        selected: usize,
+    },
 }
+
+/// The 3 selectable rows of `Mode::ConfirmAddToSteam`, in order — index into
+/// this with `selected` for both the label to render and, on `Enter`, which
+/// action to take. `len()` is used for `Up`/`Down` wraparound.
+pub const CONFIRM_ADD_TO_STEAM_OPTIONS: [&str; 3] = [
+    "Add (no gamescope flag)",
+    "Add with gamescope flag",
+    "Cancel",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapEntryStep {
@@ -522,6 +543,11 @@ pub struct App {
     pub library_filter: Option<String>,
     /// Same as `running_filter_editing`, for the Library tab.
     pub library_filter_editing: bool,
+    /// Every slug `steam_shortcut::slugs_in_steam()` detected at startup (or
+    /// the last `r`efresh/successful `s` add) — drives the Library list's
+    /// per-row "S" marker and whether pressing `s` opens the add-confirm
+    /// popup or just reports "already added" (see `library::prompt_add_to_steam`).
+    pub steam_slugs: HashSet<String>,
 
     pub config_selected: usize,
 
@@ -571,6 +597,7 @@ impl App {
             library_selected: 0,
             library_filter: None,
             library_filter_editing: false,
+            steam_slugs: HashSet::new(),
             config_selected: 0,
             profile_editor: None,
             profile_field_selected: 0,
@@ -580,7 +607,16 @@ impl App {
         };
         app.refresh_running();
         app.refresh_profiles();
+        app.refresh_steam_status();
         app
+    }
+
+    /// Re-scans Steam's `shortcuts.vdf` for slugs already added — best-effort,
+    /// see `steam_shortcut::slugs_in_steam`'s own doc comment. Called at
+    /// startup and after a successful `s` add, so the "S" marker/`s` key's
+    /// behavior stay accurate without needing a full TUI restart.
+    pub fn refresh_steam_status(&mut self) {
+        self.steam_slugs = crate::steam_shortcut::slugs_in_steam();
     }
 
     pub fn refresh_running(&mut self) {

@@ -6,7 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{Config, Profile, RecordMode};
+use crate::config::{Config, Effective, Profile, RecordMode};
 use crate::gamedb;
 use crate::logging::LogSession;
 use crate::prefix;
@@ -73,6 +73,29 @@ impl GamescopeMode {
         }
         args
     }
+}
+
+/// This profile's own `-f`/`-w`/`-b` — iprolaunch's own CLI letters, not
+/// gamescope's (distinct from `GamescopeMode::args()`, which are gamescope's
+/// own flags for the `gamescope` subprocess) — as resolved from its
+/// `Effective` config (the same values a plain `iprolaunch <slug>` with no
+/// CLI flags at all already applies automatically). Used by
+/// `steam_shortcut.rs` to optionally bake the equivalent of typing these by
+/// hand into a Steam shortcut's own Launch Options, each as its own token
+/// (confirmed real Steam behavior: one value per quoted Launch-Options
+/// segment, e.g. `"-w" "<slug>"` — a single segment with a space inside,
+/// like `"-w <slug>"`, does not work).
+pub fn iprolaunch_cli_flags_for(effective: &Effective) -> Vec<&'static str> {
+    let mut flags = Vec::new();
+    match effective.gamescope {
+        crate::config::GamescopeSetting::None => {}
+        crate::config::GamescopeSetting::Fullscreen => flags.push("-f"),
+        crate::config::GamescopeSetting::Maximize => flags.push("-w"),
+    }
+    if effective.gamescope_settings.borderless == Some(true) {
+        flags.push("-b");
+    }
+    flags
 }
 
 impl From<crate::config::GamescopeSetting> for GamescopeMode {
@@ -143,6 +166,31 @@ fn gamescope_settings_args(settings: &crate::config::GamescopeSettings) -> Vec<S
         args.push("--adaptive-sync".to_string());
     }
     args
+}
+
+/// True when this process is already running inside an existing `gamescope`
+/// session — Steam Game Mode always is one. Checked via
+/// `GAMESCOPE_WAYLAND_DISPLAY`, the same environment variable gamescope
+/// itself sets for every child process, and the same one its own WSI
+/// layer's `isRunningUnderGamescope()` reads (confirmed straight from
+/// gamescope's real source, `layer/VkLayer_FROG_gamescope_wsi.cpp`, not
+/// guessed) — its presence means some gamescope instance already owns this
+/// session's display.
+fn already_under_gamescope() -> bool {
+    std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some()
+}
+
+/// Whether to actually spawn our own nested `gamescope` for this launch:
+/// `requested` (a CLI flag, a profile's remembered default, or a flag baked
+/// into a Steam shortcut's Launch Options — see `steam_shortcut.rs`) AND we
+/// aren't already running inside one. Nesting gamescope inside gamescope is
+/// exactly the scenario that produces "Gamescope WSI Layer Error / Hooking
+/// has failed somewhere" (see `GamescopeMode`'s doc comment above) — Steam
+/// Game Mode always puts every launch inside its own outer gamescope, so
+/// this makes every gamescope-wrapping launch path automatically safe
+/// there instead of crashing, with no new flag for a user to remember.
+fn should_wrap_with_gamescope(requested: bool, already_nested: bool) -> bool {
+    requested && !already_nested
 }
 
 fn gamescope_filter_value(filter: crate::config::GamescopeFilter) -> &'static str {
@@ -233,9 +281,19 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     gamescope.borderless =
         opts.gamescope.borderless || effective.gamescope_settings.borderless.unwrap_or(false);
 
+    let already_nested = already_under_gamescope();
+    if gamescope.is_active() && already_nested {
+        eprintln!(
+            "iprolaunch: already running under gamescope (e.g. Steam Game Mode) — skipping the \
+             nested wrap (it would fail with \"Gamescope WSI Layer Error\"); launching directly \
+             instead."
+        );
+    }
+    let wrap_with_gamescope = should_wrap_with_gamescope(gamescope.is_active(), already_nested);
+
     // Per `man umu`: WINEPREFIX/PROTONPATH/GAMEID are all optional env vars;
     // GAMEID defaults to "umu-default" when unset.
-    let mut command = if gamescope.is_active() {
+    let mut command = if wrap_with_gamescope {
         let mut c = Command::new("gamescope");
         c.args(gamescope.args());
         c.args(gamescope_settings_args(&effective.gamescope_settings));
@@ -302,8 +360,8 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     };
 
     let mut child = command.spawn().with_context(|| {
-        if gamescope.is_active() {
-            "failed to spawn gamescope (is it installed and on $PATH? required for -f/-m)"
+        if wrap_with_gamescope {
+            "failed to spawn gamescope (is it installed and on $PATH? required for -f/-w/-b)"
                 .to_string()
         } else {
             "failed to spawn umu-run (is it installed and on $PATH?)".to_string()
@@ -610,6 +668,31 @@ mod tests {
             borderless: true,
         };
         assert_eq!(mode.args(), vec!["-f", "--force-windows-fullscreen", "-b"]);
+    }
+
+    #[test]
+    fn should_wrap_with_gamescope_only_when_requested_and_not_already_nested() {
+        assert!(should_wrap_with_gamescope(true, false));
+        assert!(!should_wrap_with_gamescope(true, true));
+        assert!(!should_wrap_with_gamescope(false, false));
+        assert!(!should_wrap_with_gamescope(false, true));
+    }
+
+    #[test]
+    fn iprolaunch_cli_flags_for_maps_gamescope_setting_and_borderless() {
+        use crate::config::{Config, GamescopeSetting};
+        let mut cfg = Config::default();
+        assert!(iprolaunch_cli_flags_for(&cfg.effective(None)).is_empty());
+
+        cfg.defaults.gamescope = GamescopeSetting::Fullscreen;
+        assert_eq!(iprolaunch_cli_flags_for(&cfg.effective(None)), vec!["-f"]);
+
+        cfg.defaults.gamescope = GamescopeSetting::Maximize;
+        cfg.defaults.gamescope_settings.borderless = Some(true);
+        assert_eq!(
+            iprolaunch_cli_flags_for(&cfg.effective(None)),
+            vec!["-w", "-b"]
+        );
     }
 
     #[test]
