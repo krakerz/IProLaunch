@@ -47,9 +47,9 @@ entry.
   directly, not nested inside a desktop session, so without it `-w`
   produces a small window instead of actually filling the screen), the
   game's own internal render resolution, a refresh cap, the upscale
-  filter, and relative-mouse-mode (`--force-grab-cursor`) are all
-  configurable too (Config tab / profile editor, blank = let gamescope
-  decide).
+  filter/strategy, relative-mouse-mode (`--force-grab-cursor`), and
+  adaptive-sync/VRR are all configurable too (Config tab / profile editor,
+  blank = let gamescope decide).
 - Per-launch logging with configurable retention, one shared log folder or
   one per profile.
 - `proton list` / `config init` detect installed Proton builds everywhere

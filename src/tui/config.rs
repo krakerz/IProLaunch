@@ -182,6 +182,10 @@ fn cycle_field(app: &mut App, field: ConfigField) {
             app.cfg.defaults.gamescope_settings.filter =
                 app::next_gamescope_filter(app.cfg.defaults.gamescope_settings.filter);
         }
+        ConfigField::GamescopeScaler => {
+            app.cfg.defaults.gamescope_settings.scaler =
+                app::next_gamescope_scaler(app.cfg.defaults.gamescope_settings.scaler);
+        }
         ConfigField::GamescopeBorderless => {
             app.cfg.defaults.gamescope_settings.borderless =
                 app::next_optional_bool(app.cfg.defaults.gamescope_settings.borderless);
@@ -189,6 +193,10 @@ fn cycle_field(app: &mut App, field: ConfigField) {
         ConfigField::GamescopeGrabCursor => {
             app.cfg.defaults.gamescope_settings.grab_cursor =
                 app::next_optional_bool(app.cfg.defaults.gamescope_settings.grab_cursor);
+        }
+        ConfigField::GamescopeAdaptiveSync => {
+            app.cfg.defaults.gamescope_settings.adaptive_sync =
+                app::next_optional_bool(app.cfg.defaults.gamescope_settings.adaptive_sync);
         }
         _ => {}
     }

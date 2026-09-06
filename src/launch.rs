@@ -98,12 +98,14 @@ impl From<crate::config::GamescopeSetting> for GamescopeMode {
 /// when it owns the display directly, not nested in an existing desktop
 /// session), `-r` (refresh rate cap), `-w`/`-h` (the game's own internal
 /// render resolution), `-F` (upscale filter when nested/output resolutions
-/// differ), `--force-grab-cursor` (relative mouse mode, config-only — see
-/// `GamescopeSettings::grab_cursor`'s doc comment for why it's not a CLI
-/// flag). `borderless` is handled separately, merged into `GamescopeMode`
-/// alongside the CLI `-b` flag instead (see `run`) — everything else here
-/// is only meaningful, and only ever appended, when `gamescope` is
-/// actually wrapping the launch at all (`GamescopeMode::is_active()`).
+/// differ), `-S` (upscale strategy, pairs with `-F`), `--force-grab-cursor`
+/// (relative mouse mode, config-only — see `GamescopeSettings::grab_cursor`'s
+/// doc comment for why it's not a CLI flag), `--adaptive-sync` (VRR,
+/// config-only, no CLI equivalent). `borderless` is handled separately,
+/// merged into `GamescopeMode` alongside the CLI `-b` flag instead (see
+/// `run`) — everything else here is only meaningful, and only ever
+/// appended, when `gamescope` is actually wrapping the launch at all
+/// (`GamescopeMode::is_active()`).
 fn gamescope_settings_args(settings: &crate::config::GamescopeSettings) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(w) = settings.output_width {
@@ -130,8 +132,15 @@ fn gamescope_settings_args(settings: &crate::config::GamescopeSettings) -> Vec<S
         args.push("-F".to_string());
         args.push(gamescope_filter_value(filter).to_string());
     }
+    if let Some(scaler) = settings.scaler {
+        args.push("-S".to_string());
+        args.push(gamescope_scaler_value(scaler).to_string());
+    }
     if settings.grab_cursor == Some(true) {
         args.push("--force-grab-cursor".to_string());
+    }
+    if settings.adaptive_sync == Some(true) {
+        args.push("--adaptive-sync".to_string());
     }
     args
 }
@@ -144,6 +153,17 @@ fn gamescope_filter_value(filter: crate::config::GamescopeFilter) -> &'static st
         Fsr => "fsr",
         Nis => "nis",
         Pixel => "pixel",
+    }
+}
+
+fn gamescope_scaler_value(scaler: crate::config::GamescopeScaler) -> &'static str {
+    use crate::config::GamescopeScaler::{Auto, Fill, Fit, Integer, Stretch};
+    match scaler {
+        Auto => "auto",
+        Integer => "integer",
+        Fit => "fit",
+        Fill => "fill",
+        Stretch => "stretch",
     }
 }
 
@@ -613,7 +633,7 @@ mod tests {
 
     #[test]
     fn gamescope_settings_args_maps_every_field_to_its_real_flag() {
-        use crate::config::{GamescopeFilter, GamescopeSettings};
+        use crate::config::{GamescopeFilter, GamescopeScaler, GamescopeSettings};
         let settings = GamescopeSettings {
             output_width: Some(1920),
             output_height: Some(1080),
@@ -621,13 +641,16 @@ mod tests {
             nested_width: Some(1280),
             nested_height: Some(800),
             filter: Some(GamescopeFilter::Fsr),
+            scaler: Some(GamescopeScaler::Fit),
             borderless: None,
             grab_cursor: None,
+            adaptive_sync: None,
         };
         assert_eq!(
             gamescope_settings_args(&settings),
             vec![
                 "-W", "1920", "-H", "1080", "-r", "60", "-w", "1280", "-h", "800", "-F", "fsr",
+                "-S", "fit",
             ]
         );
     }
@@ -657,6 +680,26 @@ mod tests {
     }
 
     #[test]
+    fn gamescope_settings_args_maps_scaler_and_adaptive_sync() {
+        use crate::config::{GamescopeScaler, GamescopeSettings};
+        let settings = GamescopeSettings {
+            scaler: Some(GamescopeScaler::Auto),
+            adaptive_sync: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            gamescope_settings_args(&settings),
+            vec!["-S", "auto", "--adaptive-sync"]
+        );
+
+        let settings = GamescopeSettings {
+            adaptive_sync: Some(false),
+            ..Default::default()
+        };
+        assert!(gamescope_settings_args(&settings).is_empty());
+    }
+
+    #[test]
     fn gamescope_filter_value_matches_real_gamescope_option_names() {
         use crate::config::GamescopeFilter::*;
         assert_eq!(gamescope_filter_value(Linear), "linear");
@@ -664,6 +707,16 @@ mod tests {
         assert_eq!(gamescope_filter_value(Fsr), "fsr");
         assert_eq!(gamescope_filter_value(Nis), "nis");
         assert_eq!(gamescope_filter_value(Pixel), "pixel");
+    }
+
+    #[test]
+    fn gamescope_scaler_value_matches_real_gamescope_option_names() {
+        use crate::config::GamescopeScaler::*;
+        assert_eq!(gamescope_scaler_value(Auto), "auto");
+        assert_eq!(gamescope_scaler_value(Integer), "integer");
+        assert_eq!(gamescope_scaler_value(Fit), "fit");
+        assert_eq!(gamescope_scaler_value(Fill), "fill");
+        assert_eq!(gamescope_scaler_value(Stretch), "stretch");
     }
 
     #[test]

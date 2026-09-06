@@ -1,5 +1,6 @@
 use crate::config::{
-    Config, GamescopeFilter, GamescopeSetting, LogMode, PrefixMode, Profile, RecordMode,
+    Config, GamescopeFilter, GamescopeScaler, GamescopeSetting, LogMode, PrefixMode, Profile,
+    RecordMode,
 };
 use crate::proton::ProtonBuild;
 use crate::running::{self, RunningEntry};
@@ -56,8 +57,10 @@ pub enum ConfigField {
     GamescopeNestedWidth,
     GamescopeNestedHeight,
     GamescopeFilter,
+    GamescopeScaler,
     GamescopeBorderless,
     GamescopeGrabCursor,
+    GamescopeAdaptiveSync,
     LogMode,
     LogPath,
     LogKeep,
@@ -69,7 +72,7 @@ pub enum ConfigField {
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 22] = [
+    pub const ALL: [ConfigField; 24] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
@@ -82,8 +85,10 @@ impl ConfigField {
         ConfigField::GamescopeNestedWidth,
         ConfigField::GamescopeNestedHeight,
         ConfigField::GamescopeFilter,
+        ConfigField::GamescopeScaler,
         ConfigField::GamescopeBorderless,
         ConfigField::GamescopeGrabCursor,
+        ConfigField::GamescopeAdaptiveSync,
         ConfigField::LogMode,
         ConfigField::LogPath,
         ConfigField::LogKeep,
@@ -108,8 +113,10 @@ impl ConfigField {
             ConfigField::GamescopeNestedWidth => "gamescope_settings.nested_width",
             ConfigField::GamescopeNestedHeight => "gamescope_settings.nested_height",
             ConfigField::GamescopeFilter => "gamescope_settings.filter",
+            ConfigField::GamescopeScaler => "gamescope_settings.scaler",
             ConfigField::GamescopeBorderless => "gamescope_settings.borderless",
             ConfigField::GamescopeGrabCursor => "gamescope_settings.grab_cursor",
+            ConfigField::GamescopeAdaptiveSync => "gamescope_settings.adaptive_sync",
             ConfigField::LogMode => "logging.mode",
             ConfigField::LogPath => "logging.path (blank = default)",
             ConfigField::LogKeep => "logging.keep",
@@ -133,8 +140,10 @@ impl ConfigField {
             | ConfigField::LogRecord
             | ConfigField::Gamescope
             | ConfigField::GamescopeFilter
+            | ConfigField::GamescopeScaler
             | ConfigField::GamescopeBorderless
-            | ConfigField::GamescopeGrabCursor => FieldKind::Cycle,
+            | ConfigField::GamescopeGrabCursor
+            | ConfigField::GamescopeAdaptiveSync => FieldKind::Cycle,
             ConfigField::LogAutoOpen => FieldKind::Toggle,
             ConfigField::LogKeep | ConfigField::GamedbInterval => FieldKind::Number,
             ConfigField::PrefixPath
@@ -234,8 +243,10 @@ pub enum ProfileField {
     GamescopeNestedWidth,
     GamescopeNestedHeight,
     GamescopeFilter,
+    GamescopeScaler,
     GamescopeBorderless,
     GamescopeGrabCursor,
+    GamescopeAdaptiveSync,
     LogKeep,
     LogRecord,
     LogAutoOpen,
@@ -244,7 +255,7 @@ pub enum ProfileField {
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 22] = [
+    pub const ALL: [ProfileField; 24] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
@@ -260,8 +271,10 @@ impl ProfileField {
         ProfileField::GamescopeNestedWidth,
         ProfileField::GamescopeNestedHeight,
         ProfileField::GamescopeFilter,
+        ProfileField::GamescopeScaler,
         ProfileField::GamescopeBorderless,
         ProfileField::GamescopeGrabCursor,
+        ProfileField::GamescopeAdaptiveSync,
         ProfileField::LogKeep,
         ProfileField::LogRecord,
         ProfileField::LogAutoOpen,
@@ -286,8 +299,10 @@ impl ProfileField {
             ProfileField::GamescopeNestedWidth => "gamescope_settings.nested_width override",
             ProfileField::GamescopeNestedHeight => "gamescope_settings.nested_height override",
             ProfileField::GamescopeFilter => "gamescope_settings.filter override",
+            ProfileField::GamescopeScaler => "gamescope_settings.scaler override",
             ProfileField::GamescopeBorderless => "gamescope_settings.borderless override",
             ProfileField::GamescopeGrabCursor => "gamescope_settings.grab_cursor override",
+            ProfileField::GamescopeAdaptiveSync => "gamescope_settings.adaptive_sync override",
             ProfileField::LogKeep => "logging.keep override",
             ProfileField::LogRecord => "logging.record override",
             ProfileField::LogAutoOpen => "logging.auto_open override",
@@ -310,8 +325,10 @@ impl ProfileField {
             | ProfileField::LogAutoOpen
             | ProfileField::Gamescope
             | ProfileField::GamescopeFilter
+            | ProfileField::GamescopeScaler
             | ProfileField::GamescopeBorderless
-            | ProfileField::GamescopeGrabCursor => FieldKind::Cycle,
+            | ProfileField::GamescopeGrabCursor
+            | ProfileField::GamescopeAdaptiveSync => FieldKind::Cycle,
             ProfileField::TargetPath
             | ProfileField::Slug
             | ProfileField::Name
@@ -843,6 +860,20 @@ pub fn next_gamescope_filter(m: Option<GamescopeFilter>) -> Option<GamescopeFilt
     }
 }
 
+/// Cycles `gamescope_settings.scaler` — same treatment as
+/// `next_gamescope_filter` (pairs with it, both `Option`-wrapped at every
+/// level).
+pub fn next_gamescope_scaler(m: Option<GamescopeScaler>) -> Option<GamescopeScaler> {
+    match m {
+        None => Some(GamescopeScaler::Auto),
+        Some(GamescopeScaler::Auto) => Some(GamescopeScaler::Integer),
+        Some(GamescopeScaler::Integer) => Some(GamescopeScaler::Fit),
+        Some(GamescopeScaler::Fit) => Some(GamescopeScaler::Fill),
+        Some(GamescopeScaler::Fill) => Some(GamescopeScaler::Stretch),
+        Some(GamescopeScaler::Stretch) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -946,6 +977,23 @@ mod tests {
         assert_eq!(f, Some(GamescopeFilter::Pixel));
         f = next_gamescope_filter(f);
         assert_eq!(f, None);
+    }
+
+    #[test]
+    fn gamescope_scaler_cycle_covers_every_variant_and_returns_to_none() {
+        let mut s = None;
+        s = next_gamescope_scaler(s);
+        assert_eq!(s, Some(GamescopeScaler::Auto));
+        s = next_gamescope_scaler(s);
+        assert_eq!(s, Some(GamescopeScaler::Integer));
+        s = next_gamescope_scaler(s);
+        assert_eq!(s, Some(GamescopeScaler::Fit));
+        s = next_gamescope_scaler(s);
+        assert_eq!(s, Some(GamescopeScaler::Fill));
+        s = next_gamescope_scaler(s);
+        assert_eq!(s, Some(GamescopeScaler::Stretch));
+        s = next_gamescope_scaler(s);
+        assert_eq!(s, None);
     }
 
     #[test]
