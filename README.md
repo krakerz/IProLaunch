@@ -70,6 +70,17 @@ entry.
 - Library `p` runs `winetricks` against the exact prefix a real launch of
   that game would use (confirms first) — the shared prefix, or that game's
   own if in per-slug mode.
+- Library `s` adds a game to Steam as a non-Steam-game shortcut, live —
+  via Steam's own "Add a Non-Steam Game" importer, not by editing
+  `shortcuts.vdf` directly, so no Steam restart is needed and there's no
+  risk of Steam overwriting a concurrent edit. Optionally bakes this game's
+  own gamescope flags into the shortcut; shows up under its title (if set)
+  or its name with the internal "#N" suffix stripped. A per-row marker
+  shows which games are already added; re-adding an already-added game
+  isn't offered (there's no way to update a Steam shortcut this way, only
+  add a new one), and any gamescope wrap now automatically skips itself
+  when already running under gamescope (Steam Game Mode always is),
+  instead of crashing.
 - Gamepad navigation — a real controller (a Steam Deck's, via Steam Input's
   Gamepad layout on a non-Steam-game shortcut, or any plain USB/Bluetooth
   pad) works alongside the keyboard with zero setup: D-pad to move, A to

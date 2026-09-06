@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [1.20.0] — 2026-09-06
+
+### Added
+- Library `s`: adds a game to Steam as a non-Steam-game shortcut live, via Steam's own "Add a Non-Steam Game" importer (no `shortcuts.vdf` editing, no Steam restart) — optionally bakes in this game's own gamescope flags; shows under its title or name (no internal "#N" suffix); a per-row marker shows what's already added; re-adding an already-added game is refused rather than creating a duplicate.
+- `iprolaunch library add-to-steam <name-or-slug> [--gamescope]` — the CLI equivalent.
+- Gamepad: LT triggers Library's `s`.
+
+### Fixed
+- Any gamescope wrap (`-f`/`-w`/`-b`, a profile's remembered default, or one baked into a Steam shortcut) now automatically skips itself when already running under gamescope (Steam Game Mode always is) instead of crashing with "Gamescope WSI Layer Error".
+
+### Changed
+- Library title bar (and its shortcut legend) now marquee-scrolls when too long for the terminal instead of being cut off.
+
 ## [1.19.5] — 2026-09-06
 
 ### Added

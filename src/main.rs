@@ -8,6 +8,7 @@ mod prefix;
 mod proton;
 mod quick_launch_cmd;
 mod running;
+mod steam_shortcut;
 mod tui;
 
 use std::io::Write;
@@ -159,6 +160,20 @@ enum ContextMenuAction {
 enum LibraryAction {
     /// List every known profile.
     List,
+    /// Hands a profile to the running Steam client's own "Add a Non-Steam
+    /// Game" importer (via `steam://addnonsteamgame/`, see
+    /// `steam_shortcut.rs`) instead of editing `shortcuts.vdf` directly —
+    /// live, no restart needed. Requires `steam` on `$PATH` and already
+    /// running. Refuses (rather than creating a duplicate) if this profile
+    /// looks already added — see `steam_shortcut::slugs_in_steam`.
+    AddToSteam {
+        query: String,
+        /// Bakes this profile's own effective `-f`/`-w`/`-b` into the
+        /// shortcut's Launch Options, same as typing them by hand — safe
+        /// even from Steam Game Mode (see `launch::already_under_gamescope`).
+        #[arg(long)]
+        gamescope: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -223,8 +238,26 @@ fn add_profile(target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Resolves `query` against a profile's slug or display name (case-insensitive,
-/// so a fumbled Steam shortcut still lands) and launches it. Leading
+/// Resolves `query` against a profile's slug or display name
+/// (case-insensitive, so a fumbled Steam shortcut still lands) — shared by
+/// `quick_launch` and `library add-to-steam`.
+fn resolve_profile(query: &str) -> Result<(String, Profile)> {
+    let profiles = Profile::load_all()?;
+    let matches: Vec<&(String, Profile)> = profiles
+        .iter()
+        .filter(|(slug, p)| slug.eq_ignore_ascii_case(query) || p.name.eq_ignore_ascii_case(query))
+        .collect();
+
+    match matches.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => anyhow::bail!(
+            "no game in the library matches `{query}` — check `iprolaunch library list`"
+        ),
+        _ => anyhow::bail!("`{query}` matches more than one game — use its exact slug"),
+    }
+}
+
+/// Resolves `query` (see `resolve_profile`) and launches it. Leading
 /// `KEY=VALUE` tokens in `extra_args` become one-off env overrides; whatever
 /// remains is forwarded to the exe.
 fn quick_launch(
@@ -233,20 +266,7 @@ fn quick_launch(
     extra_args: Vec<String>,
     gamescope: GamescopeMode,
 ) -> Result<()> {
-    let profiles = Profile::load_all()?;
-    let matches: Vec<&(String, Profile)> = profiles
-        .iter()
-        .filter(|(slug, p)| slug.eq_ignore_ascii_case(query) || p.name.eq_ignore_ascii_case(query))
-        .collect();
-
-    let (_, profile) = match matches.as_slice() {
-        [one] => *one,
-        [] => anyhow::bail!(
-            "no game in the library matches `{query}` — check `iprolaunch library list`"
-        ),
-        _ => anyhow::bail!("`{query}` matches more than one game — use its exact slug"),
-    };
-
+    let (_, profile) = resolve_profile(query)?;
     let (env, args) = split_leading_env(extra_args);
 
     launch::run(
@@ -373,6 +393,25 @@ fn main() -> Result<()> {
             for (slug, profile) in profiles {
                 println!("{}  [{slug}]  {}", profile.name, profile.target_path);
             }
+            Ok(())
+        }
+        Some(Command::Library {
+            action: LibraryAction::AddToSteam { query, gamescope },
+        }) => {
+            let (slug, profile) = resolve_profile(&query)?;
+            if steam_shortcut::slugs_in_steam().contains(&slug) {
+                anyhow::bail!(
+                    "\"{}\" already looks added to Steam — remove it there first \
+                     if you want to re-add it (adding again would create a duplicate)",
+                    profile.name
+                );
+            }
+            let wrapper_path = steam_shortcut::add_profile(&cfg, &profile, &slug, gamescope)?;
+            println!(
+                "Sent \"{}\" to Steam via {} — check your Steam library.",
+                profile.name,
+                wrapper_path.display()
+            );
             Ok(())
         }
         Some(Command::Running {

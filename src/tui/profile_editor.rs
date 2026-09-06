@@ -3,6 +3,7 @@ use crossterm::event::KeyCode;
 use super::app::{
     self, App, FieldKind, MapField, Mode, ProfileField, ProtonPickerTarget, TextInputPurpose,
 };
+use crate::config::name_base;
 use crate::proton;
 
 /// Keys while the Library tab is showing one profile's editor
@@ -164,14 +165,6 @@ fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
             .map_or(String::new(), |v| v.to_string()),
         _ => String::new(),
     }
-}
-
-/// The part of a display name before its last literal `#` — safe to split
-/// on since `#` is this app's own disambiguator marker, never otherwise
-/// used in a name (unlike `-` in a slug, which can't be split the same
-/// way — see `current_text_value`'s `Slug` case).
-fn name_base(name: &str) -> &str {
-    name.rsplit_once('#').map_or(name, |(base, _)| base)
 }
 
 /// Smallest `n >= 1` such that no *other* profile is already named
@@ -601,13 +594,6 @@ mod tests {
             env: Default::default(),
             winedlloverride: Default::default(),
         }
-    }
-
-    #[test]
-    fn name_base_splits_on_the_last_hash() {
-        assert_eq!(name_base("game#1"), "game");
-        assert_eq!(name_base("no-hash-here"), "no-hash-here");
-        assert_eq!(name_base("weird#name#2"), "weird#name"); // last '#' only
     }
 
     #[test]

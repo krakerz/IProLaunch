@@ -40,6 +40,7 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         KeyCode::Char('f') => start_filter(app),
         KeyCode::Char('c') => copy_quick_launch(app),
         KeyCode::Char('p') => prompt_winetricks(app),
+        KeyCode::Char('s') => prompt_add_to_steam(app),
         KeyCode::Enter => launch_selected(app, terminal),
         // Only meaningful once a filter is locked (still-typing Esc is
         // handled by `edit_filter` instead, via the early return above) —
@@ -216,6 +217,103 @@ fn run_winetricks(app: &mut App, terminal: &mut Term, slug: &str, name: &str) {
     });
 }
 
+/// Library `s`: opens `Mode::ConfirmAddToSteam` for the selected profile —
+/// unless `app.steam_slugs` (populated at startup/refresh, see
+/// `App::refresh_steam_status`) already lists its slug, in which case this
+/// just reports it instead (there's no `steam://` URL to update an existing
+/// shortcut, only to add a new — necessarily duplicate — one, so re-adding
+/// isn't offered at all, per the user's own call on this).
+fn prompt_add_to_steam(app: &mut App) {
+    let Some((slug, profile)) = selected_slug_and_profile(app) else {
+        return;
+    };
+    if app.steam_slugs.contains(&slug) {
+        app.status = Some(format!(
+            "\"{}\" already looks added to Steam — remove it there first if you want to re-add.",
+            profile.name
+        ));
+        return;
+    }
+    app.mode = Mode::ConfirmAddToSteam {
+        slug,
+        name: profile.name,
+        selected: 0,
+    };
+}
+
+/// Keys while `Mode::ConfirmAddToSteam` is up: Up/Down move the selection
+/// among `app::CONFIRM_ADD_TO_STEAM_OPTIONS` (wrapping via the same
+/// `app::move_selection` every other list uses — already gamepad-ready via
+/// the D-pad, no new mapping needed for navigation itself), Enter activates
+/// whichever's highlighted, Esc always cancels regardless of selection.
+pub fn confirm_add_to_steam_key(app: &mut App, code: KeyCode) {
+    let Mode::ConfirmAddToSteam {
+        slug,
+        name,
+        selected,
+    } = &app.mode
+    else {
+        return;
+    };
+    match code {
+        KeyCode::Up => {
+            let selected =
+                app::move_selection(*selected, app::CONFIRM_ADD_TO_STEAM_OPTIONS.len(), -1);
+            if let Mode::ConfirmAddToSteam { selected: s, .. } = &mut app.mode {
+                *s = selected;
+            }
+        }
+        KeyCode::Down => {
+            let selected =
+                app::move_selection(*selected, app::CONFIRM_ADD_TO_STEAM_OPTIONS.len(), 1);
+            if let Mode::ConfirmAddToSteam { selected: s, .. } = &mut app.mode {
+                *s = selected;
+            }
+        }
+        KeyCode::Enter => {
+            let (slug, name, selected) = (slug.clone(), name.clone(), *selected);
+            app.mode = Mode::Normal;
+            match selected {
+                0 => add_to_steam(app, &slug, &name, false),
+                1 => add_to_steam(app, &slug, &name, true),
+                _ => {} // "Cancel" (or anything out of range) — do nothing
+            }
+        }
+        KeyCode::Esc => app.mode = Mode::Normal,
+        _ => {}
+    }
+}
+
+/// Actually calls `steam_shortcut::add_profile` and reports the result —
+/// re-checks `app.profiles` for the profile fresh (rather than trusting the
+/// clone captured when the popup opened) since it's still cheap and this
+/// only runs once, on confirm.
+///
+/// The `refresh_steam_status()` right after a successful add is
+/// best-effort, not a guarantee the "S" marker shows up *immediately*:
+/// `steam_shortcut::add_profile`'s `steam <url>` call only waits for the
+/// short-lived launcher process that hands the URL to Steam's own
+/// already-running client, not for that client to actually finish parsing
+/// the wrapper and writing `shortcuts.vdf` — confirmed for real, that write
+/// can trail the launcher's own exit by up to roughly a second. A stray `r`
+/// (or just waiting a moment) picks it up if this particular refresh ran
+/// too early.
+fn add_to_steam(app: &mut App, slug: &str, name: &str, with_gamescope_flags: bool) {
+    let Some(profile) = app.profile(slug).cloned() else {
+        app.status = Some(format!("couldn't find profile \"{name}\" to add"));
+        return;
+    };
+    app.status = Some(
+        match crate::steam_shortcut::add_profile(&app.cfg, &profile, slug, with_gamescope_flags) {
+            Ok(_) => {
+                app.refresh_steam_status();
+                format!("Sent \"{name}\" to Steam — check your Steam library.")
+            }
+            Err(err) => format!("couldn't add \"{name}\" to Steam: {err:#}"),
+        },
+    );
+}
+
 /// Every action below looks the currently-selected entry up through
 /// `filtered_profile_indices()` rather than indexing `app.profiles`
 /// directly with `library_selected` — when a filter is active,
@@ -383,7 +481,10 @@ mod tests {
     // `~/.config/iprolaunch/`, which nothing here has a way to redirect —
     // same rule as `tui::config`'s tests). `confirm_delete_key`'s `y` arm
     // and `delete_profile` are deliberately NOT covered here; verified by
-    // hand instead (see project NOTES.md).
+    // hand instead (see project NOTES.md). Same rule for
+    // `confirm_add_to_steam_key`'s selected-0/1 arms and `add_to_steam`
+    // itself — both would shell out to the real `steam` binary and write a
+    // real file under `~/.local/share/iprolaunch/`.
 
     fn test_app_with_profile(slug: &str, name: &str) -> App {
         let mut app = App::new(Config::default());
@@ -411,6 +512,95 @@ mod tests {
         edit_selected(&mut app);
         assert_eq!(app.profile_editor.as_deref(), Some("game-1"));
         assert_eq!(app.profile_field_selected, 0);
+    }
+
+    #[test]
+    fn s_opens_the_confirm_popup_for_a_profile_not_yet_in_steam() {
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.steam_slugs.clear();
+        prompt_add_to_steam(&mut app);
+        match &app.mode {
+            Mode::ConfirmAddToSteam {
+                slug,
+                name,
+                selected,
+            } => {
+                assert_eq!(slug, "game-1");
+                assert_eq!(name, "Game#1");
+                assert_eq!(*selected, 0);
+            }
+            _ => panic!("expected ConfirmAddToSteam"),
+        }
+    }
+
+    #[test]
+    fn s_just_reports_already_added_without_opening_a_popup() {
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.steam_slugs.insert("game-1".to_string());
+        prompt_add_to_steam(&mut app);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap()
+                .contains("already looks added")
+        );
+    }
+
+    #[test]
+    fn confirm_add_to_steam_up_down_wrap_within_the_three_options() {
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.mode = Mode::ConfirmAddToSteam {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+            selected: 0,
+        };
+        confirm_add_to_steam_key(&mut app, KeyCode::Up); // already at 0
+        assert!(matches!(
+            app.mode,
+            Mode::ConfirmAddToSteam { selected: 0, .. }
+        ));
+        confirm_add_to_steam_key(&mut app, KeyCode::Down);
+        confirm_add_to_steam_key(&mut app, KeyCode::Down);
+        assert!(matches!(
+            app.mode,
+            Mode::ConfirmAddToSteam { selected: 2, .. }
+        ));
+        confirm_add_to_steam_key(&mut app, KeyCode::Down); // already at the last option
+        assert!(matches!(
+            app.mode,
+            Mode::ConfirmAddToSteam { selected: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn confirm_add_to_steam_esc_cancels_without_touching_anything() {
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.mode = Mode::ConfirmAddToSteam {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+            selected: 1,
+        };
+        confirm_add_to_steam_key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn confirm_add_to_steam_enter_on_cancel_returns_to_normal_without_side_effects() {
+        // Selecting "Cancel" (index 2) and pressing Enter must behave
+        // exactly like Esc — never reach `add_to_steam` (which would shell
+        // out to the real `steam` binary and write a real file under
+        // `~/.local/share/iprolaunch/`, neither of which anything here can
+        // safely redirect — same rule as `confirm_delete_key`'s `y` arm).
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.mode = Mode::ConfirmAddToSteam {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+            selected: 2,
+        };
+        confirm_add_to_steam_key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, None);
     }
 
     #[test]

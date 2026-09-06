@@ -500,9 +500,33 @@ pub struct Profile {
     pub winedlloverride: BTreeMap<String, String>,
 }
 
+/// The part of a display name before its last literal `#` — safe to split on
+/// since `#` is this app's own auto-disambiguator marker, never otherwise
+/// used in a name (unlike `-` in a slug, which can't be split the same way).
+/// Shared by the TUI profile editor's `Name` field (edits just the base
+/// text) and `Profile::display_title` (a Steam shortcut shouldn't show the
+/// internal "#N" suffix either).
+pub fn name_base(name: &str) -> &str {
+    name.rsplit_once('#').map_or(name, |(base, _)| base)
+}
+
 impl Profile {
     pub fn profiles_dir() -> Result<PathBuf> {
         Ok(project_dirs()?.config_dir().join("profiles"))
+    }
+
+    /// The nicest name available for showing this profile somewhere that
+    /// isn't the Library list itself (which wants the real disambiguated
+    /// `name`, "#N" included, to tell two same-named profiles apart at a
+    /// glance) — `title` (the real game title, when set) if there is one,
+    /// else `name` with its "#N" suffix stripped. Used for a Steam
+    /// shortcut's own displayed name (see `steam_shortcut.rs`) — showing
+    /// "ktsysview#1" there would be a meaningless internal detail to a
+    /// user browsing their Steam library.
+    pub fn display_title(&self) -> &str {
+        self.title
+            .as_deref()
+            .unwrap_or_else(|| name_base(&self.name))
     }
 
     /// Sets `last_launched` to now (local time), formatted
@@ -561,6 +585,32 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_base_splits_on_the_last_hash() {
+        assert_eq!(name_base("game#1"), "game");
+        assert_eq!(name_base("no-hash-here"), "no-hash-here");
+        assert_eq!(name_base("weird#name#2"), "weird#name"); // last '#' only
+    }
+
+    #[test]
+    fn display_title_prefers_title_then_falls_back_to_name_base() {
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        assert_eq!(profile.display_title(), "game");
+
+        profile.title = Some("A Real Game Title".to_string());
+        assert_eq!(profile.display_title(), "A Real Game Title");
+    }
 
     #[test]
     fn windows_version_only_applies_in_per_slug_mode() {

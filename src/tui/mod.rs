@@ -113,6 +113,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         Mode::ConfirmWinetricks { .. } => {
             return library::confirm_winetricks_key(app, code, terminal);
         }
+        Mode::ConfirmAddToSteam { .. } => return library::confirm_add_to_steam_key(app, code),
         Mode::Normal => {}
     }
 

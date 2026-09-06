@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
 
 use super::app::{
-    App, ConfigField, InputKind, IntegrateField, MapEntryStep, MapField, Mode, ProfileField,
+    self, App, ConfigField, InputKind, IntegrateField, MapEntryStep, MapField, Mode, ProfileField,
     ProtonPickerTarget, Tab, TextInputPurpose,
 };
 
@@ -83,6 +83,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Help => draw_help_popup(frame, app),
         Mode::ConfirmWinetricks { name, .. } => {
             draw_confirm_winetricks_popup(frame, name, app.input_kind)
+        }
+        Mode::ConfirmAddToSteam { name, selected, .. } => {
+            draw_confirm_add_to_steam_popup(frame, name, *selected)
         }
         Mode::Normal => {}
     }
@@ -185,15 +188,19 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
     // 2 (border) + 2 ("> "/blank highlight_symbol column, reserved on every
-    // row whether or not it's selected) — the space actually available for
-    // list-item text inside the block.
-    let inner_width = area.width.saturating_sub(4) as usize;
+    // row whether or not it's selected) + 2 (the "S "/"  " Steam-status
+    // marker, always reserved so the rest of the row lines up whether or
+    // not this particular row has it — see the marker/`combined` split
+    // below) — the space actually available for the marqueeing part of a
+    // list-item's text inside the block.
+    let inner_width = area.width.saturating_sub(6) as usize;
+    let tick = app.marquee_tick();
     let normal_title = match app.input_kind {
         InputKind::Keyboard => {
-            "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, p = winetricks, f = search)"
+            "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, p = winetricks, s = add to Steam, f = search)"
         }
         InputKind::Gamepad => {
-            "Library (A = launch, X = delete, L3 = refresh, R3 = winetricks, Select = search — add/edit/copy cmd need a keyboard)"
+            "Library (A = launch, X = delete, L3 = refresh, R3 = winetricks, LT = add to Steam, Select = search — add/edit/copy cmd need a keyboard)"
         }
     };
     let title = filter_title(
@@ -201,6 +208,10 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         app.library_filter_editing,
         normal_title,
     );
+    // The title above was already too long to fit even before this round's
+    // `s` addition (a real, reported bug) — marqueed the same way every
+    // other over-long popup title already is, rather than clipped silently.
+    let title = marquee_title(title, area.width, tick);
 
     let indices = app.filtered_profile_indices();
     if indices.is_empty() {
@@ -211,12 +222,19 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let tick = app.marquee_tick();
     let items: Vec<ListItem> = indices
         .iter()
         .enumerate()
         .map(|(display_index, &real_index)| {
             let (slug, p) = &app.profiles[real_index];
+            // Static — deliberately never part of the marqueeing text below,
+            // so it stays put (and stays legible) even while a long row
+            // scrolls; see `inner_width`'s doc comment above.
+            let marker = if app.steam_slugs.contains(slug) {
+                "S "
+            } else {
+                "  "
+            };
             let left = format!(
                 "{}  [{slug}]  [{}]",
                 p.name,
@@ -238,9 +256,9 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
             let text = if display_index == app.library_selected
                 && combined.chars().count() > inner_width
             {
-                marquee(&combined, inner_width, tick)
+                format!("{marker}{}", marquee(&combined, inner_width, tick))
             } else {
-                combined
+                format!("{marker}{combined}")
             };
             ListItem::new(text)
         })
@@ -458,6 +476,29 @@ Runs against the exact same prefix a normal launch of this game would use.\n\n\
         ),
         area,
     );
+}
+
+/// `Mode::ConfirmAddToSteam` — a navigable 3-item list (Up/Down/Enter,
+/// already gamepad-ready via the D-pad + A, no `confirm_hint`-style
+/// gamepad-caption text needed) rather than a y/N prompt, since there are 3
+/// real outcomes to choose between, not 2. See
+/// `app::CONFIRM_ADD_TO_STEAM_OPTIONS`.
+fn draw_confirm_add_to_steam_popup(frame: &mut Frame, name: &str, selected: usize) {
+    let area = centered_rect(60, 30, frame.area());
+    frame.render_widget(Clear, area);
+    let items: Vec<ListItem> = app::CONFIRM_ADD_TO_STEAM_OPTIONS
+        .iter()
+        .map(|label| ListItem::new(*label))
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Add \"{name}\" to Steam? (Esc = cancel)")),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, area, &mut list_state(selected));
 }
 
 fn draw_confirm_rename_slug_popup(
@@ -684,16 +725,41 @@ Library:
                            override if in defaults.prefix_mode = per-slug,
                            otherwise the single shared prefix/Proton pair,
                            exactly like a real launch of it would
+  s                        add this game to Steam as a non-Steam-game
+                           shortcut, live, without a Steam restart (via
+                           Steam's own `steam://addnonsteamgame/` importer —
+                           never edits shortcuts.vdf directly). Shows up in
+                           Steam under this game's title (if set) or its
+                           name with the internal \"#N\" suffix stripped —
+                           never the raw disambiguated Library name.
+                           Opens a 3-choice popup (Up/Down/Enter): add plain, add
+                           with this profile's own -f/-w/-b baked into the
+                           shortcut's Launch Options, or cancel. Already
+                           added (see the \"S\" marker below)? `s` just says
+                           so instead — there's no way to update an existing
+                           Steam shortcut through this mechanism, only add a
+                           new (duplicate) one, so re-adding isn't offered;
+                           remove the old one from Steam yourself first. The
+                           \"S\" marker can lag a successful add by up to
+                           about a second (Steam's own client writes
+                           shortcuts.vdf a moment after the launcher that
+                           handed it the URL already exited) — a stray `r`
+                           picks it up.
   f                        quick-search — filters by name as you type;
                            while typing, only Enter/Esc/Up/Down work
-                           (a/r/e/d/c/p become literal search characters
+                           (a/r/e/d/c/p/s become literal search characters
                            instead). Enter *locks* the search instead of
                            launching — the narrowed list stays, but
-                           a/r/e/d/c/p/Enter/Up/Down all go back to normal,
-                           now scoped to it. Esc clears it entirely,
+                           a/r/e/d/c/p/s/Enter/Up/Down all go back to
+                           normal, now scoped to it. Esc clears it entirely,
                            whether still typing or locked.
   Esc                      cancel while typing a path, or clear an active
                            quick-search (typing or locked)
+
+  Each row's leftmost column shows \"S\" when that game is already added to
+  Steam (detected at startup/refresh by scanning shortcuts.vdf for a
+  matching entry) — static, never part of the row's own marquee-scrolling
+  if the rest of it is too long to fit.
 
 Profile editor (Library, after 'e'):
   Enter                    edit (text fields), cycle (record/auto_open),
@@ -740,6 +806,13 @@ Profile editor (Library, after 'e'):
       the CLI -b flag — either one turns it on for that launch; grab_cursor
       (--force-grab-cursor, relative mouse mode) and adaptive_sync
       (--adaptive-sync, VRR) are config-only, no CLI flag.
+    - any gamescope wrap (-f/-w/-b, the override above, or one baked into a
+      Steam shortcut via Library's `s`) is now automatically skipped — not
+      attempted at all — whenever iprolaunch detects it's already running
+      inside gamescope itself (Steam Game Mode always is): nesting a second
+      gamescope inside the first is exactly what produces \"Gamescope WSI
+      Layer Error\", so this makes every one of those launch paths safe
+      there instead of crashing, with a one-line message explaining why.
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or
@@ -786,6 +859,10 @@ Gamepad (Steam Deck Game Mode, or any plain controller):
                            mashing confirm can never delete anything by
                            accident (same as Enter alone not confirming
                            these on a keyboard either)
+  LT                       add to Steam (Library) — opens the same 3-choice
+                           popup as `s`; navigate/confirm it with the D-pad
+                           and A/B like any other list, no extra mapping
+                           needed for that part
   Select                   quick-search
   Start                    quit
   Every title/status bar shows the matching set of captions once a gamepad
@@ -1081,6 +1158,9 @@ fn marquee_signature(app: &App) -> String {
         }
         Mode::Help => "help".to_string(),
         Mode::ConfirmWinetricks { slug, .. } => format!("confirmwinetricks:{slug}"),
+        Mode::ConfirmAddToSteam { slug, selected, .. } => {
+            format!("confirmaddtosteam:{slug}:{selected}")
+        }
     };
     format!(
         "{:?}|{}|{}|{}|{:?}|{:?}|{:?}|{mode_part}",
@@ -1312,7 +1392,7 @@ mod tests {
             .expect("last launched should render");
         let row_start = out[..idx].rfind("ktsysview#1").unwrap();
         assert!(
-            idx - row_start >= 60,
+            idx - row_start >= 58,
             "expected last launched to be pushed toward the right edge, gap was {}",
             idx - row_start
         );

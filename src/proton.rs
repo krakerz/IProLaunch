@@ -33,7 +33,7 @@ pub struct ProtonBuild {
 /// at it (deduped below since it'd otherwise double-count every build), and
 /// the Flatpak sandbox's data dir. Checked online against Valve's/Flatpak's
 /// own documented layouts rather than assumed.
-fn steam_roots() -> Result<Vec<PathBuf>> {
+pub(crate) fn steam_roots() -> Result<Vec<PathBuf>> {
     let home = UserDirs::new().context("could not determine home directory")?;
     let home = home.home_dir();
     let candidates = [
