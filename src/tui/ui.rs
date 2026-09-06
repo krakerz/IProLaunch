@@ -192,17 +192,24 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(display_index, &real_index)| {
             let (slug, p) = &app.profiles[real_index];
-            let last = p.last_launched.as_deref().unwrap_or("never");
             let left = format!(
                 "{}  [{slug}]  [{}]",
                 p.name,
                 shortened_parent_hint(&p.target_path)
             );
-            let right = format!("last launched: {last}");
-            let pad = inner_width
-                .saturating_sub(left.chars().count() + right.chars().count())
-                .max(1);
-            let combined = format!("{left}{:pad$}{right}", "");
+            // Hidden entirely (not "last launched: never") when it's never
+            // actually been launched — nothing to report yet, so nothing
+            // to show.
+            let combined = match &p.last_launched {
+                Some(last) => {
+                    let right = format!("last launched: {last}");
+                    let pad = inner_width
+                        .saturating_sub(left.chars().count() + right.chars().count())
+                        .max(1);
+                    format!("{left}{:pad$}{right}", "")
+                }
+                None => left,
+            };
             let text = if display_index == app.library_selected
                 && combined.chars().count() > inner_width
             {
@@ -1065,6 +1072,7 @@ mod tests {
         app.tab = Tab::Library;
         let mut profile = test_profile("ktsysview#1");
         profile.target_path = "/media/media/Downloads/Programs/KTSYSVIEW.exe".to_string();
+        profile.last_launched = Some("06-Sep-2026, 13:04:45".to_string());
         app.profiles = vec![("ktsysview".to_string(), profile)];
         let out = rendered(&mut app, 100, 24);
         assert!(out.contains("[..\\Downloads\\Programs]"));
@@ -1075,10 +1083,22 @@ mod tests {
             .expect("last launched should render");
         let row_start = out[..idx].rfind("ktsysview#1").unwrap();
         assert!(
-            idx - row_start > 60,
+            idx - row_start >= 60,
             "expected last launched to be pushed toward the right edge, gap was {}",
             idx - row_start
         );
+    }
+
+    #[test]
+    fn library_row_hides_last_launched_entirely_when_never_launched() {
+        let mut app = test_app();
+        app.tab = Tab::Library;
+        // test_profile()'s last_launched is already None — the case that
+        // matters here.
+        app.profiles = vec![("ktsysview".to_string(), test_profile("ktsysview#1"))];
+        let out = rendered(&mut app, 100, 24);
+        assert!(out.contains("ktsysview#1"));
+        assert!(!out.contains("last launched"));
     }
 
     #[test]

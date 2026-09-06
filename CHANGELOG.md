@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.15.1] — 2026-09-06
+
+### Changed
+- TUI Library list: "last launched: ..." is now hidden entirely for a
+  profile that's never been launched, instead of showing "last launched:
+  never".
+
 ## [1.15.0] — 2026-09-06
 
 ### Added
