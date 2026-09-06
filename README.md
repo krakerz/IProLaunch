@@ -27,9 +27,15 @@ entry.
   keyed by its slug (renaming a slug renames its prefix dir to match, with a
   confirmation first).
 - A game library — every exe you launch gets an editable profile
-  automatically.
+  automatically, or add one without launching it via `iprolaunch add <exe>`.
+  `integrate install` (below) also adds a file-manager right-click "Add to
+  IProLaunch Library" action (KDE/Dolphin, GNOME/Cinnamon/MATE, XFCE) for
+  mass-adding games without opening a terminal — `add`/that action also
+  copy a ready-to-paste quick-launch command to the clipboard.
 - Quick launch by name or slug (`iprolaunch <name>`) — a natural fit for a
-  Steam shortcut.
+  Steam shortcut. The TUI's Library tab (`c`) copies a ready-to-paste
+  `"<iprolaunch binary>" <slug>` command for a Steam non-Steam-game shortcut's
+  Target field.
 - Per-launch logging with configurable retention (optionally keeping only
   failed runs), either one shared log folder or one per profile.
 - `proton list` / `config init` detect installed Proton builds across every
@@ -43,15 +49,21 @@ entry.
 - A full TUI (`iprolaunch`, no arguments) — running games with quick-kill,
   a library (launch/add/edit/delete, with per-game overrides each
   independently resettable to "inherit the default"), a live config editor
-  (incl. env/winedlloverride management and desktop integration), and help —
-  covering everything above without needing to remember CLI subcommands.
-  Press `f` in Running/Library to quick-search by name; long text
-  marquee-scrolls instead of clipping on a small terminal.
+  (incl. env/winedlloverride management and desktop integration), and a
+  scrollable help screen covering everything above without needing to
+  remember CLI subcommands — press `?` from any tab to pop it up without
+  losing your place. Press `f` in Running/Library to quick-search by name;
+  long text marquee-scrolls instead of clipping on a small terminal; the
+  status bar shows the global keys (`q`, `?`, tab-switching) whenever
+  there's nothing else to report.
 - `iprolaunch integrate install` — registers IProLaunch as the default
   handler for `.exe`/`.bat`/`.cmd`/`.msi` files, adds it to the app/start
-  menu (KDE, GNOME, etc.) with its own icon, and backs up whatever was the
-  default before so `integrate uninstall` can restore it. Both are also
-  available from the TUI's Config tab.
+  menu with its own icon, adds the right-click "Add to IProLaunch Library"
+  action to whichever of KDE/GNOME/Cinnamon/MATE/XFCE are actually present,
+  and backs up whatever was the default before so `integrate uninstall` can
+  restore all of it. Both are also available from the TUI's Config tab.
+  `iprolaunch context-menu install [kde|gnome|xfce]` manages just the
+  right-click action on its own, if you ever want only that.
 
 ## Installation
 
@@ -79,6 +91,9 @@ iprolaunch
 # Launch an exe directly — creates its library profile on first run
 iprolaunch run ~/Games/EldenRing/Game/eldenring.exe
 
+# Register an exe as a library profile without launching it
+iprolaunch add ~/Games/EldenRing/Game/eldenring.exe
+
 # List everything in the library
 iprolaunch library list
 
@@ -96,9 +111,15 @@ iprolaunch config init
 # Inspect the resolved config
 iprolaunch config show
 
-# Register as the default .exe/.bat/.cmd/.msi handler + app-menu entry
+# Register as the default .exe/.bat/.cmd/.msi handler, app-menu entry,
+# and file-manager right-click "Add to IProLaunch Library" action
 iprolaunch integrate install
 iprolaunch integrate uninstall
+
+# Manage just the right-click action on its own, if you ever want only that
+iprolaunch context-menu install          # every supported DE
+iprolaunch context-menu install kde      # just one
+iprolaunch context-menu uninstall
 ```
 
 Global config lives at `~/.config/iprolaunch/config.toml` (created with

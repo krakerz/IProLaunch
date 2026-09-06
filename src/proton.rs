@@ -10,10 +10,20 @@ pub struct ProtonBuild {
     /// What gets stored as `defaults.proton` (or a profile override) and
     /// passed straight through as `PROTONPATH`, which `man umu` documents
     /// as accepting a path, a version name, or a codename. For a
-    /// `compatibilitytools.d` entry this is just the folder name (Steam's
-    /// own compat-tool lookup resolves that); for an official Steam-shipped
-    /// build under `steamapps/common` it's the build's absolute path
-    /// instead, since that folder name alone isn't resolvable the same way.
+    /// `compatibilitytools.d` entry under one of `steam_roots()` this is
+    /// just the folder name — confirmed from `umu-run`'s own source
+    /// (`resolve_runtime`): a non-absolute `PROTONPATH` is resolved by
+    /// joining it against a single hardcoded `STEAM_COMPAT` path, which is
+    /// exactly `<the user's own Steam root>/compatibilitytools.d`, so the
+    /// bare name only resolves for builds actually living there. For an
+    /// official Steam-shipped build under `steamapps/common`, or a build
+    /// found under a *system-wide* compat-tools dir (see
+    /// `system_compatibilitytools_dirs`, e.g. CachyOS's `proton-cachyos-slr`
+    /// package under `/usr/share/steam/compatibilitytools.d`) — neither of
+    /// which `STEAM_COMPAT` ever points at — the bare name doesn't resolve
+    /// at all (confirmed by a real failure: `PROTONPATH 'proton-cachyos-slr'
+    /// is not valid, toolmanifest.vdf not found`), so this is the build's
+    /// absolute path instead, which `resolve_runtime` accepts unconditionally.
     pub id: String,
     pub display_name: String,
 }
@@ -60,12 +70,12 @@ pub fn scan() -> Result<Vec<ProtonBuild>> {
     let mut builds = Vec::new();
     for root in steam_roots()? {
         builds.extend(
-            scan_compatibilitytools(&root.join("compatibilitytools.d")).unwrap_or_default(),
+            scan_compatibilitytools(&root.join("compatibilitytools.d"), false).unwrap_or_default(),
         );
         builds.extend(scan_official_proton(&root.join("steamapps/common")).unwrap_or_default());
     }
     for dir in system_compatibilitytools_dirs() {
-        builds.extend(scan_compatibilitytools(&dir).unwrap_or_default());
+        builds.extend(scan_compatibilitytools(&dir, true).unwrap_or_default());
     }
     builds.sort_by(|a, b| {
         a.display_name
@@ -81,7 +91,13 @@ pub fn scan() -> Result<Vec<ProtonBuild>> {
 /// `toolmanifest.vdf` — the same file Steam itself uses to recognize a
 /// compatibility tool; confirmed present in every real build and absent
 /// from anything else on this machine.
-fn scan_compatibilitytools(dir: &Path) -> Result<Vec<ProtonBuild>> {
+///
+/// `absolute_id`: whether `dir` is one `umu-run` can't resolve a bare
+/// folder name against (see `ProtonBuild::id`'s doc comment) — `false` for
+/// a per-Steam-root `compatibilitytools.d` (the one directory umu-run's own
+/// `STEAM_COMPAT` constant points at), `true` for anywhere else (system-wide
+/// dirs), storing the build's absolute path as `id` instead.
+fn scan_compatibilitytools(dir: &Path, absolute_id: bool) -> Result<Vec<ProtonBuild>> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -96,7 +112,11 @@ fn scan_compatibilitytools(dir: &Path) -> Result<Vec<ProtonBuild>> {
         if !path.join("toolmanifest.vdf").is_file() {
             continue;
         }
-        let id = entry.file_name().to_string_lossy().into_owned();
+        let id = if absolute_id {
+            path.to_string_lossy().into_owned()
+        } else {
+            entry.file_name().to_string_lossy().into_owned()
+        };
         let display_name = read_display_name(&path).unwrap_or_else(|| id.clone());
         builds.push(ProtonBuild { id, display_name });
     }
@@ -208,5 +228,42 @@ mod tests {
             scan_official_proton(Path::new("/nonexistent")).unwrap(),
             Vec::new()
         );
+    }
+
+    /// Regression test for a real failure: a build found under a
+    /// system-wide `compatibilitytools.d` (CachyOS's `proton-cachyos-slr`)
+    /// was stored as just its bare folder name, which `umu-run` can't
+    /// resolve (it only expands a relative `PROTONPATH` against the user's
+    /// own Steam root, never a system dir) — real error was `PROTONPATH
+    /// 'proton-cachyos-slr' is not valid, toolmanifest.vdf not found`.
+    #[test]
+    fn absolute_id_uses_the_full_path_not_just_the_folder_name() {
+        let dir = temp_dir("system-compat");
+        fs::create_dir_all(dir.join("proton-cachyos-slr")).unwrap();
+        fs::write(dir.join("proton-cachyos-slr").join("toolmanifest.vdf"), "").unwrap();
+
+        let builds = scan_compatibilitytools(&dir, true).unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(
+            builds[0].id,
+            dir.join("proton-cachyos-slr")
+                .to_string_lossy()
+                .into_owned()
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn non_absolute_id_uses_just_the_folder_name() {
+        let dir = temp_dir("user-compat");
+        fs::create_dir_all(dir.join("GE-Proton10-34")).unwrap();
+        fs::write(dir.join("GE-Proton10-34").join("toolmanifest.vdf"), "").unwrap();
+
+        let builds = scan_compatibilitytools(&dir, false).unwrap();
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].id, "GE-Proton10-34");
+
+        fs::remove_dir_all(&dir).ok();
     }
 }

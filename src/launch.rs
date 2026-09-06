@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -134,13 +135,19 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
 /// Finds the profile whose `target_path` matches, or creates one — disambiguating
 /// both the storage slug and the display `name` when another profile already
 /// claims the same exe stem (e.g. two different games each shipping a `game.exe`).
-fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
+/// `pub` (rather than crate-private) so `main.rs`'s `add` subcommand can
+/// register a profile without launching anything — `run` calls this too,
+/// which is what makes a game show up in the library after a single `run`
+/// with no separate add step required there.
+pub fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
     let target_str = target.to_string_lossy().into_owned();
     let existing = Profile::load_all()?;
 
     if let Some((slug, profile)) = existing.iter().find(|(_, p)| p.target_path == target_str) {
         return Ok((slug.clone(), profile.clone()));
     }
+
+    clear_execute_bit(target);
 
     let base = prefix::slug_from_exe(target);
     let mut slug = base.clone();
@@ -163,6 +170,33 @@ fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
     };
     profile.save(&slug)?;
     Ok((slug, profile))
+}
+
+/// Windows exes never need the Linux execute bit — `umu-run`/wine read the
+/// path as an argument, never `execve` it directly — but on KDE, the
+/// `kiorc` setting `[Executable scripts] behaviourOnLaunch=execute` makes
+/// *any* file with `+x` set get executed directly on open/double-click
+/// (routed by the kernel's own `binfmt_misc`, e.g. a `DOSWin` MZ-header
+/// registration straight to `/usr/bin/wine`), entirely bypassing xdg-mime —
+/// confirmed for real: `xdg-mime query default` still correctly named
+/// `iprolaunch.desktop`, yet double-clicking a `+x` `.exe` still launched
+/// Wine directly. KIO has no per-mimetype override for that setting (it's a
+/// single global toggle — checked its own source), so the file's own
+/// permission bit is the only lever that's actually ours to pull. Clearing
+/// it here, once, when a profile is first created, fixes that without
+/// touching the user's global KDE setting. Best-effort: a failure (e.g.
+/// read-only media) shouldn't block adding the profile.
+fn clear_execute_bit(target: &Path) {
+    let Ok(meta) = fs::metadata(target) else {
+        return;
+    };
+    let mut perms = meta.permissions();
+    let mode = perms.mode();
+    let cleared = mode & !0o111;
+    if cleared != mode {
+        perms.set_mode(cleared);
+        let _ = fs::set_permissions(target, perms);
+    }
 }
 
 /// Reports whether `umu-run`'s own automatic ProtonFixes run found and
@@ -319,6 +353,31 @@ fn winedlloverrides_value(overrides: &BTreeMap<String, String>) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_execute_bit_strips_only_the_execute_bits() {
+        let path =
+            std::env::temp_dir().join(format!("iprolaunch-launch-test-{}.exe", std::process::id()));
+        fs::write(&path, b"MZ").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
+
+        clear_execute_bit(&path);
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o666,
+            "execute bits should be cleared, read/write kept"
+        );
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn clear_execute_bit_is_a_no_op_for_a_missing_file() {
+        // Best-effort: must not panic when the target doesn't exist.
+        clear_execute_bit(Path::new("/nonexistent/iprolaunch-test.exe"));
+    }
 
     #[test]
     fn winedlloverrides_joins_deterministically_by_key_order() {

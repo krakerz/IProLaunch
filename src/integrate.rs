@@ -24,7 +24,7 @@ use anyhow::{Context, Result, bail};
 /// is deliberately NOT included yet — see TODO.md, needs a real generated
 /// shortcut to verify properly rather than the inconclusive synthetic file
 /// tested so far).
-const MIME_TYPES: [&str; 4] = [
+pub(crate) const MIME_TYPES: [&str; 4] = [
     "application/x-msdownload",
     "application/x-ms-dos-executable",
     "application/x-bat",
@@ -53,7 +53,7 @@ const ICON_NAME: &str = "iprolaunch";
 const ICON_SVG: &[u8] = include_bytes!("../assets/icon.svg");
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
-fn base_dirs() -> Result<directories::BaseDirs> {
+pub(crate) fn base_dirs() -> Result<directories::BaseDirs> {
     directories::BaseDirs::new().context("could not determine home directory")
 }
 
@@ -212,6 +212,17 @@ pub fn install() -> Result<()> {
         "Launches run detached (no terminal window) — see `iprolaunch running list` to check on one."
     );
     println!("Added to the app menu (start menu) as IProLaunch.");
+
+    // Best-effort, folded in rather than a separate step a user has to know
+    // to run themselves — each DE's files live in its own location and
+    // don't conflict with (or even get read by) an unrelated DE, so
+    // installing all of them unconditionally is harmless on a
+    // single-DE system, no detection needed. A failure here shouldn't
+    // undo the mimetype/app-menu/icon setup above, which already
+    // succeeded.
+    if let Err(err) = crate::context_menu::install(None) {
+        println!("Right-click \"Add to IProLaunch Library\" action: {err:#}");
+    }
     Ok(())
 }
 
@@ -261,6 +272,13 @@ pub fn uninstall() -> Result<()> {
     let dir = applications_dir()?;
     refresh_desktop_database(&dir);
     refresh_icon_cache();
+
+    // Best-effort, mirroring `install`'s auto-install above — removes
+    // whichever of the right-click action's files actually exist; doesn't
+    // fail the rest of uninstall if this part errors.
+    if let Err(err) = crate::context_menu::uninstall(None) {
+        println!("Right-click \"Add to IProLaunch Library\" action: {err:#}");
+    }
 
     if removed_desktop || removed_menu || removed_icon || restored || cleared {
         println!("Uninstalled.");

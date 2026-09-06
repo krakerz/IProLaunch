@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType={mimetypes};
+Actions=addToIProLaunch;
+X-KDE-Priority=TopLevel
+
+[Desktop Action addToIProLaunch]
+Name=Add to IProLaunch Library
+Icon=iprolaunch
+Exec="{bin}" add %f
