@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.20.1] — 2026-09-07
+
+### Fixed
+- Gamepad: retries reconnecting every ~2s while none is detected — Steam Input's virtual controller on a Steam Deck could otherwise go undetected for the rest of the session after Steam recreated it for a different app/game.
+
 ## [1.20.0] — 2026-09-06
 
 ### Added
