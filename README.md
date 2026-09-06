@@ -56,6 +56,12 @@ entry.
 - Library `p` runs `winetricks` against the exact prefix a real launch of
   that game would use (confirms first) — the shared prefix, or that game's
   own if in per-slug mode.
+- Gamepad navigation — a real controller (a Steam Deck's, via Steam Input's
+  Gamepad layout on a non-Steam-game shortcut, or any plain USB/Bluetooth
+  pad) works alongside the keyboard with zero setup: D-pad to move, A to
+  confirm, B to cancel, and more (see the Help screen's "Gamepad" section).
+  Every legend switches to the matching button captions the moment a
+  gamepad is used, and back the moment a real key is pressed.
 - `iprolaunch integrate install` — registers as the default handler for
   `.exe`/`.bat`/`.cmd`/`.msi`, adds an app-menu entry with an icon, and the
   right-click "Add to Library" action for whichever DE is present —
@@ -151,6 +157,38 @@ iprolaunch context-menu install kde      # just one
 iprolaunch context-menu uninstall
 ```
 
+## Running the full TUI from a Steam shortcut (Game Mode)
+
+`iprolaunch <name-or-slug>` (see the FAQ below) is the simplest way to put
+one specific game on a Steam Deck/Game Mode shortcut, but it only launches
+that one game — no browsing the library, no config editing. To get the
+*whole* TUI usable from Game Mode instead, point the shortcut at a terminal
+emulator that wraps `iprolaunch`, e.g. [Alacritty](https://alacritty.org/):
+
+```
+Target:         /usr/bin/alacritty
+Launch Options: -e /home/deck/.local/bin/iprolaunch
+```
+
+(swap the path for wherever the binary actually lives — check with `which
+iprolaunch` first). Two things to also set up, both one-time:
+
+- **Disable the Steam Overlay for this shortcut** (right-click it →
+  Properties → General → uncheck "Enable the Steam Overlay while
+  in-game"). Steam injects its overlay (`LD_PRELOAD`) into every shortcut
+  it launches, Steam or non-Steam — a plain terminal emulator isn't what
+  that's meant for, and it can crash the shortcut near-instantly with an
+  error like `LD_PRELOAD: wrong ELF class`, with no visible message (the
+  window just flashes and closes). If you ever hit that on a different
+  terminal/setup, add Alacritty's `--hold` flag temporarily (`Launch
+  Options: --hold -e ...`) — it keeps the window open after the child exits
+  instead of always closing it, so you can actually read the error.
+- **Set the shortcut's Controller Layout to "Gamepad"** (its own Properties
+  → Controller Layout) if you want to navigate the TUI with a controller —
+  see the TUI's Help screen's "Gamepad" section for the full button map.
+  The default "Desktop" layout emulates a keyboard/mouse instead of a real
+  joystick, which the TUI can't read directly.
+
 Global config lives at `~/.config/iprolaunch/config.toml` (created with
 defaults on first run — see `config/config.example.toml`). Per-game
 overrides live at `~/.config/iprolaunch/profiles/<slug>/profile.toml` —
@@ -168,7 +206,9 @@ umu-database for a GAMEID).
 **Can I still add a game to Steam as a non-Steam game?** Yes — point the
 shortcut at `iprolaunch <name-or-slug>` instead of the exe directly. Bare
 `iprolaunch` opens the TUI, which needs a real terminal, so it won't work
-as a Game Mode/gamescope shortcut's Target — always use the slug form there.
+as a Game Mode/gamescope shortcut's Target on its own — either use the
+slug form for a single game, or see "Running the full TUI from a Steam
+shortcut" above to wrap it in a terminal emulator instead.
 
 **Does it need internet access?** Only to auto-fetch the umu-database
 (re-checked every 7 days by default, configurable via `gamedb`'s

@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod gamepad;
 mod library;
 mod profile_editor;
 mod running;
@@ -18,7 +19,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::config::Config;
-use app::{App, Mode, TextInputPurpose};
+use app::{App, InputKind, Mode, TextInputPurpose};
+use gamepad::GamepadSource;
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -56,7 +58,8 @@ pub fn run(cfg: Config) -> Result<()> {
         default_hook(info);
     }));
 
-    let result = event_loop(&mut terminal, &mut app);
+    let mut gamepad = GamepadSource::new();
+    let result = event_loop(&mut terminal, &mut app, &mut gamepad);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -65,17 +68,28 @@ pub fn run(cfg: Config) -> Result<()> {
     result
 }
 
-fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
+fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -> Result<()> {
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
 
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                on_key(app, key.code, terminal);
-            }
-        } else if matches!(app.tab, app::Tab::Running) {
+        let mut handled = false;
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            app.input_kind = InputKind::Keyboard;
+            on_key(app, key.code, terminal);
+            handled = true;
+        }
+        // Checked every tick regardless of whether the keyboard poll above
+        // timed out or returned an unrelated event (resize, etc.) — gilrs
+        // queues its own events independently of crossterm's.
+        for code in gamepad.poll() {
+            app.input_kind = InputKind::Gamepad;
+            on_key(app, code, terminal);
+            handled = true;
+        }
+        if !handled && matches!(app.tab, app::Tab::Running) {
             app.refresh_running();
         }
 

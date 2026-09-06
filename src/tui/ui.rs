@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
 
 use super::app::{
-    App, ConfigField, IntegrateField, MapEntryStep, MapField, Mode, ProfileField,
+    App, ConfigField, InputKind, IntegrateField, MapEntryStep, MapField, Mode, ProfileField,
     ProtonPickerTarget, Tab, TextInputPurpose,
 };
 
@@ -72,14 +72,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             value,
             ..
         } => draw_map_entry_input_popup(frame, field, *step, key, value, tick),
-        Mode::ConfirmDeleteProfile { name, .. } => draw_confirm_delete_popup(frame, name),
+        Mode::ConfirmDeleteProfile { name, .. } => {
+            draw_confirm_delete_popup(frame, name, app.input_kind)
+        }
         Mode::ConfirmRenameSlug {
             old_prefix_dir,
             new_prefix_dir,
             ..
-        } => draw_confirm_rename_slug_popup(frame, old_prefix_dir, new_prefix_dir),
+        } => draw_confirm_rename_slug_popup(frame, old_prefix_dir, new_prefix_dir, app.input_kind),
         Mode::Help => draw_help_popup(frame, app),
-        Mode::ConfirmWinetricks { name, .. } => draw_confirm_winetricks_popup(frame, name),
+        Mode::ConfirmWinetricks { name, .. } => {
+            draw_confirm_winetricks_popup(frame, name, app.input_kind)
+        }
         Mode::Normal => {}
     }
 }
@@ -124,10 +128,14 @@ fn draw_running(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let indices = app.filtered_running_indices();
+    let normal_title = match app.input_kind {
+        InputKind::Keyboard => "Running (Enter/k = kill, r = refresh, f = search)",
+        InputKind::Gamepad => "Running (A/X = kill, L3 = refresh, Select = search)",
+    };
     let title = filter_title(
         &app.running_filter,
         app.running_filter_editing,
-        "Running (Enter/k = kill, r = refresh, f = search)",
+        normal_title,
     );
     if indices.is_empty() {
         frame.render_widget(
@@ -180,10 +188,18 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     // row whether or not it's selected) — the space actually available for
     // list-item text inside the block.
     let inner_width = area.width.saturating_sub(4) as usize;
+    let normal_title = match app.input_kind {
+        InputKind::Keyboard => {
+            "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, p = winetricks, f = search)"
+        }
+        InputKind::Gamepad => {
+            "Library (A = launch, X = delete, L3 = refresh, R3 = winetricks, Select = search — add/edit/copy cmd need a keyboard)"
+        }
+    };
     let title = filter_title(
         &app.library_filter,
         app.library_filter_editing,
-        "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, p = winetricks, f = search)",
+        normal_title,
     );
 
     let indices = app.filtered_profile_indices();
@@ -343,13 +359,27 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
     frame.render_stateful_widget(list, area, &mut list_state(app.profile_field_selected));
 }
 
-fn draw_confirm_delete_popup(frame: &mut Frame, name: &str) {
+/// The `'y'`/`'Y'` these destructive/rare confirm prompts key off is
+/// produced by a literal `y` keypress, or (see `gamepad::translate`) RT —
+/// deliberately not A/South, which every other popup already treats as
+/// "confirm"; that's what keeps a stray button press from ever being enough
+/// to delete/rename/run something here, matching keyboard Enter's identical
+/// non-effect on these same prompts.
+fn confirm_hint(input_kind: InputKind) -> &'static str {
+    match input_kind {
+        InputKind::Keyboard => "y = confirm, any other key = cancel",
+        InputKind::Gamepad => "RT = confirm, any other button = cancel",
+    }
+}
+
+fn draw_confirm_delete_popup(frame: &mut Frame, name: &str, input_kind: InputKind) {
     let area = centered_rect(60, 20, frame.area());
     frame.render_widget(Clear, area);
     let text = format!(
         "Delete \"{name}\"?\n\
 Removes its profile.toml (settings/history) — not the exe itself.\n\n\
-y = confirm, any other key = cancel"
+{}",
+        confirm_hint(input_kind)
     );
     frame.render_widget(
         Paragraph::new(text).block(
@@ -361,13 +391,14 @@ y = confirm, any other key = cancel"
     );
 }
 
-fn draw_confirm_winetricks_popup(frame: &mut Frame, name: &str) {
+fn draw_confirm_winetricks_popup(frame: &mut Frame, name: &str, input_kind: InputKind) {
     let area = centered_rect(60, 20, frame.area());
     frame.render_widget(Clear, area);
     let text = format!(
         "Launch winetricks for \"{name}\"?\n\
 Runs against the exact same prefix a normal launch of this game would use.\n\n\
-y = confirm, any other key = cancel"
+{}",
+        confirm_hint(input_kind)
     );
     frame.render_widget(
         Paragraph::new(text).block(
@@ -383,12 +414,17 @@ fn draw_confirm_rename_slug_popup(
     frame: &mut Frame,
     old_prefix_dir: &std::path::Path,
     new_prefix_dir: &std::path::Path,
+    input_kind: InputKind,
 ) {
     let area = centered_rect(76, 30, frame.area());
     frame.render_widget(Clear, area);
+    let hint = match input_kind {
+        InputKind::Keyboard => "y = confirm (renames both), any other key = cancel",
+        InputKind::Gamepad => "RT = confirm (renames both), any other button = cancel",
+    };
     let text = format!(
         "Renaming this slug also renames its prefix directory:\n\n  {}\n  → {}\n\n\
-y = confirm (renames both), any other key = cancel",
+{hint}",
         old_prefix_dir.display(),
         new_prefix_dir.display()
     );
@@ -627,6 +663,32 @@ env / winedlloverride entry list (global or per-profile):
   d                        delete the selected entry
   Esc                      back to whichever screen opened it
 
+Gamepad (Steam Deck Game Mode, or any plain controller):
+  D-pad                    Up/Down/Left/Right
+  A                        confirm (same as Enter)
+  B                        cancel (same as Esc)
+  X                        the destructive/contextual action — kill
+                           (Running) or delete a profile, with the same
+                           confirm prompt (Library)
+  Y                        help (opens this popup from anywhere)
+  LB / RB                  previous / next tab
+  L3 (left stick click)    refresh
+  R3 (right stick click)   winetricks (Library)
+  RT                       the literal \"y\" a delete/rename/winetricks
+                           confirm prompt needs — deliberately not A, so
+                           mashing confirm can never delete anything by
+                           accident (same as Enter alone not confirming
+                           these on a keyboard either)
+  Select                   quick-search
+  Start                    quit
+  Every title/status bar shows the matching set of captions once a gamepad
+  button is used, and switches back the moment a real key is pressed.
+  Adding a game by path, editing a profile's text fields, and copying the
+  quick-launch command still need a keyboard (typing isn't something a
+  gamepad can do) — bind a spare button through Steam Input's own remapper
+  straight to the matching letter key if you want those one-button too;
+  iprolaunch doesn't need to know the difference.
+
 Config file: ~/.config/iprolaunch/config.toml
 Profiles:    ~/.config/iprolaunch/profiles/<slug>/profile.toml
 ";
@@ -676,11 +738,16 @@ fn draw_help_popup(frame: &mut Frame, app: &App) {
 /// visible without needing to check the Help tab/popup for them
 /// specifically.
 const GLOBAL_KEY_HINTS: &str = "q = quit   ? = help   1-4 / Tab / Shift-Tab = switch tabs";
+const GLOBAL_KEY_HINTS_GAMEPAD: &str = "Start = quit   Y = help   LB/RB = switch tabs";
 
 fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let hints = match app.input_kind {
+        InputKind::Keyboard => GLOBAL_KEY_HINTS,
+        InputKind::Gamepad => GLOBAL_KEY_HINTS_GAMEPAD,
+    };
     let text = match &app.status {
         Some(s) => Span::styled(s.clone(), Style::default().fg(Color::Yellow)),
-        None => Span::styled(GLOBAL_KEY_HINTS, Style::default().fg(Color::DarkGray)),
+        None => Span::styled(hints, Style::default().fg(Color::DarkGray)),
     };
     frame.render_widget(Paragraph::new(Line::from(text)), area);
 }

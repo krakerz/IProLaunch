@@ -69,6 +69,7 @@ jobs:
           mkdir -p "$bundle"
           cp target/release/iprolaunch "$bundle/"
           cp config/config.example.toml "$bundle/"
+          cp -r assets/steam-library "$bundle/"
           cat > "$bundle/INSTALL.txt" <<'EOF'
           iprolaunch — quick start
           =========================
@@ -85,6 +86,9 @@ jobs:
                iprolaunch library list
              And quick-launch it by name (e.g. for a Steam shortcut):
                iprolaunch "<name-from-library-list>"
+          5. `steam-library/` has cover/background/logo/wide-cover artwork
+             sized for Steam's non-Steam-game "Customization" screen, if you
+             add iprolaunch itself as a shortcut for Game Mode use.
 
           Repo: https://github.com/krakerz/IProLaunch
           EOF
