@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -193,6 +194,21 @@ fn should_wrap_with_gamescope(requested: bool, already_nested: bool) -> bool {
     requested && !already_nested
 }
 
+/// Splits a `launch_wrapper` config string into a program + its own args —
+/// whitespace-only, no shell-quoting support (same convention `profile.args`
+/// already uses). Expands a leading `~/` in just the program itself (e.g.
+/// `~/lsfg`), the same as `config::expand_home` does for other path-like
+/// config values — the wrapper's own args are passed through as-is.
+fn wrapper_argv(wrapper: &str) -> Vec<String> {
+    let mut parts: Vec<String> = wrapper.split_whitespace().map(String::from).collect();
+    if let Some(program) = parts.first_mut() {
+        *program = crate::config::expand_home(program)
+            .to_string_lossy()
+            .into_owned();
+    }
+    parts
+}
+
 fn gamescope_filter_value(filter: crate::config::GamescopeFilter) -> &'static str {
     use crate::config::GamescopeFilter::{Fsr, Linear, Nearest, Nis, Pixel};
     match filter {
@@ -291,20 +307,45 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     }
     let wrap_with_gamescope = should_wrap_with_gamescope(gamescope.is_active(), already_nested);
 
+    // What iprolaunch would spawn directly, absent a `launch_wrapper` —
+    // built as program + args first (rather than straight into a `Command`)
+    // so a wrapper (below) can prepend itself ahead of all of it.
     // Per `man umu`: WINEPREFIX/PROTONPATH/GAMEID are all optional env vars;
     // GAMEID defaults to "umu-default" when unset.
-    let mut command = if wrap_with_gamescope {
-        let mut c = Command::new("gamescope");
-        c.args(gamescope.args());
-        c.args(gamescope_settings_args(&effective.gamescope_settings));
-        c.arg("--").arg("umu-run");
-        c
+    let (inner_program, mut inner_args): (&str, Vec<OsString>) = if wrap_with_gamescope {
+        let mut args: Vec<OsString> = gamescope.args().into_iter().map(OsString::from).collect();
+        args.extend(
+            gamescope_settings_args(&effective.gamescope_settings)
+                .into_iter()
+                .map(OsString::from),
+        );
+        args.push(OsString::from("--"));
+        args.push(OsString::from("umu-run"));
+        ("gamescope", args)
     } else {
-        Command::new("umu-run")
+        ("umu-run", Vec::new())
     };
-    command.arg(&target);
-    command.args(&profile.args); // profile's own defaults first, e.g. `--dx11`
-    command.args(&opts.args); // then CLI/quick-launch args, supplementing rather than replacing
+    inner_args.push(target.as_os_str().to_os_string());
+    inner_args.extend(profile.args.iter().map(OsString::from)); // profile's own defaults first, e.g. `--dx11`
+    inner_args.extend(opts.args.iter().map(OsString::from)); // then CLI/quick-launch args, supplementing rather than replacing
+
+    // `defaults.launch_wrapper`/a profile override (e.g. `gamemoderun`, a
+    // frame-generation layer's own wrapper script) — runs the *entire*
+    // above through it instead, exactly like a Steam Launch Options
+    // wrapper + `%command%` already does for a game added to Steam (see
+    // README's "Injecting env vars or a wrapper tool via a Steam
+    // shortcut"), just native to iprolaunch so it applies the same way
+    // regardless of how the game's actually launched.
+    let mut command = match effective.launch_wrapper.as_deref().map(wrapper_argv) {
+        Some(wrapper) if !wrapper.is_empty() => {
+            let mut c = Command::new(&wrapper[0]);
+            c.args(&wrapper[1..]);
+            c.arg(inner_program);
+            c
+        }
+        _ => Command::new(inner_program),
+    };
+    command.args(&inner_args);
     // Without this, the spawned process inherits *iprolaunch's own* cwd
     // (wherever it happened to be run from) instead of the game's install
     // folder — exactly what double-clicking the exe in Windows Explorer
@@ -360,7 +401,9 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     };
 
     let mut child = command.spawn().with_context(|| {
-        if wrap_with_gamescope {
+        if let Some(wrapper) = &effective.launch_wrapper {
+            format!("failed to spawn launch_wrapper {wrapper:?} (is it installed and on $PATH/executable?)")
+        } else if wrap_with_gamescope {
             "failed to spawn gamescope (is it installed and on $PATH? required for -f/-w/-b)"
                 .to_string()
         } else {
@@ -790,6 +833,32 @@ mod tests {
         assert_eq!(gamescope_filter_value(Fsr), "fsr");
         assert_eq!(gamescope_filter_value(Nis), "nis");
         assert_eq!(gamescope_filter_value(Pixel), "pixel");
+    }
+
+    #[test]
+    fn wrapper_argv_splits_on_whitespace() {
+        assert_eq!(
+            wrapper_argv("gamemoderun --something"),
+            vec!["gamemoderun", "--something"]
+        );
+        assert_eq!(wrapper_argv("mangohud"), vec!["mangohud"]);
+    }
+
+    #[test]
+    fn wrapper_argv_expands_home_in_just_the_program_not_its_args() {
+        let home = directories::UserDirs::new()
+            .unwrap()
+            .home_dir()
+            .display()
+            .to_string();
+        assert_eq!(
+            wrapper_argv("~/lsfg --keep-tilde ~/not-expanded"),
+            vec![
+                format!("{home}/lsfg"),
+                "--keep-tilde".to_string(),
+                "~/not-expanded".to_string()
+            ]
+        );
     }
 
     #[test]

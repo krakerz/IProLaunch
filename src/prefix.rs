@@ -71,6 +71,7 @@ mod tests {
             windows_version: None,
             gamescope: Default::default(),
             gamescope_settings: Default::default(),
+            launch_wrapper: None,
             log_mode: crate::config::LogMode::Single,
             keep: 0,
             record: crate::config::RecordMode::Off,

@@ -33,23 +33,15 @@ entry.
   `add` copy a ready-to-paste quick-launch command to the clipboard.
 - Quick launch by name or slug (`iprolaunch <name>`) — points a Steam
   shortcut straight at a game. `-f`/`-w`/`-b` wrap the launch in a nested
-  `gamescope` session (real fullscreen / stretch-to-fill / borderless,
-  combinable) — remembered per-game (global default or profile override)
-  so you don't need to retype them. Only works from a session that isn't
-  *already* gamescope (Desktop Mode, a bare console/SSH); **not** from
-  inside Steam Game Mode itself — gamescope's own WSI layer deliberately
-  disables its swapchain hook when it detects it's nested inside another
-  gamescope session, which Game Mode always is (confirmed against
-  gamescope's own source, not assumed) — this shows up as "Gamescope WSI
-  Layer Error / Hooking has failed somewhere," not fixable by disabling any
-  overlay. `-w`'s real output size (global default or profile override,
-  config only — gamescope only auto-detects this when it owns the display
-  directly, not nested inside a desktop session, so without it `-w`
-  produces a small window instead of actually filling the screen), the
-  game's own internal render resolution, a refresh cap, the upscale
-  filter/strategy, relative-mouse-mode (`--force-grab-cursor`), and
-  adaptive-sync/VRR are all configurable too (Config tab / profile editor,
-  blank = let gamescope decide).
+  `gamescope` session (real fullscreen/stretch-to-fill/borderless,
+  combinable, remembered per-game) — not usable from inside Steam Game
+  Mode itself (see FAQ). Output size, render resolution, refresh cap,
+  upscale filter/strategy, relative-mouse-mode, and adaptive-sync are all
+  configurable too (Config tab / profile editor).
+- `defaults.launch_wrapper` (global default + profile override) runs the
+  whole launch through an external command — `gamemoderun`, `mangohud`, a
+  frame-generation layer's own wrapper script (see "Injecting env vars or
+  a wrapper tool" below).
 - Per-launch logging with configurable retention, one shared log folder or
   one per profile.
 - `proton list` / `config init` detect installed Proton builds everywhere
@@ -62,31 +54,17 @@ entry.
   tree, not just `iprolaunch` itself.
 - A full TUI (`iprolaunch`, no arguments) — running games with quick-kill,
   a library (launch/add/edit/delete, overrides resettable to "inherit"), a
-  live config editor, and a scrollable help screen — press `?` from any
-  tab to pop it up without losing your place. `f` quick-searches
-  Running/Library by name; Enter locks the narrowed list (every other key
-  works normally again, scoped to it), Esc or switching tabs clears it.
-  The status bar shows the global keys when there's nothing else to report.
+  live config editor, and a scrollable help screen (`?` from any tab). `f`
+  quick-searches Running/Library by name.
 - Library `p` runs `winetricks` against the exact prefix a real launch of
-  that game would use (confirms first) — the shared prefix, or that game's
-  own if in per-slug mode.
-- Library `s` adds a game to Steam as a non-Steam-game shortcut, live —
-  via Steam's own "Add a Non-Steam Game" importer, not by editing
-  `shortcuts.vdf` directly, so no Steam restart is needed and there's no
-  risk of Steam overwriting a concurrent edit. Optionally bakes this game's
-  own gamescope flags into the shortcut; shows up under its title (if set)
-  or its name with the internal "#N" suffix stripped. A per-row marker
-  shows which games are already added; re-adding an already-added game
-  isn't offered (there's no way to update a Steam shortcut this way, only
-  add a new one), and any gamescope wrap now automatically skips itself
-  when already running under gamescope (Steam Game Mode always is),
-  instead of crashing.
-- Gamepad navigation — a real controller (a Steam Deck's, via Steam Input's
-  Gamepad layout on a non-Steam-game shortcut, or any plain USB/Bluetooth
-  pad) works alongside the keyboard with zero setup: D-pad to move, A to
-  confirm, B to cancel, and more (see the Help screen's "Gamepad" section).
-  Every legend switches to the matching button captions the moment a
-  gamepad is used, and back the moment a real key is pressed.
+  that game would use (confirms first).
+- Library `s` adds a game to Steam as a non-Steam-game shortcut, live, via
+  Steam's own importer — no `shortcuts.vdf` editing, no restart required
+  (press `?` in the TUI for the full behavior, including the gamescope-flag
+  and duplicate-detection options).
+- Gamepad navigation — a real controller works alongside the keyboard with
+  zero setup (see the Help screen's "Gamepad" section for the full button
+  map); every legend switches to the matching captions automatically.
 - `iprolaunch integrate install` — registers as the default handler for
   `.exe`/`.bat`/`.cmd`/`.msi`, adds an app-menu entry with an icon, and the
   right-click "Add to Library" action for whichever DE is present —
@@ -124,9 +102,8 @@ degrades gracefully (usually a clear error) if missing:
   the right-click action).
 - **[`gamescope`](https://github.com/ValveSoftware/gamescope)** — `-f`/`-w`/`-b`.
   Already on SteamOS/a Deck; otherwise a distro package. Only reliable from
-  a session that isn't already gamescope itself — see the `-f`/`-w`/`-b`
-  note under Features for why it fails from inside Steam Game Mode
-  ("Gamescope WSI Layer Error").
+  a session that isn't already gamescope itself — see the FAQ for why it
+  fails from inside Steam Game Mode.
 - **`winetricks`** — Library's `p` key.
 
 ## Building from source
@@ -232,6 +209,78 @@ DLL overrides (`[winedlloverride]`, e.g. `winhttp = "n,b"`), extra args
 (`args = ["--dx11"]`, always forwarded), or `title` (matched against the
 umu-database for a GAMEID).
 
+## Injecting env vars or a wrapper tool via a Steam shortcut
+
+Once a game's been added to Steam (Library `s`, see Features above — or
+Steam's own "Add a Non-Steam Game" browse dialog), its Launch Options field
+is a normal Steam non-Steam-game shortcut, so anything the wider Steam/Proton
+community already does with `%command%` works here too — `MangoHud`,
+`gamemoderun`, a frame-generation layer like
+[`lsfg-vk`](https://lsfg-vk.dev/), env vars, all the same way as any other
+shortcut. This is separate from (and doesn't need touching) this profile's
+own `env`/`gamescope` config in `iprolaunch` itself — anything set this way
+in Steam's own Launch Options is inherited straight down through
+`iprolaunch` → `umu-run` → Proton → the game, the same path `env`/
+`winedlloverride` already use, confirmed for real (checked `/proc/<pid>/
+environ` at every level of the process tree, including inside Proton's own
+sandbox).
+
+**The one thing to get right: ordering.** Once `%command%` appears anywhere
+in Launch Options, Steam runs the *whole* line as one shell command,
+substituting `%command%` with the resolved `iprolaunch` path alone — and a
+shell always treats the first word as the program to run. So:
+
+- A wrapper tool has to come *first*, with `%command%` right after it as its
+  argument — and anything meant for `iprolaunch` itself (e.g. `-f`, or the
+  slug, if you're editing Launch Options by hand rather than through
+  Library `s`) has to come *after* `%command%`, not before it:
+
+  ```
+  ~/lsfg %command% "-f" "app"
+  ```
+
+  Putting `"-f" "app"` *before* the wrapper instead (`"-f" "app" ~/lsfg
+  %command%`) makes the shell try to run a program literally named `-f`,
+  which fails silently — no visible error, the shortcut just doesn't open.
+- A plain env var doesn't need a wrapper script at all — `lsfg-vk` itself is
+  fully controlled by environment variables (`LSFG_MULTIPLIER`,
+  `LSFG_LEGACY`, etc., see its own docs), so this works exactly the same
+  way, no `~/lsfg` script required:
+
+  ```
+  LSFG_MULTIPLIER=2 %command% "-f" "app"
+  ```
+
+Confirmed working for real: toggling a frame-generation layer on/off this
+way visibly changes the game's reported FPS, same as it would launched any
+other way.
+
+### The same thing, native to iprolaunch instead
+
+If you'd rather have a wrapper tool (not just env vars — those already just
+go in `env`, global or per-profile) apply regardless of *how* the game gets
+launched — `run`, quick-launch, or a Steam shortcut pointed back at
+`iprolaunch <slug>` — set `defaults.launch_wrapper` (global) or a profile's
+own override instead (Config tab / profile editor, blank = none). It wraps
+the *entire* launch the same way a Steam Launch Options wrapper +
+`%command%` does, no ordering gotcha to get right since there's no
+`%command%` token to place — just the bare command:
+
+```toml
+[defaults]
+launch_wrapper = "~/lsfg"
+```
+
+or per-profile, in `profiles/<slug>/profile.toml`:
+
+```toml
+[defaults]
+launch_wrapper = "gamemoderun"
+```
+
+Whitespace-split only (no shell-quoting support, same as `args`); a leading
+`~/` in the command itself is expanded.
+
 ## FAQ
 
 **Do I need Steam installed?** No — `iprolaunch` only needs `umu-run` on
@@ -243,6 +292,15 @@ shortcut at `iprolaunch <name-or-slug>` instead of the exe directly. Bare
 as a Game Mode/gamescope shortcut's Target on its own — either use the
 slug form for a single game, or see "Running the full TUI from a Steam
 shortcut" above to wrap it in a terminal emulator instead.
+
+**Why does `-f`/`-w`/`-b` fail with "Gamescope WSI Layer Error / Hooking has
+failed somewhere" in Steam Game Mode?** gamescope's own WSI layer
+deliberately disables its swapchain hook when it detects it's nested inside
+another gamescope session, which Game Mode always is (confirmed against
+gamescope's own source, not assumed) — not fixable by disabling an overlay.
+Works fine from a session that isn't already gamescope (Desktop Mode, a bare
+console/SSH); this is also why any gamescope wrap now automatically skips
+itself instead of crashing when it detects it's already running under one.
 
 **Does it need internet access?** Only to auto-fetch the umu-database
 (re-checked every 7 days by default, configurable via `gamedb`'s

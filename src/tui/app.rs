@@ -63,6 +63,7 @@ pub enum ConfigField {
     GamescopeBorderless,
     GamescopeGrabCursor,
     GamescopeAdaptiveSync,
+    LaunchWrapper,
     LogMode,
     LogPath,
     LogKeep,
@@ -74,7 +75,7 @@ pub enum ConfigField {
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 24] = [
+    pub const ALL: [ConfigField; 25] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
@@ -91,6 +92,7 @@ impl ConfigField {
         ConfigField::GamescopeBorderless,
         ConfigField::GamescopeGrabCursor,
         ConfigField::GamescopeAdaptiveSync,
+        ConfigField::LaunchWrapper,
         ConfigField::LogMode,
         ConfigField::LogPath,
         ConfigField::LogKeep,
@@ -119,6 +121,7 @@ impl ConfigField {
             ConfigField::GamescopeBorderless => "gamescope_settings.borderless",
             ConfigField::GamescopeGrabCursor => "gamescope_settings.grab_cursor",
             ConfigField::GamescopeAdaptiveSync => "gamescope_settings.adaptive_sync",
+            ConfigField::LaunchWrapper => "defaults.launch_wrapper (blank = none)",
             ConfigField::LogMode => "logging.mode",
             ConfigField::LogPath => "logging.path (blank = default)",
             ConfigField::LogKeep => "logging.keep",
@@ -156,7 +159,8 @@ impl ConfigField {
             | ConfigField::GamescopeOutputHeight
             | ConfigField::GamescopeRefresh
             | ConfigField::GamescopeNestedWidth
-            | ConfigField::GamescopeNestedHeight => FieldKind::Text,
+            | ConfigField::GamescopeNestedHeight
+            | ConfigField::LaunchWrapper => FieldKind::Text,
             ConfigField::EnvTable | ConfigField::WineDllOverrideTable => FieldKind::MapEditor,
         }
     }
@@ -249,6 +253,7 @@ pub enum ProfileField {
     GamescopeBorderless,
     GamescopeGrabCursor,
     GamescopeAdaptiveSync,
+    LaunchWrapper,
     LogKeep,
     LogRecord,
     LogAutoOpen,
@@ -257,7 +262,7 @@ pub enum ProfileField {
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 24] = [
+    pub const ALL: [ProfileField; 25] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
@@ -277,6 +282,7 @@ impl ProfileField {
         ProfileField::GamescopeBorderless,
         ProfileField::GamescopeGrabCursor,
         ProfileField::GamescopeAdaptiveSync,
+        ProfileField::LaunchWrapper,
         ProfileField::LogKeep,
         ProfileField::LogRecord,
         ProfileField::LogAutoOpen,
@@ -305,6 +311,7 @@ impl ProfileField {
             ProfileField::GamescopeBorderless => "gamescope_settings.borderless override",
             ProfileField::GamescopeGrabCursor => "gamescope_settings.grab_cursor override",
             ProfileField::GamescopeAdaptiveSync => "gamescope_settings.adaptive_sync override",
+            ProfileField::LaunchWrapper => "defaults.launch_wrapper override",
             ProfileField::LogKeep => "logging.keep override",
             ProfileField::LogRecord => "logging.record override",
             ProfileField::LogAutoOpen => "logging.auto_open override",
@@ -343,7 +350,8 @@ impl ProfileField {
             | ProfileField::GamescopeOutputHeight
             | ProfileField::GamescopeRefresh
             | ProfileField::GamescopeNestedWidth
-            | ProfileField::GamescopeNestedHeight => FieldKind::Text,
+            | ProfileField::GamescopeNestedHeight
+            | ProfileField::LaunchWrapper => FieldKind::Text,
             ProfileField::EnvTable | ProfileField::WineDllOverrideTable => FieldKind::MapEditor,
         }
     }

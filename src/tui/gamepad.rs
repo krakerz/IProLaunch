@@ -111,9 +111,17 @@ fn should_retry_init(has_gamepad: bool, since_last_attempt: Duration) -> bool {
 
 /// The actual button map. Chosen to cover navigation plus the single most
 /// common action per tab (kill/delete, refresh, search, help, tab-switch,
-/// quit, winetricks) without needing a different mapping per tab — anything
-/// a button maps to here is a no-op on a tab/mode that doesn't use that key,
-/// exactly like an unmapped keyboard key already is.
+/// quit, edit profile) without needing a different mapping per tab —
+/// anything a button maps to here is a no-op on a tab/mode that doesn't use
+/// that key, exactly like an unmapped keyboard key already is. Every
+/// standard button on a controller is spoken for at this point — adding a
+/// new mapping (like `e` below) means giving up an existing one, a real
+/// user-facing tradeoff, not something to make unilaterally: `e` took R3's
+/// old `p` (winetricks) by the user's own explicit choice, 2026-09-07 —
+/// winetricks is one-time setup rarely needed mid-session, edit-profile
+/// access (gamescope settings, env vars, etc.) is the more valuable thing
+/// to have one-button access to. `p`/winetricks still works fine from a
+/// keyboard, just no longer has its own dedicated gamepad button.
 fn translate(button: Button) -> Option<KeyCode> {
     match button {
         Button::DPadUp => Some(KeyCode::Up),
@@ -134,7 +142,9 @@ fn translate(button: Button) -> Option<KeyCode> {
         Button::Start => Some(KeyCode::Char('q')),
         Button::Select => Some(KeyCode::Char('f')),
         Button::LeftThumb => Some(KeyCode::Char('r')),
-        Button::RightThumb => Some(KeyCode::Char('p')),
+        // R3: edit the selected profile (Library) — see this function's own
+        // doc comment for why this replaced winetricks here.
+        Button::RightThumb => Some(KeyCode::Char('e')),
         // RT: the literal `y` a destructive/rare confirm prompt (delete a
         // profile, rename a slug that also moves its prefix, run
         // winetricks) needs — deliberately a *different* button than A
@@ -179,6 +189,11 @@ mod tests {
     #[test]
     fn left_trigger_2_maps_to_add_to_steam() {
         assert_eq!(translate(Button::LeftTrigger2), Some(KeyCode::Char('s')));
+    }
+
+    #[test]
+    fn right_thumb_maps_to_edit_profile() {
+        assert_eq!(translate(Button::RightThumb), Some(KeyCode::Char('e')));
     }
 
     #[test]
