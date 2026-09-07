@@ -237,6 +237,23 @@ pub struct Defaults {
     pub gamescope: GamescopeSetting,
     #[serde(default, skip_serializing_if = "is_default_gamescope_settings")]
     pub gamescope_settings: GamescopeSettings,
+    /// A command to run the whole launch *through* — `<wrapper> <what
+    /// iprolaunch would otherwise have run directly>`, e.g. `gamemoderun`,
+    /// `mangohud`, or a frame-generation layer's own wrapper script.
+    /// Distinct from both `env` (values, not a command to exec) and a
+    /// profile's `args` (appended *after* the target exe, forwarded to the
+    /// exe itself — this instead wraps the *entire* invocation, including
+    /// `gamescope` when that's also active). Mirrors what a Steam Launch
+    /// Options wrapper prefix + `%command%` already does for a game added
+    /// to Steam (see README's "Injecting env vars or a wrapper tool via a
+    /// Steam shortcut") — this is the same idea, native to iprolaunch, so
+    /// it applies the same way regardless of how the game's launched
+    /// (`run`, quick-launch, or a Steam shortcut pointed back at
+    /// `iprolaunch <slug>`). Split on whitespace at launch time (see
+    /// `launch::wrapper_argv`) — no shell quoting support, matching how
+    /// `args` is already parsed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_wrapper: Option<String>,
 }
 
 fn is_default_gamescope_settings(s: &GamescopeSettings) -> bool {
@@ -253,6 +270,7 @@ impl Default for Defaults {
             windows_version: "win10".into(),
             gamescope: GamescopeSetting::None,
             gamescope_settings: GamescopeSettings::default(),
+            launch_wrapper: None,
         }
     }
 }
@@ -385,6 +403,9 @@ impl Config {
         let gamescope_settings = d
             .gamescope_settings
             .merge(pd.map_or_else(GamescopeSettings::default, |pd| pd.gamescope_settings));
+        let launch_wrapper = pd
+            .and_then(|pd| pd.launch_wrapper.clone())
+            .or_else(|| d.launch_wrapper.clone());
 
         let keep = pl.and_then(|pl| pl.keep).unwrap_or(l.keep);
         let record = pl.and_then(|pl| pl.record).unwrap_or(l.record);
@@ -410,6 +431,7 @@ impl Config {
             windows_version,
             gamescope,
             gamescope_settings,
+            launch_wrapper,
             log_mode: l.mode,
             keep,
             record,
@@ -431,6 +453,7 @@ pub struct Effective {
     pub windows_version: Option<String>,
     pub gamescope: GamescopeSetting,
     pub gamescope_settings: GamescopeSettings,
+    pub launch_wrapper: Option<String>,
     pub log_mode: LogMode,
     pub keep: u32,
     pub record: RecordMode,
@@ -451,6 +474,8 @@ pub struct ProfileDefaults {
     pub gamescope: Option<GamescopeSetting>,
     #[serde(default, skip_serializing_if = "is_default_gamescope_settings")]
     pub gamescope_settings: GamescopeSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_wrapper: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -669,6 +694,40 @@ mod tests {
         assert_eq!(
             cfg.effective(Some(&profile)).gamescope,
             GamescopeSetting::Fullscreen
+        );
+    }
+
+    #[test]
+    fn launch_wrapper_profile_override_wins_over_global_default() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.effective(None).launch_wrapper, None);
+
+        cfg.defaults.launch_wrapper = Some("gamemoderun".to_string());
+        assert_eq!(
+            cfg.effective(None).launch_wrapper,
+            Some("gamemoderun".to_string())
+        );
+
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        assert_eq!(
+            cfg.effective(Some(&profile)).launch_wrapper,
+            Some("gamemoderun".to_string())
+        );
+
+        profile.defaults.launch_wrapper = Some("~/lsfg".to_string());
+        assert_eq!(
+            cfg.effective(Some(&profile)).launch_wrapper,
+            Some("~/lsfg".to_string())
         );
     }
 

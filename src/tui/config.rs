@@ -223,6 +223,7 @@ fn current_text_value(app: &App, field: ConfigField) -> String {
         ConfigField::GamescopeNestedHeight => {
             gs.nested_height.map_or(String::new(), |v| v.to_string())
         }
+        ConfigField::LaunchWrapper => app.cfg.defaults.launch_wrapper.clone().unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -273,6 +274,9 @@ pub fn apply_text_field(app: &mut App, field: ConfigField, value: String) {
         }
         ConfigField::GamescopeNestedHeight => {
             app.cfg.defaults.gamescope_settings.nested_height = trimmed.parse::<u32>().ok();
+        }
+        ConfigField::LaunchWrapper => {
+            app.cfg.defaults.launch_wrapper = (!trimmed.is_empty()).then_some(trimmed.clone());
         }
         _ => {}
     }

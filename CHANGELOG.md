@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.21.0] — 2026-09-07
+
+### Added
+- `defaults.launch_wrapper` (global default + per-profile override): runs the entire launch through an external command (`gamemoderun`, `mangohud`, a frame-generation layer's own wrapper script), regardless of how the game's launched — the native equivalent of a Steam Launch Options wrapper + `%command%`.
+- README: documented injecting env vars or a wrapper tool through a Steam shortcut's own Launch Options (confirmed working end-to-end), and the equivalent native `launch_wrapper` config.
+
+### Changed
+- Gamepad: R3 now edits the selected profile instead of running winetricks (winetricks still works from a keyboard's `p`, just lost its dedicated button).
+
 ## [1.20.1] — 2026-09-07
 
 ### Fixed

@@ -159,6 +159,7 @@ mod tests {
             windows_version: None,
             gamescope: Default::default(),
             gamescope_settings: Default::default(),
+            launch_wrapper: None,
             log_mode,
             keep: 3,
             record: RecordMode::Errors,

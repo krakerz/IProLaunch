@@ -163,6 +163,7 @@ fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
             .gamescope_settings
             .nested_height
             .map_or(String::new(), |v| v.to_string()),
+        ProfileField::LaunchWrapper => profile.defaults.launch_wrapper.clone().unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -433,6 +434,9 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         }
         ProfileField::GamescopeNestedHeight => {
             profile.defaults.gamescope_settings.nested_height = trimmed.parse::<u32>().ok();
+        }
+        ProfileField::LaunchWrapper => {
+            profile.defaults.launch_wrapper = (!trimmed.is_empty()).then(|| trimmed.clone());
         }
         // `Slug` returns early above. The rest are never actually reached
         // via a text popup — they open a different mode

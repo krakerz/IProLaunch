@@ -200,7 +200,7 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
             "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, p = winetricks, s = add to Steam, f = search)"
         }
         InputKind::Gamepad => {
-            "Library (A = launch, X = delete, L3 = refresh, R3 = winetricks, LT = add to Steam, Select = search — add/edit/copy cmd need a keyboard)"
+            "Library (A = launch, X = delete, L3 = refresh, R3 = edit, LT = add to Steam, Select = search — add/copy cmd/winetricks need a keyboard)"
         }
     };
     let title = filter_title(
@@ -392,6 +392,11 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .gamescope_settings
                     .adaptive_sync
                     .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
+                ProfileField::LaunchWrapper => profile
+                    .defaults
+                    .launch_wrapper
+                    .clone()
+                    .unwrap_or_else(|| "(inherit)".to_string()),
                 ProfileField::LogKeep => profile
                     .logging
                     .keep
@@ -600,6 +605,10 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                     .gamescope_settings
                     .adaptive_sync
                     .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
+                ConfigField::LaunchWrapper => d
+                    .launch_wrapper
+                    .clone()
+                    .unwrap_or_else(|| "(none)".to_string()),
                 ConfigField::LogMode => format!("{:?}", l.mode),
                 ConfigField::LogPath => l.path.clone(),
                 ConfigField::LogKeep => l.keep.to_string(),
@@ -813,6 +822,17 @@ Profile editor (Library, after 'e'):
       gamescope inside the first is exactly what produces \"Gamescope WSI
       Layer Error\", so this makes every one of those launch paths safe
       there instead of crashing, with a one-line message explaining why.
+    - defaults.launch_wrapper (blank/\"(inherit)\" = none): a command to run
+      the *entire* launch through, e.g. `gamemoderun`, `mangohud`, or a
+      frame-generation layer's own wrapper script (e.g. `~/lsfg`) — distinct
+      from both env (values, not a command) and args (appended *after* the
+      target exe, forwarded to the exe itself — this instead wraps
+      everything, including gamescope when that's also active). Native
+      equivalent of a Steam Launch Options wrapper + `%command%` (see
+      README's \"Injecting env vars or a wrapper tool via a Steam
+      shortcut\") — applies the same way regardless of how the game's
+      actually launched. Whitespace-split, no shell-quoting support (same
+      as args); a leading `~/` in the command itself is expanded.
 
 Config:
   Enter                    edit (text fields), cycle (mode/record), or
@@ -853,7 +873,9 @@ Gamepad (Steam Deck Game Mode, or any plain controller):
   Y                        help (opens this popup from anywhere)
   LB / RB                  previous / next tab
   L3 (left stick click)    refresh
-  R3 (right stick click)   winetricks (Library)
+  R3 (right stick click)   edit the selected profile (Library) — winetricks
+                           (previously here) has no dedicated gamepad button
+                           now, use a keyboard's `p` for that
   RT                       the literal \"y\" a delete/rename/winetricks
                            confirm prompt needs — deliberately not A, so
                            mashing confirm can never delete anything by
