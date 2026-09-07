@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.21.1] — 2026-09-07
+
+### Fixed
+- Steam library `logo_1280w.png`/`.svg`: re-cropped to the actual artwork (was padded into an oversized fixed canvas SteamGridDB rejected) — transparent, natural aspect ratio, no fixed canvas.
+
 ## [1.21.0] — 2026-09-07
 
 ### Added
