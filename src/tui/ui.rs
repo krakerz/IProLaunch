@@ -2,7 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
+use ratatui::widgets::{
+    Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, Paragraph, Row, Table,
+    TableState, Tabs, Wrap,
+};
 
 use super::app::{
     self, App, ConfigField, InputKind, IntegrateField, MapEntryStep, MapField, Mode, ProfileField,
@@ -122,6 +125,22 @@ fn draw_tabs(frame: &mut Frame, area: Rect, active: Tab) {
     frame.render_widget(tabs, area);
 }
 
+/// Running's table has 3 columns (Name, PID, Location) and 2 gaps between
+/// them. Fixed overhead: 2 (border) + 2 (highlight symbol) + 2 (spacing,
+/// `RUNNING_COL_SPACING` * 2 gaps) + 7 (PID, wide enough for the highest
+/// PID Linux's `pid_max` allows). `RUNNING_MIN_TABLE_WIDTH` adds the
+/// smallest widths this stays legible at (12 for name, 25 for location —
+/// real running paths are usually long, so location needs more room than
+/// name does even at the floor) — below that, `draw_running_narrow` (today's
+/// single-line-per-row layout) is used instead.
+const RUNNING_COL_SPACING: u16 = 1;
+const RUNNING_PID_W: u16 = 7;
+const RUNNING_FIXED_OVERHEAD: u16 = 2 + 2 + RUNNING_COL_SPACING * 2 + RUNNING_PID_W;
+const RUNNING_MIN_NAME_W: u16 = 12;
+const RUNNING_MIN_LOCATION_W: u16 = 25;
+const RUNNING_MIN_TABLE_WIDTH: u16 =
+    RUNNING_FIXED_OVERHEAD + RUNNING_MIN_NAME_W + RUNNING_MIN_LOCATION_W;
+
 fn draw_running(frame: &mut Frame, area: Rect, app: &App) {
     if app.running.is_empty() {
         frame.render_widget(
@@ -147,6 +166,14 @@ fn draw_running(frame: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
+    if area.width < RUNNING_MIN_TABLE_WIDTH {
+        draw_running_narrow(frame, area, app, &indices, title);
+    } else {
+        draw_running_table(frame, area, app, &indices, title);
+    }
+}
+
+fn draw_running_narrow(frame: &mut Frame, area: Rect, app: &App, indices: &[usize], title: String) {
     let items: Vec<ListItem> = indices
         .iter()
         .map(|&i| {
@@ -159,6 +186,52 @@ fn draw_running(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(app.running_selected));
+}
+
+/// Splits the space left after `RUNNING_FIXED_OVERHEAD` between Name (30%)
+/// and Location (the rest — real paths are usually the longer, more useful
+/// field, and giving the remainder rather than another rounded percentage
+/// avoids losing a character or two to integer-division rounding).
+fn running_columns(area_width: u16) -> (u16, u16) {
+    let flexible = area_width.saturating_sub(RUNNING_FIXED_OVERHEAD);
+    let name = flexible * 30 / 100;
+    let location = flexible.saturating_sub(name);
+    (name, location)
+}
+
+fn draw_running_table(frame: &mut Frame, area: Rect, app: &App, indices: &[usize], title: String) {
+    let tick = app.marquee_tick();
+    let (name_w, location_w) = running_columns(area.width);
+    let header = Row::new(vec!["Name", "PID", "Location"])
+        .style(Style::default().add_modifier(Modifier::BOLD));
+    let rows: Vec<Row> = indices
+        .iter()
+        .enumerate()
+        .map(|(display_index, &i)| {
+            let e = &app.running[i];
+            let is_selected = display_index == app.running_selected;
+            let name = cell_text(&e.name, name_w as usize, is_selected, tick);
+            let location = cell_text(&e.target_path, location_w as usize, is_selected, tick);
+            Row::new(vec![
+                Cell::from(name),
+                Cell::from(Line::from(e.pid.to_string()).alignment(Alignment::Right)),
+                Cell::from(location),
+            ])
+        })
+        .collect();
+    let widths = [
+        Constraint::Length(name_w),
+        Constraint::Length(RUNNING_PID_W),
+        Constraint::Length(location_w),
+    ];
+    let table = Table::new(rows, widths)
+        .header(header)
+        .column_spacing(RUNNING_COL_SPACING)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, area, &mut table_state(app.running_selected));
 }
 
 /// Shared by `draw_running`/`draw_library`: while actively typing a
@@ -178,6 +251,27 @@ fn filter_title(filter: &Option<String>, editing: bool, normal_title: &str) -> S
     }
 }
 
+/// Library's table has 5 columns (marker, Name, Slug, Location, Last
+/// launched) and 4 gaps between them. Fixed overhead: 2 (border) + 2
+/// (highlight symbol) + 4 (spacing, `LIBRARY_COL_SPACING` * 4 gaps) + 3
+/// (the "S! " marker) + 21 (Last launched's value, `06-Sep-2026,
+/// 17:45:01` — always exactly this length, so it's a fixed column, not a
+/// flexible/marqueed one). `LIBRARY_MIN_TABLE_WIDTH` adds the smallest
+/// widths this stays legible at (12 for name, 10 for slug, 18 for
+/// location, picked against this project's own real library — see
+/// NOTES.md) — below that, `draw_library_narrow` (today's
+/// single-line-per-row layout) is used instead.
+const LIBRARY_COL_SPACING: u16 = 1;
+const LIBRARY_MARKER_W: u16 = 3;
+const LIBRARY_LAST_LAUNCHED_W: u16 = 21;
+const LIBRARY_FIXED_OVERHEAD: u16 =
+    2 + 2 + LIBRARY_COL_SPACING * 4 + LIBRARY_MARKER_W + LIBRARY_LAST_LAUNCHED_W;
+const LIBRARY_MIN_NAME_W: u16 = 12;
+const LIBRARY_MIN_SLUG_W: u16 = 10;
+const LIBRARY_MIN_LOCATION_W: u16 = 18;
+const LIBRARY_MIN_TABLE_WIDTH: u16 =
+    LIBRARY_FIXED_OVERHEAD + LIBRARY_MIN_NAME_W + LIBRARY_MIN_SLUG_W + LIBRARY_MIN_LOCATION_W;
+
 fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     if app.profiles.is_empty() {
         frame.render_widget(
@@ -187,13 +281,6 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         );
         return;
     }
-    // 2 (border) + 2 ("> "/blank highlight_symbol column, reserved on every
-    // row whether or not it's selected) + 2 (the "S "/"  " Steam-status
-    // marker, always reserved so the rest of the row lines up whether or
-    // not this particular row has it — see the marker/`combined` split
-    // below) — the space actually available for the marqueeing part of a
-    // list-item's text inside the block.
-    let inner_width = area.width.saturating_sub(6) as usize;
     let tick = app.marquee_tick();
     let normal_title = match app.input_kind {
         InputKind::Keyboard => {
@@ -208,9 +295,9 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         app.library_filter_editing,
         normal_title,
     );
-    // The title above was already too long to fit even before this round's
-    // `s` addition (a real, reported bug) — marqueed the same way every
-    // other over-long popup title already is, rather than clipped silently.
+    // The title above was already too long to fit even before the `s`
+    // addition (a real, reported bug) — marqueed the same way every other
+    // over-long popup title already is, rather than clipped silently.
     let title = marquee_title(title, area.width, tick);
 
     let indices = app.filtered_profile_indices();
@@ -222,6 +309,28 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    if area.width < LIBRARY_MIN_TABLE_WIDTH {
+        draw_library_narrow(frame, area, app, &indices, title, tick);
+    } else {
+        draw_library_table(frame, area, app, &indices, title, tick);
+    }
+}
+
+fn draw_library_narrow(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    indices: &[usize],
+    title: String,
+    tick: usize,
+) {
+    // 2 (border) + 2 ("> "/blank highlight_symbol column, reserved on every
+    // row whether or not it's selected) + 3 (the "S! "-shaped Steam-added/
+    // exe-missing marker, always reserved so the rest of the row lines up
+    // whether or not this particular row has either — see the marker/
+    // `combined` split below) — the space actually available for the
+    // marqueeing part of a list-item's text inside the block.
+    let inner_width = area.width.saturating_sub(7) as usize;
     let items: Vec<ListItem> = indices
         .iter()
         .enumerate()
@@ -229,12 +338,22 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
             let (slug, p) = &app.profiles[real_index];
             // Static — deliberately never part of the marqueeing text below,
             // so it stays put (and stays legible) even while a long row
-            // scrolls; see `inner_width`'s doc comment above.
-            let marker = if app.steam_slugs.contains(slug) {
-                "S "
-            } else {
-                "  "
-            };
+            // scrolls; see `inner_width`'s doc comment above. Two
+            // independent slots (a profile can be both added to Steam and
+            // have a since-moved exe) rather than one that picks a winner.
+            let marker = format!(
+                "{}{} ",
+                if app.steam_slugs.contains(slug) {
+                    "S"
+                } else {
+                    " "
+                },
+                if app.missing_exes.contains(slug) {
+                    "!"
+                } else {
+                    " "
+                },
+            );
             let left = format!(
                 "{}  [{slug}]  [{}]",
                 p.name,
@@ -268,6 +387,103 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(app.library_selected));
+}
+
+/// Splits the space left after `LIBRARY_FIXED_OVERHEAD` between Name (30%),
+/// Slug (20%), and Location (the rest — real path hints tend to be the
+/// longest/most useful field, and giving it the remainder rather than
+/// another rounded percentage avoids losing a character or two to
+/// integer-division rounding).
+struct LibraryColumns {
+    name: u16,
+    slug: u16,
+    location: u16,
+}
+
+fn library_columns(area_width: u16) -> LibraryColumns {
+    let flexible = area_width.saturating_sub(LIBRARY_FIXED_OVERHEAD);
+    let name = flexible * 30 / 100;
+    let slug = flexible * 20 / 100;
+    let location = flexible.saturating_sub(name).saturating_sub(slug);
+    LibraryColumns {
+        name,
+        slug,
+        location,
+    }
+}
+
+fn draw_library_table(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    indices: &[usize],
+    title: String,
+    tick: usize,
+) {
+    let cols = library_columns(area.width);
+    let header = Row::new(vec![
+        Cell::from(""),
+        Cell::from("Name"),
+        Cell::from("Slug"),
+        Cell::from("Location"),
+        Cell::from(Line::from("Last launched").alignment(Alignment::Right)),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD));
+    let rows: Vec<Row> = indices
+        .iter()
+        .enumerate()
+        .map(|(display_index, &real_index)| {
+            let (slug, p) = &app.profiles[real_index];
+            let is_selected = display_index == app.library_selected;
+            let marker = format!(
+                "{}{}",
+                if app.steam_slugs.contains(slug) {
+                    "S"
+                } else {
+                    " "
+                },
+                if app.missing_exes.contains(slug) {
+                    "!"
+                } else {
+                    " "
+                },
+            );
+            let name = cell_text(&p.name, cols.name as usize, is_selected, tick);
+            let slug_text = cell_text(slug, cols.slug as usize, is_selected, tick);
+            let location = cell_text(
+                &shortened_parent_hint(&p.target_path),
+                cols.location as usize,
+                is_selected,
+                tick,
+            );
+            // Blank, not "never", when it's never actually been launched —
+            // nothing to report yet, so nothing to show (same choice the
+            // narrow layout already makes).
+            let last = p.last_launched.as_deref().unwrap_or("");
+            Row::new(vec![
+                Cell::from(marker),
+                Cell::from(name),
+                Cell::from(slug_text),
+                Cell::from(location),
+                Cell::from(Line::from(last).alignment(Alignment::Right)),
+            ])
+        })
+        .collect();
+    let widths = [
+        Constraint::Length(LIBRARY_MARKER_W),
+        Constraint::Length(cols.name),
+        Constraint::Length(cols.slug),
+        Constraint::Length(cols.location),
+        Constraint::Length(LIBRARY_LAST_LAUNCHED_W),
+    ];
+    let table = Table::new(rows, widths)
+        .header(header)
+        .column_spacing(LIBRARY_COL_SPACING)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, area, &mut table_state(app.library_selected));
 }
 
 /// The exe's last 2 parent directory names, backslash-joined and prefixed
@@ -445,39 +661,46 @@ fn confirm_hint(input_kind: InputKind) -> &'static str {
     }
 }
 
+/// Every y/N confirm popup's title becomes "<label> — <confirm_hint>"
+/// instead of putting the hint in the body text — a block's title always
+/// renders on its border line regardless of how little vertical space the
+/// body itself has, whereas body text is the first thing a too-short
+/// terminal clips. The hint being the *last* line of the body (a real
+/// reported bug) meant it was also the *first* thing that disappeared.
+fn confirm_title(label: &str, input_kind: InputKind) -> String {
+    format!("{label} — {}", confirm_hint(input_kind))
+}
+
+const CONFIRM_POPUP_MAX_WIDTH: u16 = 70;
+const RENAME_SLUG_POPUP_MAX_WIDTH: u16 = 90;
+
 fn draw_confirm_delete_popup(frame: &mut Frame, name: &str, input_kind: InputKind) {
-    let area = centered_rect(60, 20, frame.area());
-    frame.render_widget(Clear, area);
     let text = format!(
-        "Delete \"{name}\"?\n\
-Removes its profile.toml (settings/history) — not the exe itself.\n\n\
-{}",
-        confirm_hint(input_kind)
+        "Delete \"{name}\"?\nRemoves its profile.toml (settings/history) — not the exe itself."
     );
+    let area = content_sized_rect(frame.area(), &text, CONFIRM_POPUP_MAX_WIDTH);
+    frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(text).block(
+        Paragraph::new(text).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Confirm delete"),
+                .title(confirm_title("Confirm delete", input_kind)),
         ),
         area,
     );
 }
 
 fn draw_confirm_winetricks_popup(frame: &mut Frame, name: &str, input_kind: InputKind) {
-    let area = centered_rect(60, 20, frame.area());
-    frame.render_widget(Clear, area);
     let text = format!(
-        "Launch winetricks for \"{name}\"?\n\
-Runs against the exact same prefix a normal launch of this game would use.\n\n\
-{}",
-        confirm_hint(input_kind)
+        "Launch winetricks for \"{name}\"?\nRuns against the exact same prefix a normal launch of this game would use."
     );
+    let area = content_sized_rect(frame.area(), &text, CONFIRM_POPUP_MAX_WIDTH);
+    frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(text).block(
+        Paragraph::new(text).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Confirm winetricks"),
+                .title(confirm_title("Confirm winetricks", input_kind)),
         ),
         area,
     );
@@ -512,23 +735,22 @@ fn draw_confirm_rename_slug_popup(
     new_prefix_dir: &std::path::Path,
     input_kind: InputKind,
 ) {
-    let area = centered_rect(76, 30, frame.area());
-    frame.render_widget(Clear, area);
     let hint = match input_kind {
         InputKind::Keyboard => "y = confirm (renames both), any other key = cancel",
         InputKind::Gamepad => "RT = confirm (renames both), any other button = cancel",
     };
     let text = format!(
-        "Renaming this slug also renames its prefix directory:\n\n  {}\n  → {}\n\n\
-{hint}",
+        "Renaming this slug also renames its prefix directory:\n\n  {}\n  → {}",
         old_prefix_dir.display(),
         new_prefix_dir.display()
     );
+    let area = content_sized_rect(frame.area(), &text, RENAME_SLUG_POPUP_MAX_WIDTH);
+    frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(text).block(
+        Paragraph::new(text).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Confirm prefix rename"),
+                .title(format!("Confirm prefix rename — {hint}")),
         ),
         area,
     );
@@ -754,8 +976,10 @@ Library:
                            shortcuts.vdf a moment after the launcher that
                            handed it the URL already exited) — a stray `r`
                            picks it up.
-  f                        quick-search — filters by name as you type;
-                           while typing, only Enter/Esc/Up/Down work
+  f                        quick-search — filters by name or exe path as you
+                           type (so e.g. a shared path segment tells apart
+                           two otherwise-similar profiles); while typing,
+                           only Enter/Esc/Up/Down work
                            (a/r/e/d/c/p/s become literal search characters
                            instead). Enter *locks* the search instead of
                            launching — the narrowed list stays, but
@@ -765,10 +989,14 @@ Library:
   Esc                      cancel while typing a path, or clear an active
                            quick-search (typing or locked)
 
-  Each row's leftmost column shows \"S\" when that game is already added to
-  Steam (detected at startup/refresh by scanning shortcuts.vdf for a
-  matching entry) — static, never part of the row's own marquee-scrolling
-  if the rest of it is too long to fit.
+  Each row's leftmost column shows up to two independent markers — static,
+  never part of the row's own marquee-scrolling if the rest of it is too
+  long to fit:
+    S   already added to Steam (detected at startup/refresh by scanning
+        shortcuts.vdf for a matching entry).
+    !   the exe at target-path no longer exists — moved or deleted since
+        this profile was created (checked at startup/refresh only, not on
+        every render). Edit ('e') to point it somewhere else, or delete it.
 
 Profile editor (Library, after 'e'):
   Enter                    edit (text fields), cycle (record/auto_open),
@@ -1154,6 +1382,27 @@ fn list_state(selected: usize) -> ratatui::widgets::ListState {
     state
 }
 
+fn table_state(selected: usize) -> TableState {
+    let mut state = TableState::default();
+    state.select(Some(selected));
+    state
+}
+
+/// A table cell's text, marquee-scrolled if it overflows `col_width` — but
+/// only for the selected row, same "only what you're looking at scrolls"
+/// rule the whole TUI already applies to a too-long row/title, just per
+/// column now instead of per line. `col_width` must be the exact width
+/// that column renders at (the `Table`'s own `Constraint::Length` for it,
+/// not a guess) or this and the actual layout could disagree about what
+/// fits.
+fn cell_text(text: &str, col_width: usize, is_selected: bool, tick: usize) -> String {
+    if is_selected {
+        marquee(text, col_width, tick)
+    } else {
+        text.to_string()
+    }
+}
+
 /// A cheap identifier for "whatever might currently be marquee-scrolling":
 /// changes exactly when the user has moved to a different row or a
 /// different popup/field (tab switched, a list selection moved, a popup
@@ -1245,6 +1494,63 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+/// How many lines `line` (no literal `\n`s — one already-split line) takes
+/// once word-wrapped to `width` columns. A plain greedy word-wrap, same
+/// shape as `Paragraph`'s own `Wrap` — close enough that the two agree on
+/// line count for `content_sized_rect`'s purposes, without needing to ask
+/// `Paragraph` (which doesn't expose this ahead of actually rendering).
+fn wrapped_line_count_one(line: &str, width: usize) -> usize {
+    if line.is_empty() {
+        return 1;
+    }
+    let width = width.max(1);
+    let mut lines = 1;
+    let mut current = 0;
+    for word in line.split(' ') {
+        let word_len = word.chars().count();
+        if current == 0 {
+            current = word_len;
+        } else if current + 1 + word_len <= width {
+            current += 1 + word_len;
+        } else {
+            lines += 1;
+            current = word_len;
+        }
+    }
+    lines
+}
+
+/// `text`'s total wrapped line count at `width` columns — literal `\n`s
+/// are real line breaks first, each one then word-wrapped independently.
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    text.lines().map(|l| wrapped_line_count_one(l, width)).sum()
+}
+
+/// A popup sized to fit `body` exactly, instead of `centered_rect`'s fixed
+/// percentage of the terminal — the problem that caused both a real
+/// reported "too much blank space" (a short confirm prompt in a tall
+/// terminal, given a fixed 20% of its height regardless of how few lines
+/// it actually needs) and a real reported "text cut off" (a fixed 60% of
+/// width, no wrapping, so a line longer than that got silently truncated).
+/// Width is whichever is smaller of `max_width` and the terminal's own
+/// width (so it still shrinks on a narrow terminal); height comes from
+/// `wrapped_line_count`, so it can never be more — or less — than `body`
+/// actually needs once wrapped to that width, plus the 2 border rows.
+fn content_sized_rect(area: Rect, body: &str, max_width: u16) -> Rect {
+    let width = max_width.min(area.width.saturating_sub(4)).max(20);
+    let text_width = width.saturating_sub(2) as usize; // minus left/right border
+    let lines = wrapped_line_count(body, text_width) as u16;
+    let height = (lines + 2).min(area.height); // + top/bottom border
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 #[cfg(test)]
@@ -1389,6 +1695,44 @@ mod tests {
         assert!(rendered(&mut app, 80, 24).contains("Nothing running"));
     }
 
+    fn test_running_entry(name: &str, target_path: &str) -> crate::running::RunningEntry {
+        crate::running::RunningEntry {
+            pid: 12345,
+            name: name.to_string(),
+            target_path: target_path.to_string(),
+            prefix_path: "/tmp/prefix".to_string(),
+            launch_id: "test-launch-id".to_string(),
+            started_at: "06-Sep-2026, 13:04:45".to_string(),
+        }
+    }
+
+    #[test]
+    fn running_table_shows_headers_and_the_pid() {
+        // At/above `RUNNING_MIN_TABLE_WIDTH`, `draw_running_table` takes
+        // over — real columns with a header row, PID as its own field.
+        let mut app = test_app();
+        app.tab = Tab::Running;
+        app.running = vec![test_running_entry("eldenring#1", "/games/eldenring.exe")];
+        let out = rendered(&mut app, 100, 24);
+        assert!(out.contains("Name"));
+        assert!(out.contains("PID"));
+        assert!(out.contains("Location"));
+        assert!(out.contains("eldenring#1"));
+        assert!(out.contains("12345"));
+        assert!(out.contains("/games/eldenring.exe"));
+    }
+
+    #[test]
+    fn running_narrow_keeps_the_bracketed_pid_style() {
+        // Forced below `RUNNING_MIN_TABLE_WIDTH` — pins the narrow
+        // (single-line-per-row) layout, unchanged from before this round.
+        let mut app = test_app();
+        app.tab = Tab::Running;
+        app.running = vec![test_running_entry("eldenring#1", "/games/eldenring.exe")];
+        let out = rendered(&mut app, 40, 24);
+        assert!(out.contains("[pid 12345]"));
+    }
+
     #[test]
     fn empty_library_tab_shows_placeholder_text() {
         let mut app = test_app();
@@ -1399,6 +1743,42 @@ mod tests {
 
     #[test]
     fn library_row_shows_the_shortened_parent_hint_and_right_aligns_last_launched() {
+        // Forced below `LIBRARY_MIN_TABLE_WIDTH` (72) — pins the narrow
+        // (single-line-per-row) layout specifically; see
+        // `library_table_shows_headers_and_a_bracket_free_location` for the
+        // wide/table layout's own equivalent. A short synthetic name/slug/
+        // path (not a realistic one) is deliberate: the narrow band tops
+        // out at inner_width 64, and the fixed 36-char "last launched: ..."
+        // text alone leaves too little room left for anything longer to
+        // render without marqueeing kicking in and hiding it off-screen —
+        // this test is about the padding/right-align math, not marqueeing.
+        let mut app = test_app();
+        app.tab = Tab::Library;
+        let mut profile = test_profile("a#1");
+        profile.target_path = "/z/a.exe".to_string();
+        profile.last_launched = Some("06-Sep-2026, 13:04:45".to_string());
+        app.profiles = vec![("a".to_string(), profile)];
+        let out = rendered(&mut app, 65, 24);
+        assert!(out.contains("[..\\z]"));
+        // Right-aligned: "last launched:" should land near the row's right
+        // edge, not immediately after the rest of the row's content.
+        let idx = out
+            .find("last launched:")
+            .expect("last launched should render");
+        let row_start = out[..idx].rfind("a#1").unwrap();
+        assert!(
+            idx - row_start >= 20,
+            "expected last launched to be pushed toward the right edge, gap was {}",
+            idx - row_start
+        );
+    }
+
+    #[test]
+    fn library_table_shows_headers_and_a_bracket_free_location() {
+        // At/above `LIBRARY_MIN_TABLE_WIDTH`, `draw_library_table` takes
+        // over: real columns (a header row, no more "[slug]"-style bracket
+        // decoration or a repeated "last launched: " label per row — the
+        // column header already says what it is).
         let mut app = test_app();
         app.tab = Tab::Library;
         let mut profile = test_profile("ktsysview#1");
@@ -1406,17 +1786,15 @@ mod tests {
         profile.last_launched = Some("06-Sep-2026, 13:04:45".to_string());
         app.profiles = vec![("ktsysview".to_string(), profile)];
         let out = rendered(&mut app, 100, 24);
-        assert!(out.contains("[..\\Downloads\\Programs]"));
-        // Right-aligned: "last launched:" should land near the row's right
-        // edge, not immediately after the rest of the row's content.
-        let idx = out
-            .find("last launched:")
-            .expect("last launched should render");
-        let row_start = out[..idx].rfind("ktsysview#1").unwrap();
+        assert!(out.contains("Name"));
+        assert!(out.contains("Slug"));
+        assert!(out.contains("Location"));
+        assert!(out.contains("Last launched"));
+        assert!(out.contains("ktsysview#1"));
+        assert!(out.contains("06-Sep-2026, 13:04:45"));
         assert!(
-            idx - row_start >= 58,
-            "expected last launched to be pushed toward the right edge, gap was {}",
-            idx - row_start
+            out.contains("Downloads\\Programs") && !out.contains("[..\\Downloads\\Programs]"),
+            "table mode's Location column shouldn't carry the narrow layout's brackets"
         );
     }
 
@@ -1524,6 +1902,74 @@ mod tests {
         };
         let out = rendered(&mut app, 80, 24);
         assert!(out.contains("Game#1"));
+    }
+
+    #[test]
+    fn confirm_hint_survives_a_short_terminal_that_clips_the_popup_body() {
+        // Real reported bug: the confirm/cancel hint used to be the last
+        // line of the popup's body text, so a short terminal (the popup's
+        // own area is a percentage of the frame, so it shrinks right along
+        // with it) cut it off first, leaving no way to tell how to confirm
+        // or cancel. It's in the title now, which always renders on the
+        // border line regardless of how little body space is left — proven
+        // here with a terminal short enough to leave ~0 body rows (12,
+        // matched against a real tmux repro at this exact size).
+        let mut app = test_app();
+        app.mode = Mode::ConfirmDeleteProfile {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+        };
+        let out = rendered(&mut app, 120, 12);
+        assert!(out.contains("y = confirm, any other key = cancel"));
+    }
+
+    #[test]
+    fn wrapped_line_count_one_wraps_at_word_boundaries() {
+        assert_eq!(wrapped_line_count_one("short", 20), 1);
+        assert_eq!(wrapped_line_count_one("", 20), 1);
+        // "one two three" is 13 chars; at width 6 "one" (3) + " two" (4)
+        // would be 7 > 6, so "two" starts a new line — 3 words, 3 lines.
+        assert_eq!(wrapped_line_count_one("one two three", 6), 3);
+    }
+
+    #[test]
+    fn confirm_popup_is_sized_to_its_own_content_not_a_terminal_percentage() {
+        // Real reported bug: `centered_rect`'s fixed 20%-of-height left a
+        // lot of dead space below a short prompt's 2 lines of text on a
+        // tall terminal. The popup should now be exactly as tall as its
+        // content needs (2 text lines + 2 border rows = 4), regardless of
+        // how tall the terminal is.
+        let mut app = test_app();
+        app.mode = Mode::ConfirmDeleteProfile {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+        };
+        let area = content_sized_rect(
+            Rect::new(0, 0, 100, 50),
+            "Delete \"Game#1\"?\nRemoves its profile.toml (settings/history) — not the exe itself.",
+            CONFIRM_POPUP_MAX_WIDTH,
+        );
+        assert_eq!(
+            area.height, 4,
+            "2 text lines + 2 border rows, not 20% of 50"
+        );
+    }
+
+    #[test]
+    fn confirm_popup_wraps_instead_of_truncating_on_a_narrow_terminal() {
+        // Real reported bug: at a fixed 60% width with no wrapping, a body
+        // line longer than that got silently cut off mid-sentence. Now it
+        // wraps onto more lines instead, so the full sentence still shows.
+        let mut app = test_app();
+        app.mode = Mode::ConfirmDeleteProfile {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+        };
+        let out = rendered(&mut app, 50, 24);
+        assert!(
+            out.contains("not the exe itself."),
+            "the full sentence should still appear somewhere, just wrapped onto more lines"
+        );
     }
 
     #[test]

@@ -63,8 +63,11 @@ fn start_filter(app: &mut App) {
 fn edit_filter(app: &mut App, code: KeyCode) -> bool {
     match code {
         KeyCode::Esc => {
-            app.library_filter = None;
-            app.library_selected = 0;
+            // Must also clear `library_filter_editing`, not just the text —
+            // `on_key` routes every key here while it's still true, so
+            // leaving it set stranded every other key (a/e/d/r/...) with no
+            // way back to normal handling (a real reported bug).
+            app.clear_library_filter();
             true
         }
         KeyCode::Backspace => {
@@ -115,6 +118,14 @@ fn filter_key(app: &mut App, code: KeyCode) {
 
 fn refresh(app: &mut App) {
     app.refresh_profiles();
+    // Also re-scans shortcuts.vdf for the "S" marker — this is the actual
+    // mechanism `add_to_steam`'s own doc comment already promises ("a
+    // stray `r` ... picks it up" if the marker's post-add refresh ran
+    // before Steam finished writing the file), but it never actually
+    // called this until now — a real reported bug: the marker could stay
+    // stale indefinitely even after retrying with `r`, not just for the
+    // brief post-add race it was meant to cover.
+    app.refresh_steam_status();
     app.status = Some("Refreshed.".to_string());
 }
 
@@ -639,6 +650,26 @@ mod tests {
         assert_eq!(app.status.as_deref(), Some("Refreshed."));
     }
 
+    #[test]
+    fn r_also_rechecks_steam_shortcut_status() {
+        // Real reported bug: `r` only reloaded the profile list, never
+        // re-scanned shortcuts.vdf for the "S" marker — so a shortcut
+        // added (or removed) outside the brief post-`s`-add refresh
+        // stayed stale indefinitely, even after retrying with `r` exactly
+        // as `add_to_steam`'s own doc comment already promised. Proven by
+        // seeding a slug the real (read-only) scan can never produce, then
+        // confirming `refresh` replaces `steam_slugs` wholesale rather
+        // than leaving it untouched.
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.steam_slugs
+            .insert("a-slug-the-real-scan-would-never-produce".to_string());
+        refresh(&mut app);
+        assert!(
+            !app.steam_slugs
+                .contains("a-slug-the-real-scan-would-never-produce")
+        );
+    }
+
     fn test_app_with_two_profiles() -> App {
         let mut app = App::new(Config::default());
         app.profiles = vec![
@@ -696,6 +727,36 @@ mod tests {
     }
 
     #[test]
+    fn filtering_also_matches_against_the_exe_path_not_just_the_name() {
+        // Reproduces a real reported case: two profiles whose exe paths
+        // only differ by a leading path segment — filtering by a substring
+        // that's only in the path (not the name) should still narrow
+        // correctly, telling them apart.
+        let mut app = test_app_with_two_profiles();
+        app.profiles[0].1.target_path = "/a/b/c/d.exe".to_string();
+        app.profiles[1].1.target_path = "/1/a/b/c/d.exe".to_string();
+        start_filter(&mut app);
+        edit_filter(&mut app, KeyCode::Char('b'));
+        assert_eq!(
+            app.filtered_profile_indices(),
+            vec![0, 1],
+            "'b' is in both paths"
+        );
+        edit_filter(&mut app, KeyCode::Backspace); // clear "b" first
+        // Not just "1" — both fixture names already end in "#1"
+        // (eldenring#1/ktsysview#1), which would match on the name alone
+        // and defeat the point of this test.
+        for c in "/1/".chars() {
+            edit_filter(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(
+            app.filtered_profile_indices(),
+            vec![1],
+            "only the second path has a leading '1' segment"
+        );
+    }
+
+    #[test]
     fn backspace_removes_the_last_filter_character() {
         let mut app = test_app_with_two_profiles();
         start_filter(&mut app);
@@ -713,6 +774,25 @@ mod tests {
         edit_filter(&mut app, KeyCode::Esc);
         assert_eq!(app.library_filter, None);
         assert_eq!(app.library_selected, 0);
+        // Real reported bug: this used to only clear the text, leaving
+        // `library_filter_editing` stuck `true` — `on_key` routes every key
+        // to `filter_key` while that's set, so a/e/d/r/... all silently
+        // stopped working after `f` -> (nothing typed) -> Esc, with no way
+        // back short of restarting the TUI.
+        assert!(!app.library_filter_editing);
+    }
+
+    #[test]
+    fn esc_while_typing_an_empty_filter_does_not_strand_other_keys() {
+        // Reproduces the exact reported sequence: f, type nothing, Esc —
+        // then confirm a normal key (e.g. 'e') is no longer swallowed by
+        // `filter_key`/`edit_filter` (which always return `true` for a
+        // `Char`, masking the bug — only `library_filter_editing` itself
+        // proves the routing is back to normal).
+        let mut app = test_app_with_two_profiles();
+        start_filter(&mut app);
+        edit_filter(&mut app, KeyCode::Esc);
+        assert!(!app.library_filter_editing);
     }
 
     #[test]
