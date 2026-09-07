@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use crate::config::{
     Config, GamescopeFilter, GamescopeScaler, GamescopeSetting, LogMode, PrefixMode, Profile,
@@ -556,6 +557,13 @@ pub struct App {
     /// per-row "S" marker and whether pressing `s` opens the add-confirm
     /// popup or just reports "already added" (see `library::prompt_add_to_steam`).
     pub steam_slugs: HashSet<String>,
+    /// Every slug whose `target_path` didn't exist on disk as of the last
+    /// `refresh_profiles()` (startup or `r`) — drives the Library list's
+    /// per-row "!" marker. Recomputed only on refresh, not every render/tick,
+    /// since it's one `Path::exists()` (a stat syscall) per profile — see
+    /// `refresh_profiles`'s doc comment for why that's fine even with a
+    /// large library.
+    pub missing_exes: HashSet<String>,
 
     pub config_selected: usize,
 
@@ -606,6 +614,7 @@ impl App {
             library_filter: None,
             library_filter_editing: false,
             steam_slugs: HashSet::new(),
+            missing_exes: HashSet::new(),
             config_selected: 0,
             profile_editor: None,
             profile_field_selected: 0,
@@ -637,6 +646,12 @@ impl App {
         }
     }
 
+    /// Reloads the library from disk and, alongside it, which profiles'
+    /// `target_path` no longer exists (see `missing_exes`). The extra check
+    /// is one `Path::exists()` per profile — a single stat syscall, orders
+    /// of magnitude cheaper than the TOML parse `Profile::load_all()`
+    /// already does for each one — so it stays negligible even with a large
+    /// library; only runs here (startup/`r`), never on every render tick.
     pub fn refresh_profiles(&mut self) {
         match Profile::load_all() {
             Ok(mut profiles) => {
@@ -648,11 +663,14 @@ impl App {
         if self.library_selected >= self.profiles.len() {
             self.library_selected = self.profiles.len().saturating_sub(1);
         }
+        self.missing_exes = missing_exe_slugs(&self.profiles);
     }
 
     /// Indices into `self.profiles` currently displayed — every index, in
     /// order, when `library_filter` is `None`; otherwise only the ones
-    /// whose `name` contains the filter text (case-insensitive substring).
+    /// whose `name` or `target_path` contains the filter text
+    /// (case-insensitive substring each) — matching by path lets e.g. `1`
+    /// tell apart two profiles that only differ by a leading path segment.
     /// `library_selected` is an index *into this*, not into `self.profiles`
     /// directly — callers that need the real profile look it up via
     /// `indices[library_selected]`.
@@ -664,7 +682,10 @@ impl App {
                 self.profiles
                     .iter()
                     .enumerate()
-                    .filter(|(_, (_, p))| p.name.to_lowercase().contains(&needle))
+                    .filter(|(_, (_, p))| {
+                        p.name.to_lowercase().contains(&needle)
+                            || p.target_path.to_lowercase().contains(&needle)
+                    })
                     .map(|(i, _)| i)
                     .collect()
             }
@@ -803,6 +824,18 @@ impl App {
             self.marquee_reset_at = std::time::Instant::now();
         }
     }
+}
+
+/// Slugs of every profile whose `target_path` doesn't currently exist —
+/// pulled out of `App::refresh_profiles` as its own function so it's
+/// testable against a hand-built profile list, without needing to go
+/// through `Profile::load_all()`'s real disk read.
+fn missing_exe_slugs(profiles: &[(String, Profile)]) -> HashSet<String> {
+    profiles
+        .iter()
+        .filter(|(_, p)| !Path::new(&p.target_path).exists())
+        .map(|(slug, _)| slug.clone())
+        .collect()
 }
 
 /// Moves a list selection up (`delta < 0`) or down (`delta > 0`), clamped to
@@ -959,6 +992,36 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         app.sync_marquee("two".to_string());
         assert!(app.marquee_reset_at > reset_at_first);
+    }
+
+    #[test]
+    fn missing_exe_slugs_flags_only_paths_that_dont_exist() {
+        fn profile(target_path: &str) -> Profile {
+            Profile {
+                name: "whatever".to_string(),
+                target_path: target_path.to_string(),
+                title: None,
+                last_launched: None,
+                args: Vec::new(),
+                defaults: Default::default(),
+                logging: Default::default(),
+                env: Default::default(),
+                winedlloverride: Default::default(),
+            }
+        }
+        let present = std::env::temp_dir().join("iprolaunch-test-missing-exe-marker.exe");
+        std::fs::write(&present, b"").unwrap();
+        let profiles = vec![
+            ("present".to_string(), profile(&present.to_string_lossy())),
+            (
+                "gone".to_string(),
+                profile("/definitely/does/not/exist/x.exe"),
+            ),
+        ];
+        let result = missing_exe_slugs(&profiles);
+        std::fs::remove_file(&present).unwrap();
+        assert!(!result.contains("present"));
+        assert!(result.contains("gone"));
     }
 
     #[test]

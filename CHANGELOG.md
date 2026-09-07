@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [1.26.0] — 2026-09-07
+
+### Added
+- Running/Library: a real column-aligned table layout (headers, per-column widths) on a wide-enough terminal, replacing the old single concatenated-and-padded line per row. Only the selected row's overflowing cell marquee-scrolls, independently per column, instead of the whole line. Falls back to the previous single-line-per-row layout (whole-row marquee) below a derived minimum width.
+
+### Fixed
+- Library `r` now also re-scans Steam shortcut status (the `S` marker), not just the profile list — it never did before, so a shortcut added/removed outside the brief post-`s`-add refresh (or that refresh simply running before Steam finished writing `shortcuts.vdf`) could stay stale indefinitely, even after retrying with `r` as already documented.
+- Confirm delete/winetricks/prefix-rename popups: sized to their own content instead of a fixed percentage of the terminal — fixes both excess blank space below a short prompt on a tall terminal, and body text getting silently truncated (no wrapping) on a narrow one.
+
+## [1.25.0] — 2026-09-07
+
+### Added
+- Library quick-search (`f`) also matches against a profile's full exe path, not just its name.
+- Library list: a per-row `!` marker (alongside the existing `S`) when a profile's exe no longer exists at its saved path — checked on refresh only.
+
+### Fixed
+- Library quick-search: pressing Esc while typing (before locking it) left the search box stuck active, silently swallowing every other key (`a`/`e`/`d`/`r`/...) until the TUI was restarted.
+- Confirm delete/winetricks/prefix-rename popups: the y/confirm hint is now part of the title (always renders on the border) instead of the last line of the body — a short terminal clipped the body first, hiding it.
+
 ## [1.24.0] — 2026-09-07
 
 ### Added
