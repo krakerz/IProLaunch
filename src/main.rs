@@ -11,6 +11,7 @@ mod running;
 mod steam_shortcut;
 mod tui;
 
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -113,10 +114,14 @@ enum Command {
         #[command(subcommand)]
         action: ContextMenuAction,
     },
-    /// `iprolaunch <name-or-slug> [args...]` — quick-launch a library entry by
-    /// its display name or slug, no `run` prefix needed. Exists so a Steam
-    /// (Deck or desktop) non-Steam-game shortcut can point straight at
-    /// `iprolaunch game#1` as its launch command.
+    /// `iprolaunch <name-or-slug|exe-path> [args...]` — quick-launch a
+    /// library entry by its display name or slug, no `run` prefix needed.
+    /// If the query isn't a known name/slug but is a real file, it's
+    /// launched the same as `run <path>` would (auto-registering it as a
+    /// profile the first time). Exists so a Steam (Deck or desktop)
+    /// non-Steam-game shortcut can point straight at `iprolaunch game#1` as
+    /// its launch command, and so a `binfmt_misc` registration pointed at
+    /// iprolaunch (in place of e.g. `wine`) can execute a `.exe` directly.
     #[command(external_subcommand)]
     Quick(Vec<String>),
 }
@@ -259,19 +264,27 @@ fn resolve_profile(query: &str) -> Result<(String, Profile)> {
 
 /// Resolves `query` (see `resolve_profile`) and launches it. Leading
 /// `KEY=VALUE` tokens in `extra_args` become one-off env overrides; whatever
-/// remains is forwarded to the exe.
+/// remains is forwarded to the exe. When `query` matches no known
+/// name/slug but does exist on disk, it's treated as a raw exe path instead
+/// (same as `run <path>` — `launch::run` auto-registers the profile) rather
+/// than failing outright, since a `binfmt_misc`/shell-exec caller has no way
+/// to say `run` explicitly, only the bare path.
 fn quick_launch(
     cfg: &Config,
     query: &str,
     extra_args: Vec<String>,
     gamescope: GamescopeMode,
 ) -> Result<()> {
-    let (_, profile) = resolve_profile(query)?;
     let (env, args) = split_leading_env(extra_args);
+    let target_path = match resolve_profile(query) {
+        Ok((_, profile)) => PathBuf::from(profile.target_path),
+        Err(_) if Path::new(query).is_file() => PathBuf::from(query),
+        Err(err) => return Err(err),
+    };
 
     launch::run(
         cfg,
-        Path::new(&profile.target_path),
+        &target_path,
         RunOptions {
             env,
             args,
@@ -346,8 +359,30 @@ fn config_init(mut cfg: Config) -> Result<()> {
     Ok(())
 }
 
+/// Best-effort self-report of this exact running binary's resolved path to
+/// `<config_dir>/bin-path`, refreshed on every invocation. Lets
+/// `scripts/binfmt-override-install.sh` find iprolaunch reliably even when
+/// it's not on `$PATH` — the binary can live anywhere, and this is always
+/// ground truth for "whichever copy the user actually runs," self-healing
+/// the moment it's next invoked after being moved/reinstalled. Never fails
+/// the actual command over this; it's pure bookkeeping.
+fn record_bin_path() {
+    let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else {
+        return;
+    };
+    let Ok(dirs) = config::project_dirs() else {
+        return;
+    };
+    let _ = fs::create_dir_all(dirs.config_dir());
+    let _ = fs::write(
+        dirs.config_dir().join("bin-path"),
+        exe.to_string_lossy().as_bytes(),
+    );
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    record_bin_path();
     let cfg = Config::load_or_init()?;
     let gamescope = GamescopeMode {
         fullscreen: cli.fullscreen,

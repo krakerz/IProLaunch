@@ -75,6 +75,7 @@ jobs:
           cp target/release/iprolaunch "$bundle/"
           cp config/config.example.toml "$bundle/"
           cp -r assets/steam-library "$bundle/"
+          cp -r scripts "$bundle/"
           cat > "$bundle/INSTALL.txt" <<'EOF'
           iprolaunch — quick start
           =========================
@@ -94,6 +95,8 @@ jobs:
           5. `steam-library/` has cover/background/logo/wide-cover artwork
              sized for Steam's non-Steam-game "Customization" screen, if you
              add iprolaunch itself as a shortcut for Game Mode use.
+          6. `scripts/` (optional): routes directly-executed .exe files
+             through iprolaunch instead of wine — see the README FAQ.
 
           Repo: https://github.com/krakerz/IProLaunch
           EOF

@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [1.24.0] — 2026-09-07
+
+### Added
+- Release archive now bundles `scripts/` (the `binfmt_misc` override scripts).
+
+### Changed
+- README compacted: Features/FAQ trimmed to point at the scripts' own `--help` instead of repeating their internals.
+
+## [1.23.0] — 2026-09-07
+
+### Added
+- `scripts/binfmt-override-install.sh`/`binfmt-override-uninstall.sh`: retarget the system's `binfmt_misc` Windows-exe handler (e.g. `DOSWin`) at iprolaunch instead of `wine` directly, so a `+x` `.exe` executed directly routes through iprolaunch — backs up the original first, masks it via a same-named `/etc/binfmt.d/` override (survives reboots), restarts `systemd-binfmt.service`, and verifies; uninstall reverts and re-verifies against the backup before deleting it.
+- `binfmt-override-install.sh --bin PATH`: points the override at an iprolaunch binary anywhere on disk, not just `$PATH`. Safe to re-run — updates an existing install's interpreter in place instead of refusing.
+- iprolaunch now self-reports its own resolved binary path to `~/.config/iprolaunch/bin-path` on every run — `binfmt-override-install.sh` uses it automatically (ahead of `$PATH`) so it stays correct even after the binary moves, no `--bin` needed.
+
+## [1.22.0] — 2026-09-07
+
+### Added
+- `iprolaunch <path-to-exe>` now works the same as `iprolaunch run <path>` when the path doesn't match a known name/slug — lets a `binfmt_misc` registration (or a plain `./game.exe`) launch straight through iprolaunch instead of requiring the `run` subcommand explicitly.
+
 ## [1.21.1] — 2026-09-07
 
 ### Fixed

@@ -31,13 +31,12 @@ entry.
   `integrate install` (below) adds a file-manager right-click "Add to
   IProLaunch Library" action (KDE, GNOME/Cinnamon/MATE, XFCE); both it and
   `add` copy a ready-to-paste quick-launch command to the clipboard.
-- Quick launch by name or slug (`iprolaunch <name>`) — points a Steam
-  shortcut straight at a game. `-f`/`-w`/`-b` wrap the launch in a nested
-  `gamescope` session (real fullscreen/stretch-to-fill/borderless,
-  combinable, remembered per-game) — not usable from inside Steam Game
-  Mode itself (see FAQ). Output size, render resolution, refresh cap,
-  upscale filter/strategy, relative-mouse-mode, and adaptive-sync are all
-  configurable too (Config tab / profile editor).
+- Quick launch by name, slug, or raw exe path (`iprolaunch <name>`) — points
+  a Steam shortcut, a `binfmt_misc` registration, or a plain `./game.exe`
+  straight at a game (see FAQ). `-f`/`-w`/`-b` wrap the launch in a nested
+  `gamescope` session (fullscreen/stretch-to-fill/borderless, combinable,
+  remembered per-game, output/refresh/filter/mouse-grab all configurable
+  too) — not usable from inside Steam Game Mode itself (see FAQ).
 - `defaults.launch_wrapper` (global default + profile override) runs the
   whole launch through an external command — `gamemoderun`, `mangohud`, a
   frame-generation layer's own wrapper script (see "Injecting env vars or
@@ -292,6 +291,20 @@ shortcut at `iprolaunch <name-or-slug>` instead of the exe directly. Bare
 as a Game Mode/gamescope shortcut's Target on its own — either use the
 slug form for a single game, or see "Running the full TUI from a Steam
 shortcut" above to wrap it in a terminal emulator instead.
+
+**Can I make `.exe` files run through iprolaunch when executed directly
+(not double-clicked), e.g. via `binfmt_misc`?** Yes — `iprolaunch <path>`
+already launches a raw path the same as `run <path>` would. On the system
+side, `scripts/binfmt-override-install.sh` retargets your distro's
+Windows-exe `binfmt_misc` handler (usually `DOSWin` → `wine`) at iprolaunch
+instead — backs up the original first, fully masks it (survives reboots,
+see `binfmt.d(5)`), and is fully reversible via
+`binfmt-override-uninstall.sh` (verifies against that backup before
+deleting it). Both need `sudo` and are meant to be read and run by you
+directly, not invoked by iprolaunch itself — see the install script's own
+`--help` for exactly how it finds the iprolaunch binary and what it
+changes. `+x` on the exe itself is still required for the kernel to route
+it here at all.
 
 **Why does `-f`/`-w`/`-b` fail with "Gamescope WSI Layer Error / Hooking has
 failed somewhere" in Steam Game Mode?** gamescope's own WSI layer
