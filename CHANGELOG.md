@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.28.0] — 2026-09-08
+
+### Changed
+- Relicensed from MIT to GNU GPLv3 (or later). `Cargo.toml` now declares `license = "GPL-3.0-or-later"`; `LICENSE` is now bundled into the release archive too, since conveying the binary requires including a copy of the license.
+
 ## [1.27.0] — 2026-09-08
 
 ### Added

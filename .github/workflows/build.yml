@@ -76,6 +76,7 @@ jobs:
           cp config/config.example.toml "$bundle/"
           cp -r assets/steam-library "$bundle/"
           cp -r scripts "$bundle/"
+          cp LICENSE "$bundle/"
           cat > "$bundle/INSTALL.txt" <<'EOF'
           iprolaunch — quick start
           =========================
