@@ -165,6 +165,10 @@ enum ContextMenuAction {
 enum LibraryAction {
     /// List every known profile.
     List,
+    /// Lists profiles whose name or exe path contains `query`
+    /// (case-insensitive substring each — same matching the TUI's
+    /// quick-search, `f`, uses).
+    Search { query: String },
     /// Hands a profile to the running Steam client's own "Add a Non-Steam
     /// Game" importer (via `steam://addnonsteamgame/`, see
     /// `steam_shortcut.rs`) instead of editing `shortcuts.vdf` directly —
@@ -427,6 +431,23 @@ fn main() -> Result<()> {
             }
             for (slug, profile) in profiles {
                 println!("{}  [{slug}]  {}", profile.name, profile.target_path);
+            }
+            Ok(())
+        }
+        Some(Command::Library {
+            action: LibraryAction::Search { query },
+        }) => {
+            let needle = query.to_lowercase();
+            let matches: Vec<_> = Profile::load_all()?
+                .into_iter()
+                .filter(|(_, p)| p.matches_query(&needle))
+                .collect();
+            if matches.is_empty() {
+                println!("no games match `{query}`.");
+            } else {
+                for (slug, profile) in matches {
+                    println!("{}  [{slug}]  {}", profile.name, profile.target_path);
+                }
             }
             Ok(())
         }

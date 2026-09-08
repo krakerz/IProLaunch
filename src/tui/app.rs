@@ -682,10 +682,7 @@ impl App {
                 self.profiles
                     .iter()
                     .enumerate()
-                    .filter(|(_, (_, p))| {
-                        p.name.to_lowercase().contains(&needle)
-                            || p.target_path.to_lowercase().contains(&needle)
-                    })
+                    .filter(|(_, (_, p))| p.matches_query(&needle))
                     .map(|(i, _)| i)
                     .collect()
             }
