@@ -136,6 +136,9 @@ iprolaunch add ~/Games/EldenRing/Game/eldenring.exe
 # List everything in the library
 iprolaunch library list
 
+# Search the library by name or exe path (case-insensitive substring)
+iprolaunch library search elden
+
 # Quick-launch by name or slug (what a Steam shortcut should point at)
 iprolaunch "eldenring#1"
 

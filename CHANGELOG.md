@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.27.0] — 2026-09-08
+
+### Added
+- `iprolaunch library search <query>` — lists profiles whose name or exe path contains `query` (case-insensitive substring each), the same matching the TUI's quick-search (`f`) uses.
+
 ## [1.26.0] — 2026-09-07
 
 ### Added

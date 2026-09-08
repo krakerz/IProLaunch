@@ -571,6 +571,17 @@ impl Profile {
         ));
     }
 
+    /// Whether this profile's name or exe path contains `needle_lower`
+    /// (case-insensitive substring each — `needle_lower` must already be
+    /// lowercased by the caller, since callers typically check many
+    /// profiles against the same one query and shouldn't re-lowercase it
+    /// every time). Shared by the TUI's quick-search (`f`) and the CLI's
+    /// `library search`, so both use identical matching semantics.
+    pub fn matches_query(&self, needle_lower: &str) -> bool {
+        self.name.to_lowercase().contains(needle_lower)
+            || self.target_path.to_lowercase().contains(needle_lower)
+    }
+
     pub fn load(slug: &str) -> Result<Self> {
         let path = Self::profiles_dir()?.join(slug).join("profile.toml");
         let raw =
@@ -635,6 +646,28 @@ mod tests {
 
         profile.title = Some("A Real Game Title".to_string());
         assert_eq!(profile.display_title(), "A Real Game Title");
+    }
+
+    #[test]
+    fn matches_query_checks_both_name_and_target_path() {
+        // Mixed-case name/path on purpose: proves the haystack side is
+        // lowercased internally, regardless of the profile's own real
+        // casing — `needle_lower` itself is the caller's job to lowercase
+        // (see the doc comment), not tested here.
+        let profile = Profile {
+            name: "EldenRing#1".into(),
+            target_path: "/a/b/c/Downloads/EldenRing.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        assert!(profile.matches_query("elden")); // name
+        assert!(profile.matches_query("downloads")); // path only, not the name
+        assert!(!profile.matches_query("nonexistent"));
     }
 
     #[test]
