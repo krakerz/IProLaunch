@@ -6,6 +6,8 @@
 /___/_/   /_/   \____/_____/\__,_/\__,_/_/ /_/\___/_/ /_/
 ```
 
+![The Library tab of the iprolaunch TUI](assets/screenshot.png)
+
 A small CLI/TUI launcher for running Windows apps and games through Proton on
 Linux, without going through Steam.
 

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.29.0] — 2026-09-09
+
+### Added
+- README: a screenshot of the TUI's Library tab, right below the ASCII wordmark.
+
 ## [1.28.1] — 2026-09-09
 
 ### Fixed
