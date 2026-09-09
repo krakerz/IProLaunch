@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.28.1] — 2026-09-09
+
+### Fixed
+- `LICENSE` had a project-specific copyright notice prepended before the actual GPLv3 text, making it look non-standard — reverted to the pure, unmodified text (verified byte-for-byte against gnu.org's own copy). The copyright notice now lives in a short new README "License" section instead.
+
 ## [1.28.0] — 2026-09-08
 
 ### Changed
