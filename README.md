@@ -333,3 +333,7 @@ nothing was set before `install`, `uninstall` leaves it unset too.
 ### Notes
 
 Built and maintained with the help of AI.
+
+### License
+
+Copyright (C) 2026 Alvi. Licensed under the [GNU GPLv3](LICENSE) (or later).
