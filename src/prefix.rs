@@ -23,9 +23,25 @@ pub fn sanitize(text: &str) -> String {
 /// `launch::ensure_profile` disambiguates it against existing profiles
 /// (`game`, `game-2`, ...) before it's ever used as a real folder name.
 /// Pure derivation, not disk lookup.
+///
+/// Falls back to `"app"` (same as when there's no stem at all) when
+/// `sanitize` reduces the stem to nothing — a real reported case: `.exe`
+/// stems made up entirely of non-ASCII characters (e.g. a Japanese title)
+/// sanitize down to an empty string, since only ASCII alphanumerics survive.
+/// Left unguarded, `ensure_profile` would call `Profile::save("")`, which
+/// joins onto `profiles_dir()` itself — a `profile.toml` written directly
+/// into the profiles *root*, invisible to `Profile::load_all()` (which only
+/// descends into subdirectories) and silently clobbered by the next
+/// same-stem exe with the same fate, rather than living in its own folder
+/// like every other profile.
 pub fn slug_from_exe(target: &Path) -> String {
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("app");
-    sanitize(stem)
+    let sanitized = sanitize(stem);
+    if sanitized.is_empty() {
+        "app".to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// Resolves the prefix directory for one launch. `PrefixMode::PerSlug` uses
@@ -59,6 +75,17 @@ mod tests {
             "eldenring"
         );
         assert_eq!(slug_from_exe(Path::new("C:/Foo Bar!!.exe")), "foo-bar");
+    }
+
+    #[test]
+    fn slug_from_exe_falls_back_to_app_when_the_stem_is_entirely_non_ascii() {
+        // Real reported case: a stem made up entirely of non-ASCII
+        // characters (e.g. a Japanese title) sanitizes down to nothing —
+        // only ASCII alphanumerics survive `sanitize` — which used to slip
+        // through unguarded into `ensure_profile` calling
+        // `Profile::save("")`, writing a `profile.toml` directly into the
+        // profiles *root* instead of its own folder.
+        assert_eq!(slug_from_exe(Path::new("/games/真・痴漢の極み.exe")), "app");
     }
 
     #[test]

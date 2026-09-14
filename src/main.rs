@@ -10,6 +10,7 @@ mod quick_launch_cmd;
 mod running;
 mod steam_shortcut;
 mod tui;
+mod updater;
 
 use std::fs;
 use std::io::Write;

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.32.0] — 2026-09-14
+
+### Added
+- Config tab's Desktop integration table gained a "check for update" row — manually checks GitHub for a newer release and, if one exists, downloads and installs it over the running binary (restart to apply).
+
+### Fixed
+- Auto-creating a profile for a `.exe` no longer checks only the storage slug for a collision, leaving the display name unchecked — after renaming a profile's slug (which deliberately leaves its name alone), a later same-stemmed exe could land on a slug that was free while still landing on a name another profile already had, showing as two visibly-identical entries in the Library.
+- An `.exe` whose filename is made up entirely of non-ASCII characters (e.g. a Japanese title) no longer produces an empty slug — it now falls back to `"app"` like a missing filename already did. An empty slug used to write that profile's `profile.toml` directly into the profiles folder itself instead of its own subfolder, invisible to the Library and silently overwritten by the next same-shaped exe.
+
 ## [1.31.0] — 2026-09-14
 
 ### Added

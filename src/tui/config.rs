@@ -91,7 +91,84 @@ fn activate_integrate_field(app: &mut App, terminal: &mut Term, field: Integrate
         IntegrateField::Uninstall => {
             run_integrate_action(app, terminal, IntegrateAction::Uninstall)
         }
+        IntegrateField::CheckUpdate => check_for_update(app),
     }
+}
+
+/// A single quick network call — no suspend needed (nothing prints its own
+/// output the way `integrate::install`/winetricks/etc. do), unlike the
+/// download-and-swap step `confirm_update_key` runs once the user actually
+/// confirms an update, which does suspend to show real progress.
+fn check_for_update(app: &mut App) {
+    app.status = Some(match crate::updater::check_for_update() {
+        Ok(crate::updater::UpdateCheck::UpToDate { current }) => {
+            format!("Already up to date (v{current}).")
+        }
+        Ok(crate::updater::UpdateCheck::Available {
+            current,
+            latest,
+            asset_name,
+            asset_url,
+        }) => {
+            app.mode = Mode::ConfirmUpdate {
+                current,
+                latest,
+                asset_name,
+                asset_url,
+            };
+            return;
+        }
+        Err(err) => format!("Couldn't check for an update: {err:#}"),
+    });
+}
+
+/// `y`/`Y` confirms a pending `Mode::ConfirmUpdate` — downloads and swaps
+/// in the new binary, suspending the TUI first (mirrors
+/// `run_integrate_action`'s own suspend-and-print shape) since
+/// `updater::apply_update` prints real progress as it downloads/extracts/
+/// installs. Anything else cancels without downloading anything.
+pub fn confirm_update_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
+    let Mode::ConfirmUpdate {
+        latest, asset_url, ..
+    } = &app.mode
+    else {
+        return;
+    };
+    if !matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+        app.mode = Mode::Normal;
+        app.status = Some("Update cancelled.".to_string());
+        return;
+    }
+
+    let latest = latest.clone();
+    let asset_url = asset_url.clone();
+    app.mode = Mode::Normal;
+
+    if suspend(terminal).is_err() {
+        app.status = Some("Failed to suspend the TUI.".to_string());
+        return;
+    }
+
+    let result = crate::updater::apply_update(&asset_url);
+    if let Err(err) = &result {
+        println!("Error: {err:#}");
+    }
+
+    use std::io::Write;
+    print!("\nPress Enter to return to iprolaunch. ");
+    std::io::stdout().flush().ok();
+    let mut discard = String::new();
+    std::io::stdin().read_line(&mut discard).ok();
+
+    if resume(terminal).is_err() {
+        app.status = Some("Failed to restore the TUI.".to_string());
+        return;
+    }
+
+    app.status = Some(match result {
+        Ok(()) => format!("Updated to v{latest} — restart iprolaunch to run it."),
+        Err(err) => format!("Update failed: {err:#}"),
+    });
 }
 
 /// Runs one desktop-integration action, guarding against the two

@@ -72,6 +72,9 @@ entry.
   backing up the prior default so `uninstall` restores everything. Also
   available from the TUI's Config tab. `context-menu install
   [kde|gnome|xfce]` manages just the right-click action alone.
+- Config tab's Desktop integration table also has a "check for update" row —
+  checks GitHub for a newer release and, if there is one, downloads and
+  installs it over the running binary (restart to apply).
 
 ## Installation
 
