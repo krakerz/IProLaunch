@@ -505,6 +505,18 @@ impl MapField {
             MapField::ProfileWineDllOverride(slug) => format!("{slug}'s winedlloverride override"),
         }
     }
+
+    /// The corresponding *global* map, shown read-only alongside a
+    /// profile-level override for context (see `ui::draw_map_editor_popup`)
+    /// — `None` for the global fields themselves, since there's nothing
+    /// "more global" than those to reference.
+    pub fn global_counterpart(&self) -> Option<MapField> {
+        match self {
+            MapField::ProfileEnv(_) => Some(MapField::Env),
+            MapField::ProfileWineDllOverride(_) => Some(MapField::WineDllOverride),
+            MapField::Env | MapField::WineDllOverride => None,
+        }
+    }
 }
 
 /// Which input source produced the most recent keypress the TUI handled —

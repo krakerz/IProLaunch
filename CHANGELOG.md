@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [1.31.0] — 2026-09-14
+
+### Added
+- Profile editor's env/winedlloverride editor now shows the corresponding global values below it, read-only — context for what's being overridden, without them being part of the editable list. Auto-scrolls vertically when there isn't room to show every global entry at once.
+
+### Fixed
+- Proton detection now checks every Steam library folder (parsed from `steamapps/libraryfolders.vdf`), not just the main Steam root — official Proton builds installed to a secondary drive's library were silently invisible to `proton list`/the picker before.
+
+## [1.30.1] — 2026-09-14
+
+### Fixed
+- Text-input popups (target-path, etc.) now scroll horizontally to keep the cursor in view — a buffer wider than the box used to just get silently clipped from the left, so the cursor (and anything typed past it) could scroll off-screen entirely.
+
 ## [1.30.0] — 2026-09-14
 
 ### Added
