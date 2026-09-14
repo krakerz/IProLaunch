@@ -90,6 +90,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::ConfirmAddToSteam { name, selected, .. } => {
             draw_confirm_add_to_steam_popup(frame, name, *selected)
         }
+        Mode::ConfirmUpdate {
+            current,
+            latest,
+            asset_name,
+            ..
+        } => draw_confirm_update_popup(frame, current, latest, asset_name, app.input_kind),
         Mode::Normal => {}
     }
 }
@@ -710,6 +716,28 @@ fn draw_confirm_winetricks_popup(frame: &mut Frame, name: &str, input_kind: Inpu
     );
 }
 
+fn draw_confirm_update_popup(
+    frame: &mut Frame,
+    current: &str,
+    latest: &str,
+    asset_name: &str,
+    input_kind: InputKind,
+) {
+    let text = format!(
+        "Update from v{current} to {latest}?\nDownloads {asset_name} and swaps it in over this binary — restart iprolaunch afterward to run it."
+    );
+    let area = content_sized_rect(frame.area(), &text, CONFIRM_POPUP_MAX_WIDTH);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(text).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(confirm_title("Confirm update", input_kind)),
+        ),
+        area,
+    );
+}
+
 /// `Mode::ConfirmAddToSteam` — a navigable 3-item list (Up/Down/Enter,
 /// already gamepad-ready via the D-pad + A, no `confirm_hint`-style
 /// gamepad-caption text needed) rather than a y/N prompt, since there are 3
@@ -887,6 +915,12 @@ fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
                 }
                 IntegrateField::Uninstall => {
                     "Enter = remove the registration and restore the prior default".to_string()
+                }
+                IntegrateField::CheckUpdate => {
+                    format!(
+                        "Enter = check GitHub for a newer release (this is v{})",
+                        env!("CARGO_PKG_VERSION")
+                    )
                 }
             };
             let combined = format!("{:<34} {}", field.label(), value);
@@ -1514,6 +1548,7 @@ fn marquee_signature(app: &App) -> String {
         Mode::ConfirmAddToSteam { slug, selected, .. } => {
             format!("confirmaddtosteam:{slug}:{selected}")
         }
+        Mode::ConfirmUpdate { latest, .. } => format!("confirmupdate:{latest}"),
     };
     format!(
         "{:?}|{}|{}|{}|{:?}|{:?}|{:?}|{mode_part}",
@@ -1928,7 +1963,7 @@ mod tests {
         // shorter terminal will legitimately clip content, same as any
         // other list-heavy screen; that's covered by
         // `every_tab_renders_without_panicking_at_a_small_size` instead.
-        let out = rendered(&mut app, 100, 46);
+        let out = rendered(&mut app, 100, 47);
         for field in ConfigField::ALL {
             assert!(
                 out.contains(field.label()),

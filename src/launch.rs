@@ -441,6 +441,25 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     Ok(())
 }
 
+/// The first (slug, name) pair built from `base` (`base`/`base#1`, then
+/// `base-2`/`base#2`, ...) that collides with neither an existing slug nor
+/// an existing name in `existing` — checked *independently* of each other,
+/// not just the slug with the name assumed to follow along for free (see
+/// `ensure_profile`'s own doc comment for the real bug that was). Pure, so
+/// it's testable against a hand-built `existing` list without touching
+/// real disk, unlike `ensure_profile` itself (`Profile::load_all`/`save`).
+fn next_available_slug_and_name(base: &str, existing: &[(String, Profile)]) -> (String, String) {
+    let mut n = 1;
+    let mut slug = base.to_string();
+    let mut name = format!("{base}#{n}");
+    while existing.iter().any(|(s, _)| *s == slug) || existing.iter().any(|(_, p)| p.name == name) {
+        n += 1;
+        slug = format!("{base}-{n}");
+        name = format!("{base}#{n}");
+    }
+    (slug, name)
+}
+
 /// Finds the profile whose `target_path` matches, or creates one — disambiguating
 /// both the storage slug and the display `name` when another profile already
 /// claims the same exe stem (e.g. two different games each shipping a `game.exe`).
@@ -448,6 +467,16 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
 /// register a profile without launching anything — `run` calls this too,
 /// which is what makes a game show up in the library after a single `run`
 /// with no separate add step required there.
+///
+/// The candidate slug and name are checked for collisions *independently*
+/// (not just the slug, with the name assumed to follow along for free) —
+/// a real reported bug: the profile editor's slug rename only ever touches
+/// the slug, deliberately leaving `name` as-is (see `profile_editor::
+/// rename_slug`'s own doc comment), so a later profile auto-created for a
+/// same-stemmed exe could land on a slug that's genuinely free while still
+/// landing on a `name` some *other*, differently-slugged profile already
+/// has — two entries both displaying as e.g. "game#1" in the Library, with
+/// no way to tell them apart at a glance.
 pub fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
     let target_str = target.to_string_lossy().into_owned();
     let existing = Profile::load_all()?;
@@ -459,15 +488,10 @@ pub fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
     clear_execute_bit(target);
 
     let base = prefix::slug_from_exe(target);
-    let mut slug = base.clone();
-    let mut n = 1;
-    while existing.iter().any(|(s, _)| *s == slug) {
-        n += 1;
-        slug = format!("{base}-{n}");
-    }
+    let (slug, name) = next_available_slug_and_name(&base, &existing);
 
     let profile = Profile {
-        name: format!("{base}#{n}"),
+        name,
         target_path: target_str,
         title: None,
         last_launched: None,
@@ -662,6 +686,55 @@ fn winedlloverrides_value(overrides: &BTreeMap<String, String>) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn profile_named(slug: &str, name: &str) -> (String, Profile) {
+        (
+            slug.to_string(),
+            Profile {
+                name: name.to_string(),
+                target_path: format!("/tmp/{slug}.exe"),
+                title: None,
+                last_launched: None,
+                defaults: Default::default(),
+                logging: Default::default(),
+                env: Default::default(),
+                winedlloverride: Default::default(),
+                args: Default::default(),
+            },
+        )
+    }
+
+    #[test]
+    fn next_available_slug_and_name_checks_the_name_even_when_the_slug_is_free() {
+        // Real reported bug: after a slug-only rename (which deliberately
+        // leaves `name` untouched — see `profile_editor::rename_slug`),
+        // "game" the *slug* is free again, but "game#1" the *name* is
+        // still claimed by the renamed profile under its new slug. A new
+        // same-stemmed exe used to land on ("game", "game#1") anyway —
+        // two entries both showing as "game#1" in the Library with no way
+        // to tell them apart — since the old disambiguation loop only
+        // checked the slug, assuming the name always followed along.
+        // Slug and name are still bumped *together* (consistent with the
+        // app's existing convention that a profile's folder and display
+        // name always share the same "#N" — see e.g. two different
+        // `game.exe`-stemmed games landing on `game`/`game#1` and
+        // `game-2`/`game#2`, never a mismatched `game`/`game#2`): the fix
+        // is that the *name* collision is what triggers the bump at all
+        // here, even though the slug alone was already free.
+        let existing = vec![profile_named("monster-g", "game#1")];
+        assert_eq!(
+            next_available_slug_and_name("game", &existing),
+            ("game-2".to_string(), "game#2".to_string())
+        );
+    }
+
+    #[test]
+    fn next_available_slug_and_name_is_just_base_hash_1_with_nothing_existing() {
+        assert_eq!(
+            next_available_slug_and_name("game", &[]),
+            ("game".to_string(), "game#1".to_string())
+        );
+    }
 
     #[test]
     fn gamescope_mode_default_is_inactive_with_no_args() {

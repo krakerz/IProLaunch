@@ -194,15 +194,21 @@ pub enum IntegrateField {
     Setup,
     Reapply,
     Uninstall,
+    /// Checks GitHub for a newer published release (see `updater`) — up to
+    /// date just updates the status message; a real update opens
+    /// `Mode::ConfirmUpdate` first, same as every other destructive-ish
+    /// action in this app confirms before doing anything.
+    CheckUpdate,
 }
 
 impl IntegrateField {
-    pub const ALL: [IntegrateField; 5] = [
+    pub const ALL: [IntegrateField; 6] = [
         IntegrateField::Status,
         IntegrateField::BinaryPath,
         IntegrateField::Setup,
         IntegrateField::Reapply,
         IntegrateField::Uninstall,
+        IntegrateField::CheckUpdate,
     ];
 
     pub fn label(self) -> &'static str {
@@ -212,6 +218,7 @@ impl IntegrateField {
             IntegrateField::Setup => "setup desktop integration",
             IntegrateField::Reapply => "reapply (refresh binary location)",
             IntegrateField::Uninstall => "uninstall desktop integration",
+            IntegrateField::CheckUpdate => "check for update",
         }
     }
 }
@@ -443,6 +450,17 @@ pub enum Mode {
         slug: String,
         name: String,
         selected: usize,
+    },
+    /// A newer published release was found (`updater::check_for_update`) —
+    /// confirming downloads and swaps it in over this exact running
+    /// binary; anything else cancels without touching anything. Not
+    /// reached at all when already up to date (that's just a status
+    /// message, see `tui::config::activate_integrate_field`).
+    ConfirmUpdate {
+        current: String,
+        latest: String,
+        asset_name: String,
+        asset_url: String,
     },
 }
 
