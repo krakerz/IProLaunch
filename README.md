@@ -207,8 +207,11 @@ iprolaunch` first). Two things to also set up, both one-time:
 Global config lives at `~/.config/iprolaunch/config.toml` (created with
 defaults on first run — see `config/config.example.toml`). Per-game
 overrides live at `~/.config/iprolaunch/profiles/<slug>/profile.toml` —
-edit via the TUI's Library tab (`e`) or by hand: proton/prefix
-path/Windows version (per-slug mode only)/gamescope, logging, env vars,
+edit via the TUI's Library tab (`e`) or by hand: prefix mode (forces this
+one game into its own per-slug prefix, or explicitly back to the shared
+one, regardless of the global default)/proton/prefix path/Windows version
+(per-slug mode only — the global default or this profile's own
+override)/gamescope, logging, env vars,
 DLL overrides (`[winedlloverride]`, e.g. `winhttp = "n,b"`), extra args
 (`args = ["--dx11"]`, always forwarded), or `title` (matched against the
 umu-database for a GAMEID).

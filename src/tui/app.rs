@@ -240,6 +240,7 @@ pub enum ProfileField {
     Name,
     Title,
     Args,
+    PrefixMode,
     Proton,
     PrefixPath,
     WindowsVersion,
@@ -263,12 +264,13 @@ pub enum ProfileField {
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 25] = [
+    pub const ALL: [ProfileField; 26] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
         ProfileField::Title,
         ProfileField::Args,
+        ProfileField::PrefixMode,
         ProfileField::Proton,
         ProfileField::PrefixPath,
         ProfileField::WindowsVersion,
@@ -298,6 +300,7 @@ impl ProfileField {
             ProfileField::Name => "name (#N auto-managed)",
             ProfileField::Title => "title (for GAMEID matching)",
             ProfileField::Args => "args (space-separated)",
+            ProfileField::PrefixMode => "defaults.prefix_mode override",
             ProfileField::Proton => "defaults.proton override (per-slug mode only)",
             ProfileField::PrefixPath => "defaults.prefix_path override",
             ProfileField::WindowsVersion => "defaults.windows-version override",
@@ -333,6 +336,7 @@ impl ProfileField {
             ProfileField::Proton => FieldKind::ProtonPicker,
             ProfileField::LogRecord
             | ProfileField::LogAutoOpen
+            | ProfileField::PrefixMode
             | ProfileField::Gamescope
             | ProfileField::GamescopeFilter
             | ProfileField::GamescopeScaler
@@ -499,6 +503,18 @@ impl MapField {
             MapField::WineDllOverride => "winedlloverride".to_string(),
             MapField::ProfileEnv(slug) => format!("{slug}'s env override"),
             MapField::ProfileWineDllOverride(slug) => format!("{slug}'s winedlloverride override"),
+        }
+    }
+
+    /// The corresponding *global* map, shown read-only alongside a
+    /// profile-level override for context (see `ui::draw_map_editor_popup`)
+    /// — `None` for the global fields themselves, since there's nothing
+    /// "more global" than those to reference.
+    pub fn global_counterpart(&self) -> Option<MapField> {
+        match self {
+            MapField::ProfileEnv(_) => Some(MapField::Env),
+            MapField::ProfileWineDllOverride(_) => Some(MapField::WineDllOverride),
+            MapField::Env | MapField::WineDllOverride => None,
         }
     }
 }
@@ -902,6 +918,19 @@ pub fn next_gamescope_setting(m: GamescopeSetting) -> GamescopeSetting {
         GamescopeSetting::None => GamescopeSetting::Fullscreen,
         GamescopeSetting::Fullscreen => GamescopeSetting::Maximize,
         GamescopeSetting::Maximize => GamescopeSetting::None,
+    }
+}
+
+/// Same as `next_profile_record_mode`, for a profile's `prefix_mode`
+/// override — inherit → single → per-slug → inherit. See
+/// `ProfileDefaults::prefix_mode`'s doc comment for what setting this to
+/// `PerSlug` also unlocks (the profile's own `proton`/`windows_version`
+/// overrides, previously inert unless the *global* default was per-slug).
+pub fn next_profile_prefix_mode(m: Option<PrefixMode>) -> Option<PrefixMode> {
+    match m {
+        None => Some(PrefixMode::Single),
+        Some(PrefixMode::Single) => Some(PrefixMode::PerSlug),
+        Some(PrefixMode::PerSlug) => None,
     }
 }
 

@@ -539,6 +539,10 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                         profile.args.join(" ")
                     }
                 }
+                ProfileField::PrefixMode => profile
+                    .defaults
+                    .prefix_mode
+                    .map_or_else(|| "(inherit)".to_string(), |m| format!("{m:?}")),
                 ProfileField::Proton => profile
                     .defaults
                     .proton
@@ -1011,17 +1015,26 @@ Profile editor (Library, after 'e'):
     - slug is the profile's folder name — edit just the base text; renames
       the folder on disk, auto-appending \"-N\" only if that exact text is
       already taken by another profile (never something you type yourself).
-      In defaults.prefix_mode = per-slug, if a prefix directory already
-      exists under the old slug, you're asked to confirm first — renaming
-      moves that directory too, since prefixes are keyed by slug.
+      If this profile's effective prefix mode is per-slug (the global
+      default, or this profile's own prefix_mode override below) and a
+      prefix directory already exists under the old slug, you're asked to
+      confirm first — renaming moves that directory too, since prefixes
+      are keyed by slug.
     - name is what the Library list shows — edit just the base text (its
       \"#N\" is stripped for editing and never shown in the box); saving
       auto-fills the lowest \"#N\" not already used by another profile's
       same base, reusing a gap left by a deleted/renamed one rather than
       always growing past the historical max.
-    - the proton override only has any effect in defaults.prefix_mode =
-      per-slug — in single-prefix mode it's ignored (every profile shares
-      one prefix, so a mismatched Proton version there risks corrupting it).
+    - prefix_mode override forces this one profile into its own per-slug
+      prefix (or explicitly back to the shared single one), regardless of
+      the global default — cycles inherit -> single -> per-slug -> inherit.
+      Lets one game get an isolated prefix without moving every other
+      profile to per-slug mode too.
+    - the proton/windows-version overrides only have any effect once this
+      profile's *effective* prefix mode (global default, or its own
+      override just above) is per-slug — in single-prefix mode they're
+      ignored (every profile shares one prefix, so a mismatched Proton
+      version/Windows version there risks corrupting it).
     - gamescope override cycles inherit -> none -> fullscreen -> maximize ->
       inherit — same as -f/-w on the command line, remembered per game so
       \"iprolaunch <slug>\" doesn't need retyping it (an explicit -f/-w still
@@ -1226,8 +1239,9 @@ fn draw_text_input_popup(
     };
     let title = marquee_title(title, area.width, tick);
     let block = Block::default().borders(Borders::ALL).title(title);
+    let inner_width = area.width.saturating_sub(2) as usize;
     frame.render_widget(
-        Paragraph::new(cursor_line(buffer, cursor)).block(block),
+        Paragraph::new(cursor_line(buffer, cursor, inner_width)).block(block),
         area,
     );
 }
@@ -1237,14 +1251,33 @@ fn draw_text_input_popup(
 /// last character) — a text-editor-style block cursor, so Left/Right
 /// movement (see `mod::handle_text_input`) has something to actually show
 /// where it landed, not just always-append-at-the-end like before.
-fn cursor_line(buffer: &str, cursor: usize) -> Line<'static> {
+///
+/// Horizontally scrolls to keep the cursor in view when `buffer` is wider
+/// than `width` — a real reported bug: `Paragraph` doesn't wrap by
+/// default, so a buffer longer than the popup just got silently clipped
+/// from the left edge, and the cursor (and everything after it) could
+/// scroll fully off-screen and become invisible for any text longer than
+/// the box, e.g. a real file path. Once the buffer (+ its own trailing
+/// cursor cell, for when the cursor sits past the last character) no
+/// longer fits, the window scrolls just far enough to keep the cursor
+/// pinned at the rightmost visible column — same as a normal shell
+/// prompt/address bar.
+fn cursor_line(buffer: &str, cursor: usize, width: usize) -> Line<'static> {
     let chars: Vec<char> = buffer.chars().collect();
     let cursor = cursor.min(chars.len());
-    let before: String = chars[..cursor].iter().collect();
-    let (at, after): (String, String) = if cursor < chars.len() {
+    let width = width.max(1);
+    let scroll = (cursor + 1).saturating_sub(width).min(chars.len());
+    let visible_end = (scroll + width).min(chars.len());
+    let visible: Vec<char> = chars[scroll..visible_end].to_vec();
+    let visible_cursor = cursor - scroll;
+
+    let before: String = visible[..visible_cursor.min(visible.len())]
+        .iter()
+        .collect();
+    let (at, after): (String, String) = if visible_cursor < visible.len() {
         (
-            chars[cursor].to_string(),
-            chars[cursor + 1..].iter().collect(),
+            visible[visible_cursor].to_string(),
+            visible[visible_cursor + 1..].iter().collect(),
         )
     } else {
         (" ".to_string(), String::new())
@@ -1335,11 +1368,60 @@ fn draw_map_editor_popup(
         area.width,
         tick,
     );
+
+    // A profile-level field also shows its corresponding *global* map
+    // below it — read-only context for what's being overridden here,
+    // deliberately excluded from the navigable list above (a/e/d never
+    // touch it) rather than mixed into it. Auto-scrolls vertically when
+    // there isn't room to show every global entry at once, since there's
+    // no Up/Down to scroll a non-selectable block by hand.
+    let global_field = field.global_counterpart();
+    let global_lines: Vec<String> = global_field
+        .as_ref()
+        .map(|gf| app.map_entries(gf))
+        .unwrap_or_default()
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+
+    if global_lines.is_empty() {
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().bg(Color::DarkGray))
+            .highlight_symbol("> ");
+        frame.render_stateful_widget(list, area, &mut list_state(selected));
+        return;
+    }
+
+    let ref_visible_rows = global_lines.len().min(4);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(ref_visible_rows as u16 + 2),
+        ])
+        .split(area);
+
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
-    frame.render_stateful_widget(list, area, &mut list_state(selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state(selected));
+
+    let visible_global = vertical_scroll_window(&global_lines, ref_visible_rows, tick);
+    let global_title = format!(
+        "global {} (read-only)",
+        global_field
+            .as_ref()
+            .map(MapField::label)
+            .unwrap_or_default()
+    );
+    frame.render_widget(
+        Paragraph::new(visible_global.join("\n"))
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title(global_title)),
+        chunks[1],
+    );
 }
 
 fn draw_map_entry_input_popup(
@@ -1462,6 +1544,33 @@ fn marquee(text: &str, width: usize, tick: usize) -> String {
     let padded: Vec<char> = text.chars().chain(GAP.chars()).collect();
     let start = tick % padded.len();
     padded.iter().cycle().skip(start).take(width).collect()
+}
+
+/// Same idea as `marquee`, but vertically and per-line instead of
+/// horizontally and per-character — for a read-only reference list (see
+/// `draw_map_editor_popup`'s global-values block) that isn't user-
+/// navigable, so there's no Up/Down to scroll it by hand. Paced much
+/// slower than `marquee`'s own tick (a whole line takes longer to read
+/// than watching characters go by): one row every ~1.6s. `lines` that
+/// already fit within `visible_rows` are returned as-is, unscrolled.
+fn vertical_scroll_window(lines: &[String], visible_rows: usize, tick: usize) -> Vec<String> {
+    if lines.len() <= visible_rows || visible_rows == 0 {
+        return lines.to_vec();
+    }
+    let row_tick = tick / 8;
+    // A blank gap row between the last entry and wrapping back to the
+    // first, same reasoning as `marquee`'s own `GAP`.
+    let gap = [String::new()];
+    let padded_len = lines.len() + gap.len();
+    let start = row_tick % padded_len;
+    lines
+        .iter()
+        .chain(gap.iter())
+        .cycle()
+        .skip(start)
+        .take(visible_rows)
+        .cloned()
+        .collect()
 }
 
 /// `marquee`, specialized for a popup's own `Block` title — takes the
@@ -1845,6 +1954,106 @@ mod tests {
             cursor: 11,
         };
         assert!(rendered(&mut app, 80, 24).contains("hello-world"));
+    }
+
+    /// Strips the cursor's reverse-video styling and re-joins the spans,
+    /// so these tests can assert on plain visible text without caring
+    /// about styling — `cursor_line`'s own doc comment covers the styling
+    /// itself.
+    fn visible_text(line: Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn cursor_line_shows_the_whole_buffer_unscrolled_when_it_fits() {
+        let line = cursor_line("short", 5, 20);
+        assert_eq!(visible_text(line), "short ");
+    }
+
+    #[test]
+    fn cursor_line_scrolls_to_keep_a_cursor_past_the_end_of_a_long_buffer_visible() {
+        // Real reported bug: a buffer longer than the box used to just get
+        // clipped from the left, so the cursor (typing at the end of a
+        // long path, say) could scroll fully off-screen and never render
+        // at all. Width 10, buffer of 20 'a's, cursor at the very end (20).
+        let long = "a".repeat(20);
+        let line = cursor_line(&long, 20, 10);
+        let text = visible_text(line);
+        assert_eq!(text.chars().count(), 10, "still exactly `width` cells");
+        // The cursor (a trailing reversed space, since it's past the last
+        // char) must be the *last* visible cell, not scrolled away.
+        assert!(text.ends_with(' '));
+    }
+
+    #[test]
+    fn cursor_line_scrolls_to_follow_the_cursor_when_moved_back_into_the_middle() {
+        // Same long buffer, but the cursor has since moved back to the
+        // middle (index 5) — the visible window should scroll left again
+        // to keep showing wherever the cursor actually is now, not stay
+        // pinned to the end.
+        let long = "a".repeat(20);
+        let line = cursor_line(&long, 5, 10);
+        let text = visible_text(line);
+        assert_eq!(text.chars().count(), 10);
+        // With the cursor back near the start, scroll should be 0 — the
+        // window shows the buffer's own beginning.
+        assert_eq!(text, "aaaaaaaaaa");
+    }
+
+    #[test]
+    fn vertical_scroll_window_returns_everything_unscrolled_when_it_fits() {
+        let lines = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(vertical_scroll_window(&lines, 4, 999), lines);
+    }
+
+    #[test]
+    fn vertical_scroll_window_cycles_through_extra_lines_over_time() {
+        let lines: Vec<String> = (0..10).map(|n| n.to_string()).collect();
+        // tick=0 (row_tick=0): starts right at the top.
+        assert_eq!(
+            vertical_scroll_window(&lines, 3, 0),
+            vec!["0".to_string(), "1".to_string(), "2".to_string()]
+        );
+        // Advancing tick shifts the window down by one row per 8 ticks
+        // (see `vertical_scroll_window`'s own doc comment on pacing).
+        assert_eq!(
+            vertical_scroll_window(&lines, 3, 8),
+            vec!["1".to_string(), "2".to_string(), "3".to_string()]
+        );
+    }
+
+    #[test]
+    fn map_editor_popup_shows_the_global_value_as_read_only_context() {
+        let mut app = test_app();
+        app.cfg
+            .env
+            .insert("FOO".to_string(), "global-value".to_string());
+        let mut profile = test_profile("Game#1");
+        profile
+            .env
+            .insert("FOO".to_string(), "profile-override".to_string());
+        app.profiles = vec![("game-1".to_string(), profile)];
+        app.mode = Mode::MapEditor {
+            field: MapField::ProfileEnv("game-1".to_string()),
+            selected: 0,
+        };
+        let out = rendered(&mut app, 100, 30);
+        assert!(out.contains("FOO=profile-override"));
+        assert!(out.contains("FOO=global-value"));
+        assert!(out.contains("global env (read-only)"));
+    }
+
+    #[test]
+    fn map_editor_popup_has_no_reference_block_when_the_global_map_is_empty() {
+        let mut app = test_app();
+        app.cfg.env.clear();
+        app.profiles = vec![("game-1".to_string(), test_profile("Game#1"))];
+        app.mode = Mode::MapEditor {
+            field: MapField::ProfileEnv("game-1".to_string()),
+            selected: 0,
+        };
+        let out = rendered(&mut app, 100, 30);
+        assert!(!out.contains("read-only"));
     }
 
     #[test]

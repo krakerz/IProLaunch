@@ -82,6 +82,10 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
             ProfileField::LogAutoOpen => {
                 profile.logging.auto_open = app::next_optional_bool(profile.logging.auto_open);
             }
+            ProfileField::PrefixMode => {
+                profile.defaults.prefix_mode =
+                    app::next_profile_prefix_mode(profile.defaults.prefix_mode);
+            }
             ProfileField::Gamescope => {
                 profile.defaults.gamescope =
                     app::next_profile_gamescope_setting(profile.defaults.gamescope);
@@ -209,30 +213,38 @@ fn next_available_slug(
     candidate
 }
 
-/// The real prefix directory a slug currently resolves to, in
+/// The real prefix directory a slug resolves to under `effective`, in
 /// `PrefixMode::PerSlug` — `None` in `Single` mode, where a slug rename
 /// never touches any prefix. Thin wrapper around `prefix::resolve` for the
-/// one thing `App` doesn't otherwise need: the raw path, not an
-/// `Effective`.
-fn per_slug_prefix_dir(app: &App, slug: &str) -> Option<std::path::PathBuf> {
-    if app.cfg.defaults.prefix_mode != crate::config::PrefixMode::PerSlug {
+/// one thing `App` doesn't otherwise need: the raw path. Takes an already-
+/// resolved `Effective` rather than looking the profile up itself — the
+/// *candidate* (new) slug doesn't exist as a profile yet during a rename,
+/// so both the old and new path must be resolved against the same
+/// (old-profile's) `Effective`, only the slug component differs.
+fn per_slug_prefix_dir(
+    effective: &crate::config::Effective,
+    slug: &str,
+) -> Option<std::path::PathBuf> {
+    if effective.prefix_mode != crate::config::PrefixMode::PerSlug {
         return None;
     }
-    Some(crate::config::expand_home(&app.cfg.defaults.prefixes_root).join(slug))
+    Some(crate::prefix::resolve(effective, slug))
 }
 
 /// Renames a profile's folder on disk (`profiles/<slug>/` →
 /// `profiles/<new-slug>/`). Sanitizes and disambiguates the requested text
 /// the same way a brand-new profile's slug is derived (see
-/// `next_available_slug`). In `PrefixMode::PerSlug`, the prefix directory
-/// is keyed by this same slug (see `prefix::resolve`), so if one already
-/// exists on disk under the old slug, renaming would otherwise leave it
-/// orphaned (the app would look for the prefix under the *new* slug and
-/// find nothing) — that case is routed through a confirmation
-/// (`Mode::ConfirmRenameSlug`) instead of renaming immediately, since it's
-/// a second, larger directory move the user should know is about to
-/// happen. If no prefix directory exists yet (game never launched) or
-/// mode is `Single`, there's nothing to warn about — proceeds directly.
+/// `next_available_slug`). In `PrefixMode::PerSlug` (whether that's the
+/// global default or this profile's own override — see
+/// `ProfileDefaults::prefix_mode`), the prefix directory is keyed by this
+/// same slug (see `prefix::resolve`), so if one already exists on disk
+/// under the old slug, renaming would otherwise leave it orphaned (the app
+/// would look for the prefix under the *new* slug and find nothing) —
+/// that case is routed through a confirmation (`Mode::ConfirmRenameSlug`)
+/// instead of renaming immediately, since it's a second, larger directory
+/// move the user should know is about to happen. If no prefix directory
+/// exists yet (game never launched) or this profile's effective mode is
+/// `Single`, there's nothing to warn about — proceeds directly.
 fn rename_slug(app: &mut App, slug: &str, requested: &str) {
     let sanitized = crate::prefix::sanitize(requested);
     if sanitized.is_empty() {
@@ -244,11 +256,13 @@ fn rename_slug(app: &mut App, slug: &str, requested: &str) {
         return; // nothing to rename
     }
 
-    if let Some(old_prefix_dir) = per_slug_prefix_dir(app, slug)
+    let effective = app.profile(slug).map(|p| app.cfg.effective(Some(p)));
+    if let Some(effective) = &effective
+        && let Some(old_prefix_dir) = per_slug_prefix_dir(effective, slug)
         && old_prefix_dir.exists()
     {
         let new_prefix_dir =
-            per_slug_prefix_dir(app, &candidate).expect("just confirmed PerSlug mode above");
+            per_slug_prefix_dir(effective, &candidate).expect("just confirmed PerSlug mode above");
         app.mode = Mode::ConfirmRenameSlug {
             slug: slug.to_string(),
             candidate,
@@ -442,6 +456,7 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         // via a text popup — they open a different mode
         // (`ProtonPicker`/`MapEditor`/`Cycle`) instead.
         ProfileField::Slug
+        | ProfileField::PrefixMode
         | ProfileField::Proton
         | ProfileField::LogRecord
         | ProfileField::LogAutoOpen
@@ -642,7 +657,8 @@ mod tests {
     fn per_slug_prefix_dir_is_none_in_single_mode() {
         let mut app = test_app_with_profile("game-1");
         app.cfg.defaults.prefix_mode = crate::config::PrefixMode::Single;
-        assert_eq!(per_slug_prefix_dir(&app, "game-1"), None);
+        let effective = app.cfg.effective(app.profile("game-1"));
+        assert_eq!(per_slug_prefix_dir(&effective, "game-1"), None);
     }
 
     #[test]
@@ -650,8 +666,28 @@ mod tests {
         let mut app = test_app_with_profile("game-1");
         app.cfg.defaults.prefix_mode = crate::config::PrefixMode::PerSlug;
         app.cfg.defaults.prefixes_root = "/tmp/prefixes".to_string();
+        let effective = app.cfg.effective(app.profile("game-1"));
         assert_eq!(
-            per_slug_prefix_dir(&app, "game-1"),
+            per_slug_prefix_dir(&effective, "game-1"),
+            Some(std::path::PathBuf::from("/tmp/prefixes/game-1"))
+        );
+    }
+
+    #[test]
+    fn per_slug_prefix_dir_honors_a_profiles_own_override_even_when_global_is_single() {
+        // Real reported gap: renaming a slug used to only ever check the
+        // *global* prefix_mode, so a profile individually opted into
+        // per-slug (via its own override) would silently not get its
+        // prefix moved on rename.
+        let mut app = test_app_with_profile("game-1");
+        app.cfg.defaults.prefix_mode = crate::config::PrefixMode::Single;
+        app.cfg.defaults.prefixes_root = "/tmp/prefixes".to_string();
+        if let Some(profile) = app.profile_mut("game-1") {
+            profile.defaults.prefix_mode = Some(crate::config::PrefixMode::PerSlug);
+        }
+        let effective = app.cfg.effective(app.profile("game-1"));
+        assert_eq!(
+            per_slug_prefix_dir(&effective, "game-1"),
             Some(std::path::PathBuf::from("/tmp/prefixes/game-1"))
         );
     }

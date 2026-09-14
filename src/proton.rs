@@ -60,19 +60,57 @@ fn system_compatibilitytools_dirs() -> Vec<PathBuf> {
     vec![PathBuf::from("/usr/share/steam/compatibilitytools.d")]
 }
 
+/// Every library folder Steam itself knows about, parsed from
+/// `steamapps/libraryfolders.vdf` under `root` — a small, predictable
+/// manifest, not arbitrary input, so this just scans for `"path"` lines
+/// (same approach `read_display_name` already uses for
+/// `compatibilitytool.vdf`) rather than a full VDF/KeyValues parser.
+/// Official Proton builds are ordinary Steam "apps" like any game, and can
+/// be (and, on a real machine checked while building this, were) installed
+/// to a secondary library on another drive rather than the main Steam
+/// root — `steam_roots()` alone never finds those. Missing/unreadable
+/// (no `libraryfolders.vdf`, e.g. a fresh or non-native install) just
+/// means no *additional* libraries beyond `root` itself, not an error.
+fn steam_library_paths(root: &Path) -> Vec<PathBuf> {
+    let Ok(text) = fs::read_to_string(root.join("steamapps/libraryfolders.vdf")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("\"path\"")?;
+            Some(PathBuf::from(rest.trim().trim_matches('"')))
+        })
+        .collect()
+}
+
 /// Scans every known Steam root for both community Proton builds
 /// (`compatibilitytools.d`) and official Valve-shipped ones
-/// (`steamapps/common/Proton*`), plus any system-wide compat-tool
-/// directory — this is the one scan used everywhere a Proton build list is
-/// needed (the `proton list` CLI command and the TUI's proton picker
-/// alike), so improving it here improves both.
+/// (`steamapps/common/Proton*` — in *every* library folder Steam has
+/// configured for that root, not just the root's own, see
+/// `steam_library_paths`), plus any system-wide compat-tool directory —
+/// this is the one scan used everywhere a Proton build list is needed (the
+/// `proton list` CLI command and the TUI's proton picker alike), so
+/// improving it here improves both.
 pub fn scan() -> Result<Vec<ProtonBuild>> {
     let mut builds = Vec::new();
+    let mut common_dirs_seen = HashSet::new();
     for root in steam_roots()? {
         builds.extend(
             scan_compatibilitytools(&root.join("compatibilitytools.d"), false).unwrap_or_default(),
         );
-        builds.extend(scan_official_proton(&root.join("steamapps/common")).unwrap_or_default());
+        let mut common_dirs = vec![root.join("steamapps/common")];
+        common_dirs.extend(
+            steam_library_paths(&root)
+                .into_iter()
+                .map(|p| p.join("steamapps/common")),
+        );
+        for common_dir in common_dirs {
+            if let Ok(canon) = common_dir.canonicalize()
+                && common_dirs_seen.insert(canon)
+            {
+                builds.extend(scan_official_proton(&common_dir).unwrap_or_default());
+            }
+        }
     }
     for dir in system_compatibilitytools_dirs() {
         builds.extend(scan_compatibilitytools(&dir, true).unwrap_or_default());
@@ -215,6 +253,37 @@ mod tests {
 
         assert_eq!(read_display_name(&dir), Some("GE-Proton10-34".to_string()));
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn steam_library_paths_extracts_every_path_from_real_manifest_format() {
+        let dir = std::env::temp_dir().join(format!(
+            "iprolaunch-proton-library-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(dir.join("steamapps")).unwrap();
+        fs::write(
+            dir.join("steamapps/libraryfolders.vdf"),
+            "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"/home/user/.local/share/Steam\"\n\t\t\"label\"\t\t\"\"\n\t\t\"apps\"\n\t\t{\n\t\t\t\"228980\"\t\t\"451331579\"\n\t\t}\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"/media/game/SteamLibrary\"\n\t\t\"label\"\t\t\"Viper 1TB\"\n\t}\n}\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            steam_library_paths(&dir),
+            vec![
+                PathBuf::from("/home/user/.local/share/Steam"),
+                PathBuf::from("/media/game/SteamLibrary"),
+            ]
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn steam_library_paths_is_empty_without_a_manifest() {
+        assert_eq!(
+            steam_library_paths(Path::new("/nonexistent-iprolaunch-test-path")),
+            Vec::<PathBuf>::new()
+        );
     }
 
     #[test]
