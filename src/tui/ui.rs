@@ -539,6 +539,10 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                         profile.args.join(" ")
                     }
                 }
+                ProfileField::PrefixMode => profile
+                    .defaults
+                    .prefix_mode
+                    .map_or_else(|| "(inherit)".to_string(), |m| format!("{m:?}")),
                 ProfileField::Proton => profile
                     .defaults
                     .proton
@@ -1011,17 +1015,26 @@ Profile editor (Library, after 'e'):
     - slug is the profile's folder name — edit just the base text; renames
       the folder on disk, auto-appending \"-N\" only if that exact text is
       already taken by another profile (never something you type yourself).
-      In defaults.prefix_mode = per-slug, if a prefix directory already
-      exists under the old slug, you're asked to confirm first — renaming
-      moves that directory too, since prefixes are keyed by slug.
+      If this profile's effective prefix mode is per-slug (the global
+      default, or this profile's own prefix_mode override below) and a
+      prefix directory already exists under the old slug, you're asked to
+      confirm first — renaming moves that directory too, since prefixes
+      are keyed by slug.
     - name is what the Library list shows — edit just the base text (its
       \"#N\" is stripped for editing and never shown in the box); saving
       auto-fills the lowest \"#N\" not already used by another profile's
       same base, reusing a gap left by a deleted/renamed one rather than
       always growing past the historical max.
-    - the proton override only has any effect in defaults.prefix_mode =
-      per-slug — in single-prefix mode it's ignored (every profile shares
-      one prefix, so a mismatched Proton version there risks corrupting it).
+    - prefix_mode override forces this one profile into its own per-slug
+      prefix (or explicitly back to the shared single one), regardless of
+      the global default — cycles inherit -> single -> per-slug -> inherit.
+      Lets one game get an isolated prefix without moving every other
+      profile to per-slug mode too.
+    - the proton/windows-version overrides only have any effect once this
+      profile's *effective* prefix mode (global default, or its own
+      override just above) is per-slug — in single-prefix mode they're
+      ignored (every profile shares one prefix, so a mismatched Proton
+      version/Windows version there risks corrupting it).
     - gamescope override cycles inherit -> none -> fullscreen -> maximize ->
       inherit — same as -f/-w on the command line, remembered per game so
       \"iprolaunch <slug>\" doesn't need retyping it (an explicit -f/-w still

@@ -377,13 +377,22 @@ impl Config {
             None => (None, None, None, None),
         };
 
+        // A profile can force itself into (or out of) `PerSlug` mode
+        // regardless of the global default — e.g. one game that needs
+        // isolating from an otherwise-shared prefix. Resolved first since
+        // `proton`/`windows_version` below key off *this*, not `d.prefix_mode`
+        // directly — that's what makes a profile's own Proton/Windows-version
+        // override apply the moment *it* (not necessarily the global
+        // default) resolves to `PerSlug`.
+        let prefix_mode = pd.and_then(|pd| pd.prefix_mode).unwrap_or(d.prefix_mode);
+
         // A profile's own proton override only means anything when it owns
         // its own prefix — in `Single` mode every profile shares one
         // prefix, so letting one profile silently launch it with a
         // different Proton version than the rest risks corrupting/
         // confusing that shared prefix's contents (same reasoning as
         // `windows_version` below, which has the identical restriction).
-        let proton = if d.prefix_mode == PrefixMode::PerSlug {
+        let proton = if prefix_mode == PrefixMode::PerSlug {
             pd.and_then(|pd| pd.proton.clone())
                 .unwrap_or_else(|| d.proton.clone())
         } else {
@@ -393,7 +402,7 @@ impl Config {
             .and_then(|pd| pd.prefix_path.clone())
             .unwrap_or_else(|| d.prefix_path.clone());
         // windows-version only means anything when each profile owns its own prefix.
-        let windows_version = if d.prefix_mode == PrefixMode::PerSlug {
+        let windows_version = if prefix_mode == PrefixMode::PerSlug {
             pd.and_then(|pd| pd.windows_version.clone())
                 .or_else(|| Some(d.windows_version.clone()))
         } else {
@@ -425,7 +434,7 @@ impl Config {
 
         Effective {
             proton,
-            prefix_mode: d.prefix_mode,
+            prefix_mode,
             prefix_path,
             prefixes_root: d.prefixes_root.clone(),
             windows_version,
@@ -464,6 +473,17 @@ pub struct Effective {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileDefaults {
+    /// Forces this profile into its own `PerSlug` prefix (or explicitly
+    /// back to the shared `Single` one) regardless of what
+    /// `defaults.prefix_mode` says globally — e.g. one game that needs
+    /// isolating from an otherwise-shared prefix, without moving every
+    /// other profile to per-slug mode too. `None` means "inherit the
+    /// global setting", same as every other override here. See
+    /// `Config::effective` for how this also gates `proton`/
+    /// `windows_version` below — those only apply once *this profile's*
+    /// resolved mode (not necessarily the global one) is `PerSlug`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix_mode: Option<PrefixMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proton: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -705,6 +725,49 @@ mod tests {
 
         cfg.defaults.prefix_mode = PrefixMode::PerSlug;
         assert_eq!(cfg.effective(Some(&profile)).proton, "GE-Proton10-34");
+    }
+
+    #[test]
+    fn profile_prefix_mode_override_wins_over_the_global_default_either_direction() {
+        let mut cfg = Config::default();
+        cfg.defaults.prefix_mode = PrefixMode::Single;
+        cfg.defaults.proton = "system".into();
+        let mut profile = Profile {
+            name: "battle-net#1".into(),
+            target_path: "/tmp/battle-net.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+
+        // No override yet — inherits the global Single default.
+        assert_eq!(
+            cfg.effective(Some(&profile)).prefix_mode,
+            PrefixMode::Single
+        );
+
+        // This profile opts itself into PerSlug even though the global
+        // default stays Single — and, as a direct consequence of the same
+        // mechanism, its own proton override (previously inert, since
+        // `d.prefix_mode` was Single) now applies too.
+        profile.defaults.prefix_mode = Some(PrefixMode::PerSlug);
+        profile.defaults.proton = Some("GE-Proton10-34".into());
+        let effective = cfg.effective(Some(&profile));
+        assert_eq!(effective.prefix_mode, PrefixMode::PerSlug);
+        assert_eq!(effective.proton, "GE-Proton10-34");
+
+        // And the reverse: a profile can also explicitly opt back to
+        // Single even when the *global* default is PerSlug.
+        cfg.defaults.prefix_mode = PrefixMode::PerSlug;
+        profile.defaults.prefix_mode = Some(PrefixMode::Single);
+        assert_eq!(
+            cfg.effective(Some(&profile)).prefix_mode,
+            PrefixMode::Single
+        );
     }
 
     #[test]

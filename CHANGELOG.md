@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.30.0] — 2026-09-14
+
+### Added
+- Profile editor: `defaults.prefix_mode` override — forces one profile into its own per-slug prefix (or explicitly back to the shared one), regardless of the global default. Once a profile's own effective mode is per-slug this way, its `proton`/`windows-version` overrides apply too, same as they already do when the *global* default is per-slug.
+
+### Fixed
+- Renaming a profile's slug in the editor now checks that profile's own effective prefix mode (global default or its own override) to decide whether to offer moving its real prefix directory — previously checked only the global default, so a profile individually opted into per-slug silently wouldn't get its prefix moved on rename.
+
 ## [1.29.0] — 2026-09-09
 
 ### Added
