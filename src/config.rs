@@ -157,6 +157,40 @@ pub enum GamescopeScaler {
     Stretch,
 }
 
+/// The Windows version a prefix reports itself as — passed straight through
+/// to `winetricks -q <verb>` (see `launch::apply_windows_version`), so each
+/// variant's `#[serde(rename)]` is the exact winetricks verb, confirmed
+/// against the actually-installed winetricks' own `w_metadata win* settings`
+/// entries, not guessed. Deliberately scoped to the handful of versions
+/// actually relevant to launching a game via Proton today — not winetricks'
+/// full historical verb list, which also covers win95/98/me/2k/2k3/2k8/2k8r2/
+/// 3.1/2.0, never a sensible choice here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowsVersion {
+    WinXp,
+    Win7,
+    Win8,
+    Win81,
+    #[default]
+    Win10,
+    Win11,
+}
+
+impl WindowsVersion {
+    /// The exact winetricks verb for this version.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WindowsVersion::WinXp => "winxp",
+            WindowsVersion::Win7 => "win7",
+            WindowsVersion::Win8 => "win8",
+            WindowsVersion::Win81 => "win81",
+            WindowsVersion::Win10 => "win10",
+            WindowsVersion::Win11 => "win11",
+        }
+    }
+}
+
 /// Extra `gamescope` launch settings, layered the same way at both the
 /// global and per-profile level (each field independently `None` = "don't
 /// pass this flag, let gamescope use its own default" — there's no
@@ -231,8 +265,8 @@ pub struct Defaults {
     pub prefix_mode: PrefixMode,
     pub prefix_path: String,
     pub prefixes_root: String,
-    #[serde(rename = "windows-version")]
-    pub windows_version: String,
+    #[serde(rename = "windows-version", default)]
+    pub windows_version: WindowsVersion,
     #[serde(default)]
     pub gamescope: GamescopeSetting,
     #[serde(default, skip_serializing_if = "is_default_gamescope_settings")]
@@ -267,7 +301,7 @@ impl Default for Defaults {
             prefix_mode: PrefixMode::Single,
             prefix_path: "~/.local/share/iprolaunch/prefix".into(),
             prefixes_root: "~/.local/share/iprolaunch/prefixes".into(),
-            windows_version: "win10".into(),
+            windows_version: WindowsVersion::default(),
             gamescope: GamescopeSetting::None,
             gamescope_settings: GamescopeSettings::default(),
             launch_wrapper: None,
@@ -401,12 +435,15 @@ impl Config {
         let prefix_path = pd
             .and_then(|pd| pd.prefix_path.clone())
             .unwrap_or_else(|| d.prefix_path.clone());
-        // windows-version only means anything when each profile owns its own prefix.
+        // A profile's own windows-version override only means anything when
+        // it owns its own prefix (same restriction/reasoning as `proton`
+        // above) — but the *global* default always applies to whichever
+        // prefix this launch actually uses, shared or not.
         let windows_version = if prefix_mode == PrefixMode::PerSlug {
-            pd.and_then(|pd| pd.windows_version.clone())
-                .or_else(|| Some(d.windows_version.clone()))
+            pd.and_then(|pd| pd.windows_version)
+                .unwrap_or(d.windows_version)
         } else {
-            None
+            d.windows_version
         };
         let gamescope = pd.and_then(|pd| pd.gamescope).unwrap_or(d.gamescope);
         let gamescope_settings = d
@@ -458,8 +495,7 @@ pub struct Effective {
     pub prefix_mode: PrefixMode,
     pub prefix_path: String,
     pub prefixes_root: String,
-    /// `None` whenever `prefix_mode != PerSlug` — see `Config::effective`.
-    pub windows_version: Option<String>,
+    pub windows_version: WindowsVersion,
     pub gamescope: GamescopeSetting,
     pub gamescope_settings: GamescopeSettings,
     pub launch_wrapper: Option<String>,
@@ -489,7 +525,7 @@ pub struct ProfileDefaults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix_path: Option<String>,
     #[serde(rename = "windows-version", skip_serializing_if = "Option::is_none")]
-    pub windows_version: Option<String>,
+    pub windows_version: Option<WindowsVersion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gamescope: Option<GamescopeSetting>,
     #[serde(default, skip_serializing_if = "is_default_gamescope_settings")]
@@ -691,15 +727,18 @@ mod tests {
     }
 
     #[test]
-    fn windows_version_only_applies_in_per_slug_mode() {
+    fn windows_version_global_default_applies_regardless_of_prefix_mode() {
         let mut cfg = Config::default();
         cfg.defaults.prefix_mode = PrefixMode::Single;
-        assert_eq!(cfg.effective(None).windows_version, None);
+        assert_eq!(
+            cfg.effective(None).windows_version,
+            cfg.defaults.windows_version
+        );
 
         cfg.defaults.prefix_mode = PrefixMode::PerSlug;
         assert_eq!(
             cfg.effective(None).windows_version,
-            Some(cfg.defaults.windows_version.clone())
+            cfg.defaults.windows_version
         );
     }
 
@@ -725,6 +764,36 @@ mod tests {
 
         cfg.defaults.prefix_mode = PrefixMode::PerSlug;
         assert_eq!(cfg.effective(Some(&profile)).proton, "GE-Proton10-34");
+    }
+
+    #[test]
+    fn profile_windows_version_override_is_ignored_outside_per_slug_mode() {
+        let mut cfg = Config::default();
+        cfg.defaults.windows_version = WindowsVersion::Win10;
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        profile.defaults.windows_version = Some(WindowsVersion::WinXp);
+
+        cfg.defaults.prefix_mode = PrefixMode::Single;
+        assert_eq!(
+            cfg.effective(Some(&profile)).windows_version,
+            WindowsVersion::Win10
+        );
+
+        cfg.defaults.prefix_mode = PrefixMode::PerSlug;
+        assert_eq!(
+            cfg.effective(Some(&profile)).windows_version,
+            WindowsVersion::WinXp
+        );
     }
 
     #[test]

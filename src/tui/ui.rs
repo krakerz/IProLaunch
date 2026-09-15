@@ -562,8 +562,7 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                 ProfileField::WindowsVersion => profile
                     .defaults
                     .windows_version
-                    .clone()
-                    .unwrap_or_else(|| "(inherit)".to_string()),
+                    .map_or_else(|| "(inherit)".to_string(), |v| format!("{v:?}")),
                 ProfileField::Gamescope => profile
                     .defaults
                     .gamescope
@@ -817,7 +816,7 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::PrefixMode => format!("{:?}", d.prefix_mode),
                 ConfigField::PrefixPath => d.prefix_path.clone(),
                 ConfigField::PrefixesRoot => d.prefixes_root.clone(),
-                ConfigField::WindowsVersion => d.windows_version.clone(),
+                ConfigField::WindowsVersion => format!("{:?}", d.windows_version),
                 ConfigField::Gamescope => format!("{:?}", d.gamescope),
                 ConfigField::GamescopeOutputWidth => d
                     .gamescope_settings

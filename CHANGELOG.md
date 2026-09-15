@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.33.0] — 2026-09-15
+
+### Changed
+- `defaults.windows-version` (and its per-profile override) is now a fixed cycle (winxp/win7/win8/win81/win10/win11) instead of free text — matches the exact set of Windows versions winetricks itself supports for this, so there's no way to type a value winetricks would silently reject.
+
+### Fixed
+- `defaults.windows-version` actually applies again in `single` prefix mode — it was silently being dropped entirely unless a profile's own resolved prefix mode was `per-slug`, so a global setting like `win11` never reached the shared prefix at all, leaving it on whatever version the prefix already had (reported as still showing `winxp`).
+
 ## [1.32.0] — 2026-09-14
 
 ### Added
