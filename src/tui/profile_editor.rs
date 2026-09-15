@@ -90,6 +90,10 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
                 profile.defaults.gamescope =
                     app::next_profile_gamescope_setting(profile.defaults.gamescope);
             }
+            ProfileField::WindowsVersion => {
+                profile.defaults.windows_version =
+                    app::next_profile_windows_version(profile.defaults.windows_version);
+            }
             ProfileField::GamescopeFilter => {
                 profile.defaults.gamescope_settings.filter =
                     app::next_gamescope_filter(profile.defaults.gamescope_settings.filter);
@@ -135,9 +139,6 @@ fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
         ProfileField::Title => profile.title.clone().unwrap_or_default(),
         ProfileField::Args => profile.args.join(" "),
         ProfileField::PrefixPath => profile.defaults.prefix_path.clone().unwrap_or_default(),
-        ProfileField::WindowsVersion => {
-            profile.defaults.windows_version.clone().unwrap_or_default()
-        }
         ProfileField::LogKeep => profile
             .logging
             .keep
@@ -430,9 +431,6 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         ProfileField::PrefixPath => {
             profile.defaults.prefix_path = (!trimmed.is_empty()).then(|| trimmed.clone());
         }
-        ProfileField::WindowsVersion => {
-            profile.defaults.windows_version = (!trimmed.is_empty()).then(|| trimmed.clone());
-        }
         ProfileField::LogKeep => profile.logging.keep = trimmed.parse::<u32>().ok(),
         ProfileField::GamescopeOutputWidth => {
             profile.defaults.gamescope_settings.output_width = trimmed.parse::<u32>().ok();
@@ -461,6 +459,7 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::LogRecord
         | ProfileField::LogAutoOpen
         | ProfileField::Gamescope
+        | ProfileField::WindowsVersion
         | ProfileField::GamescopeFilter
         | ProfileField::GamescopeScaler
         | ProfileField::GamescopeBorderless

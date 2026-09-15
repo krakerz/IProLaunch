@@ -95,7 +95,7 @@ mod tests {
             prefix_mode: PrefixMode::PerSlug,
             prefix_path: "~/unused".to_string(),
             prefixes_root: "~/prefixes".to_string(),
-            windows_version: None,
+            windows_version: crate::config::WindowsVersion::Win10,
             gamescope: Default::default(),
             gamescope_settings: Default::default(),
             launch_wrapper: None,

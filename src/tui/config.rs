@@ -275,6 +275,10 @@ fn cycle_field(app: &mut App, field: ConfigField) {
             app.cfg.defaults.gamescope_settings.adaptive_sync =
                 app::next_optional_bool(app.cfg.defaults.gamescope_settings.adaptive_sync);
         }
+        ConfigField::WindowsVersion => {
+            app.cfg.defaults.windows_version =
+                app::next_windows_version(app.cfg.defaults.windows_version);
+        }
         _ => {}
     }
     save_config(app);
@@ -285,7 +289,6 @@ fn current_text_value(app: &App, field: ConfigField) -> String {
     match field {
         ConfigField::PrefixPath => app.cfg.defaults.prefix_path.clone(),
         ConfigField::PrefixesRoot => app.cfg.defaults.prefixes_root.clone(),
-        ConfigField::WindowsVersion => app.cfg.defaults.windows_version.clone(),
         ConfigField::LogPath => app.cfg.logging.path.clone(),
         ConfigField::GamescopeOutputWidth => {
             gs.output_width.map_or(String::new(), |v| v.to_string())
@@ -335,7 +338,6 @@ pub fn apply_text_field(app: &mut App, field: ConfigField, value: String) {
     match field {
         ConfigField::PrefixPath => app.cfg.defaults.prefix_path = value,
         ConfigField::PrefixesRoot => app.cfg.defaults.prefixes_root = value,
-        ConfigField::WindowsVersion => app.cfg.defaults.windows_version = value,
         ConfigField::LogPath => app.cfg.logging.path = value,
         ConfigField::GamescopeOutputWidth => {
             app.cfg.defaults.gamescope_settings.output_width = trimmed.parse::<u32>().ok();

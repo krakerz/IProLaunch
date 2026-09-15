@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::config::{
     Config, GamescopeFilter, GamescopeScaler, GamescopeSetting, LogMode, PrefixMode, Profile,
-    RecordMode,
+    RecordMode, WindowsVersion,
 };
 use crate::proton::ProtonBuild;
 use crate::running::{self, RunningEntry};
@@ -145,6 +145,7 @@ impl ConfigField {
             | ConfigField::LogMode
             | ConfigField::LogRecord
             | ConfigField::Gamescope
+            | ConfigField::WindowsVersion
             | ConfigField::GamescopeFilter
             | ConfigField::GamescopeScaler
             | ConfigField::GamescopeBorderless
@@ -154,7 +155,6 @@ impl ConfigField {
             ConfigField::LogKeep | ConfigField::GamedbInterval => FieldKind::Number,
             ConfigField::PrefixPath
             | ConfigField::PrefixesRoot
-            | ConfigField::WindowsVersion
             | ConfigField::LogPath
             | ConfigField::GamescopeOutputWidth
             | ConfigField::GamescopeOutputHeight
@@ -345,6 +345,7 @@ impl ProfileField {
             | ProfileField::LogAutoOpen
             | ProfileField::PrefixMode
             | ProfileField::Gamescope
+            | ProfileField::WindowsVersion
             | ProfileField::GamescopeFilter
             | ProfileField::GamescopeScaler
             | ProfileField::GamescopeBorderless
@@ -356,7 +357,6 @@ impl ProfileField {
             | ProfileField::Title
             | ProfileField::Args
             | ProfileField::PrefixPath
-            | ProfileField::WindowsVersion
             | ProfileField::LogKeep
             | ProfileField::GamescopeOutputWidth
             | ProfileField::GamescopeOutputHeight
@@ -995,6 +995,35 @@ pub fn next_gamescope_scaler(m: Option<GamescopeScaler>) -> Option<GamescopeScal
     }
 }
 
+/// Cycles the global `defaults.windows-version` — oldest to newest, wrapping.
+pub fn next_windows_version(v: WindowsVersion) -> WindowsVersion {
+    match v {
+        WindowsVersion::WinXp => WindowsVersion::Win7,
+        WindowsVersion::Win7 => WindowsVersion::Win8,
+        WindowsVersion::Win8 => WindowsVersion::Win81,
+        WindowsVersion::Win81 => WindowsVersion::Win10,
+        WindowsVersion::Win10 => WindowsVersion::Win11,
+        WindowsVersion::Win11 => WindowsVersion::WinXp,
+    }
+}
+
+/// Same as `next_profile_gamescope_setting`, for a profile's own
+/// `windows-version` override — inherit → winxp → win7 → win8 → win81 →
+/// win10 → win11 → inherit. Only takes effect once *this profile's* own
+/// resolved prefix mode (not necessarily the global default) is `PerSlug` —
+/// see `Config::effective`.
+pub fn next_profile_windows_version(m: Option<WindowsVersion>) -> Option<WindowsVersion> {
+    match m {
+        None => Some(WindowsVersion::WinXp),
+        Some(WindowsVersion::WinXp) => Some(WindowsVersion::Win7),
+        Some(WindowsVersion::Win7) => Some(WindowsVersion::Win8),
+        Some(WindowsVersion::Win8) => Some(WindowsVersion::Win81),
+        Some(WindowsVersion::Win81) => Some(WindowsVersion::Win10),
+        Some(WindowsVersion::Win10) => Some(WindowsVersion::Win11),
+        Some(WindowsVersion::Win11) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1145,6 +1174,42 @@ mod tests {
         assert_eq!(s, Some(GamescopeScaler::Stretch));
         s = next_gamescope_scaler(s);
         assert_eq!(s, None);
+    }
+
+    #[test]
+    fn windows_version_cycle_covers_every_variant_and_wraps() {
+        let mut v = WindowsVersion::WinXp;
+        v = next_windows_version(v);
+        assert_eq!(v, WindowsVersion::Win7);
+        v = next_windows_version(v);
+        assert_eq!(v, WindowsVersion::Win8);
+        v = next_windows_version(v);
+        assert_eq!(v, WindowsVersion::Win81);
+        v = next_windows_version(v);
+        assert_eq!(v, WindowsVersion::Win10);
+        v = next_windows_version(v);
+        assert_eq!(v, WindowsVersion::Win11);
+        v = next_windows_version(v);
+        assert_eq!(v, WindowsVersion::WinXp);
+    }
+
+    #[test]
+    fn profile_windows_version_cycle_includes_inherit_and_returns_to_it() {
+        let mut v = None;
+        v = next_profile_windows_version(v);
+        assert_eq!(v, Some(WindowsVersion::WinXp));
+        v = next_profile_windows_version(v);
+        assert_eq!(v, Some(WindowsVersion::Win7));
+        v = next_profile_windows_version(v);
+        assert_eq!(v, Some(WindowsVersion::Win8));
+        v = next_profile_windows_version(v);
+        assert_eq!(v, Some(WindowsVersion::Win81));
+        v = next_profile_windows_version(v);
+        assert_eq!(v, Some(WindowsVersion::Win10));
+        v = next_profile_windows_version(v);
+        assert_eq!(v, Some(WindowsVersion::Win11));
+        v = next_profile_windows_version(v);
+        assert_eq!(v, None);
     }
 
     #[test]

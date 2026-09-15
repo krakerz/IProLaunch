@@ -268,11 +268,12 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     fs::create_dir_all(&prefix_path)
         .with_context(|| format!("creating prefix dir {}", prefix_path.display()))?;
 
-    if let Some(version) = &effective.windows_version
-        && let Err(err) = apply_windows_version(&prefix_path, version)
-    {
+    if let Err(err) = apply_windows_version(&prefix_path, effective.windows_version.as_str()) {
         // Best-effort: a failed registry tweak shouldn't block the game itself.
-        eprintln!("iprolaunch: warning: failed to apply windows-version={version}: {err:#}");
+        eprintln!(
+            "iprolaunch: warning: failed to apply windows-version={}: {err:#}",
+            effective.windows_version.as_str()
+        );
     }
 
     // Uniquely tags this one launch's whole process tree — see
