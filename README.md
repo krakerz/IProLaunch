@@ -49,8 +49,7 @@ entry.
   terminal, falling back to a handful of common ones) instead of blocking
   whatever invoked iprolaunch — `logging.auto_open_scope` controls whether
   that fires for every launch or only ones started from the TUI (the
-  default, since a non-TUI launch, e.g. a Steam shortcut or Game Mode, has
-  no guarantee a spawned window would even get focus).
+  default).
 - `proton list` / `config init` detect installed Proton builds everywhere
   (native/Flatpak Steam, official Steam installs, distro packages), not
   just `compatibilitytools.d`.
@@ -69,17 +68,11 @@ entry.
   non-Steam-game shortcut, live, via Steam's own importer — no
   `shortcuts.vdf` editing, no restart required — or add it to a locally
   running [Sunshine](https://github.com/LizardByte/Sunshine) game-streaming
-  server via its own REST API (HTTP Basic auth with Sunshine's own web-UI
-  username/password, asked for once and cached). Re-adding an already-added
-  game updates its existing Sunshine entry in place instead of duplicating
-  it, and picks up the same resolution-switch `prep-cmd` every
-  [LutrisToSunshine](https://github.com/Arbitrate3280/LutrisToSunshine)-managed
-  app already gets, when that's set up. A separate `sunshine.gamescope`
-  setting (global + per-profile override, Config tab/profile editor) bakes
-  `-f`/`-w` into a game's Sunshine launch command independently of its
-  normal desktop-launch gamescope setting (press `?` in the TUI for the
-  full behavior, including the Steam gamescope-flag and duplicate-detection
-  options).
+  server via its own REST API (asked for your Sunshine username/password
+  once, then cached). Re-adding a game updates its existing entry instead of
+  duplicating it, and `sunshine.gamescope` (global + per-profile override)
+  independently controls fullscreen/maximize for the streamed launch (press
+  `?` in the TUI for the full behavior).
 - Gamepad navigation — a real controller works alongside the keyboard with
   zero setup (see the Help screen's "Gamepad" section for the full button
   map); every legend switches to the matching captions automatically.
