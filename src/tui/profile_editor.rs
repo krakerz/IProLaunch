@@ -118,6 +118,10 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
                 profile.defaults.gamescope_settings.adaptive_sync =
                     app::next_optional_bool(profile.defaults.gamescope_settings.adaptive_sync);
             }
+            ProfileField::SunshineGamescope => {
+                profile.defaults.sunshine_gamescope =
+                    app::next_profile_sunshine_gamescope(profile.defaults.sunshine_gamescope);
+            }
             _ => {}
         }
     }
@@ -470,6 +474,7 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::GamescopeBorderless
         | ProfileField::GamescopeGrabCursor
         | ProfileField::GamescopeAdaptiveSync
+        | ProfileField::SunshineGamescope
         | ProfileField::EnvTable
         | ProfileField::WineDllOverrideTable => {}
     }

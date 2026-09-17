@@ -49,8 +49,7 @@ entry.
   terminal, falling back to a handful of common ones) instead of blocking
   whatever invoked iprolaunch — `logging.auto_open_scope` controls whether
   that fires for every launch or only ones started from the TUI (the
-  default, since a non-TUI launch, e.g. a Steam shortcut or Game Mode, has
-  no guarantee a spawned window would even get focus).
+  default).
 - `proton list` / `config init` detect installed Proton builds everywhere
   (native/Flatpak Steam, official Steam installs, distro packages), not
   just `compatibilitytools.d`.
@@ -65,10 +64,15 @@ entry.
   quick-searches Running/Library by name.
 - Library `p` runs `winetricks` against the exact prefix a real launch of
   that game would use (confirms first).
-- Library `s` adds a game to Steam as a non-Steam-game shortcut, live, via
-  Steam's own importer — no `shortcuts.vdf` editing, no restart required
-  (press `?` in the TUI for the full behavior, including the gamescope-flag
-  and duplicate-detection options).
+- Library `s` opens a Share/Add-to popup: add a game to Steam as a
+  non-Steam-game shortcut, live, via Steam's own importer — no
+  `shortcuts.vdf` editing, no restart required — or add it to a locally
+  running [Sunshine](https://github.com/LizardByte/Sunshine) game-streaming
+  server via its own REST API (asked for your Sunshine username/password
+  once, then cached). Re-adding a game updates its existing entry instead of
+  duplicating it, and `sunshine.gamescope` (global + per-profile override)
+  independently controls fullscreen/maximize for the streamed launch (press
+  `?` in the TUI for the full behavior).
 - Gamepad navigation — a real controller works alongside the keyboard with
   zero setup (see the Help screen's "Gamepad" section for the full button
   map); every legend switches to the matching captions automatically.

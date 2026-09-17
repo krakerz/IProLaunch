@@ -93,15 +93,29 @@ impl GamescopeMode {
 /// like `"-w <slug>"`, does not work).
 pub fn iprolaunch_cli_flags_for(effective: &Effective) -> Vec<&'static str> {
     let mut flags = Vec::new();
-    match effective.gamescope {
-        crate::config::GamescopeSetting::None => {}
-        crate::config::GamescopeSetting::Fullscreen => flags.push("-f"),
-        crate::config::GamescopeSetting::Maximize => flags.push("-w"),
+    if let Some(flag) = gamescope_setting_cli_flag(effective.gamescope) {
+        flags.push(flag);
     }
     if effective.gamescope_settings.borderless == Some(true) {
         flags.push("-b");
     }
     flags
+}
+
+/// A bare `GamescopeSetting` mapped to iprolaunch's own CLI flag (`None` for
+/// `GamescopeSetting::None` — no flag at all), with no borderless axis of
+/// its own. Shared by `iprolaunch_cli_flags_for` above (which also folds in
+/// the separate borderless override) and Sunshine's own dedicated
+/// `sunshine.gamescope` setting (`tui/library.rs`'s `add_to_sunshine`),
+/// which has no borderless equivalent to fold in.
+pub fn gamescope_setting_cli_flag(
+    setting: crate::config::GamescopeSetting,
+) -> Option<&'static str> {
+    match setting {
+        crate::config::GamescopeSetting::None => None,
+        crate::config::GamescopeSetting::Fullscreen => Some("-f"),
+        crate::config::GamescopeSetting::Maximize => Some("-w"),
+    }
 }
 
 impl From<crate::config::GamescopeSetting> for GamescopeMode {

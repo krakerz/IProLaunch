@@ -72,12 +72,13 @@ pub enum ConfigField {
     LogAutoOpen,
     LogAutoOpenScope,
     GamedbInterval,
+    SunshineGamescope,
     EnvTable,
     WineDllOverrideTable,
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 26] = [
+    pub const ALL: [ConfigField; 27] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
@@ -102,6 +103,7 @@ impl ConfigField {
         ConfigField::LogAutoOpen,
         ConfigField::LogAutoOpenScope,
         ConfigField::GamedbInterval,
+        ConfigField::SunshineGamescope,
         ConfigField::EnvTable,
         ConfigField::WineDllOverrideTable,
     ];
@@ -132,6 +134,7 @@ impl ConfigField {
             ConfigField::LogAutoOpen => "logging.auto_open",
             ConfigField::LogAutoOpenScope => "logging.auto_open_scope",
             ConfigField::GamedbInterval => "gamedb.update_interval_days",
+            ConfigField::SunshineGamescope => "sunshine.gamescope",
             ConfigField::EnvTable => "env (global)",
             ConfigField::WineDllOverrideTable => "winedlloverride (global)",
         }
@@ -154,7 +157,8 @@ impl ConfigField {
             | ConfigField::GamescopeScaler
             | ConfigField::GamescopeBorderless
             | ConfigField::GamescopeGrabCursor
-            | ConfigField::GamescopeAdaptiveSync => FieldKind::Cycle,
+            | ConfigField::GamescopeAdaptiveSync
+            | ConfigField::SunshineGamescope => FieldKind::Cycle,
             ConfigField::LogAutoOpen => FieldKind::Toggle,
             ConfigField::LogKeep | ConfigField::GamedbInterval => FieldKind::Number,
             ConfigField::PrefixPath
@@ -271,12 +275,13 @@ pub enum ProfileField {
     LogRecord,
     LogAutoOpen,
     LogAutoOpenScope,
+    SunshineGamescope,
     EnvTable,
     WineDllOverrideTable,
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 27] = [
+    pub const ALL: [ProfileField; 28] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
@@ -302,6 +307,7 @@ impl ProfileField {
         ProfileField::LogRecord,
         ProfileField::LogAutoOpen,
         ProfileField::LogAutoOpenScope,
+        ProfileField::SunshineGamescope,
         ProfileField::EnvTable,
         ProfileField::WineDllOverrideTable,
     ];
@@ -333,6 +339,7 @@ impl ProfileField {
             ProfileField::LogRecord => "logging.record override",
             ProfileField::LogAutoOpen => "logging.auto_open override",
             ProfileField::LogAutoOpenScope => "logging.auto_open_scope override",
+            ProfileField::SunshineGamescope => "sunshine.gamescope override",
             ProfileField::EnvTable => "env override",
             ProfileField::WineDllOverrideTable => "winedlloverride override",
         }
@@ -358,7 +365,8 @@ impl ProfileField {
             | ProfileField::GamescopeScaler
             | ProfileField::GamescopeBorderless
             | ProfileField::GamescopeGrabCursor
-            | ProfileField::GamescopeAdaptiveSync => FieldKind::Cycle,
+            | ProfileField::GamescopeAdaptiveSync
+            | ProfileField::SunshineGamescope => FieldKind::Cycle,
             ProfileField::TargetPath
             | ProfileField::Slug
             | ProfileField::Name
@@ -449,12 +457,16 @@ pub enum Mode {
         slug: String,
         name: String,
     },
-    /// Library `s` on a profile not yet in Steam (`s` on one already in
-    /// Steam just reports "already added" instead of opening this — see
-    /// `library::prompt_add_to_steam`): a small 3-item navigable list
-    /// (Up/Down/Enter, exactly like `ProtonPicker`'s), not a plain y/N
-    /// prompt, since there are 3 real outcomes, not 2.
-    ConfirmAddToSteam {
+    /// Library `s` — a small navigable list (Up/Down/Enter, exactly like
+    /// `ProtonPicker`'s), not a plain y/N prompt, since there are several
+    /// real outcomes to choose between, not 2. Always opens regardless of
+    /// whether this profile's already in Steam (see
+    /// `library::prompt_share_to`) — Sunshine is a separate, independent
+    /// destination, so already being in Steam shouldn't block offering it;
+    /// selecting an already-added Steam option instead just reports that,
+    /// same as the old dedicated popup used to do before Sunshine was added
+    /// alongside it.
+    ShareTo {
         slug: String,
         name: String,
         selected: usize,
@@ -472,12 +484,13 @@ pub enum Mode {
     },
 }
 
-/// The 3 selectable rows of `Mode::ConfirmAddToSteam`, in order — index into
-/// this with `selected` for both the label to render and, on `Enter`, which
-/// action to take. `len()` is used for `Up`/`Down` wraparound.
-pub const CONFIRM_ADD_TO_STEAM_OPTIONS: [&str; 3] = [
-    "Add (no gamescope flag)",
-    "Add with gamescope flag",
+/// The selectable rows of `Mode::ShareTo`, in order — index into this with
+/// `selected` for both the label to render and, on `Enter`, which action to
+/// take. `len()` is used for `Up`/`Down` wraparound.
+pub const SHARE_TO_OPTIONS: [&str; 4] = [
+    "Add to Steam (no gamescope flag)",
+    "Add to Steam (with gamescope flag)",
+    "Add to Sunshine",
     "Cancel",
 ];
 
@@ -510,6 +523,25 @@ pub enum TextInputPurpose {
     /// override" (revert to inherit), consistent with every other override
     /// field in the profile editor.
     ProfileField(String, ProfileField),
+    /// First step of `Mode::ShareTo`'s "Add to Sunshine" option when no
+    /// `cfg.sunshine.auth_token` is cached yet — prefilled with
+    /// `cfg.sunshine.username` when one's remembered from a previous login,
+    /// so re-entering just the password (e.g. after it changed) doesn't
+    /// also mean retyping the username. An empty buffer cancels back to
+    /// Normal rather than trying to log in with a blank username.
+    SunshineUsername {
+        slug: String,
+        name: String,
+    },
+    /// Second step, straight after the username above — rendered masked
+    /// (see `ui::draw_text_input_popup`), never persisted itself: only
+    /// `sunshine::login`'s own resolved auth-header result is ever cached
+    /// (`config::Sunshine::auth_token`), never this raw password.
+    SunshinePassword {
+        slug: String,
+        name: String,
+        username: String,
+    },
 }
 
 /// Which map a `Mode::MapEditor`/`MapEntryInput` session is editing: the
@@ -982,6 +1014,30 @@ pub fn next_profile_prefix_mode(m: Option<PrefixMode>) -> Option<PrefixMode> {
 /// override — inherit → none (explicitly off, distinct from inheriting) →
 /// fullscreen → maximize → inherit.
 pub fn next_profile_gamescope_setting(m: Option<GamescopeSetting>) -> Option<GamescopeSetting> {
+    match m {
+        None => Some(GamescopeSetting::None),
+        Some(GamescopeSetting::None) => Some(GamescopeSetting::Fullscreen),
+        Some(GamescopeSetting::Fullscreen) => Some(GamescopeSetting::Maximize),
+        Some(GamescopeSetting::Maximize) => None,
+    }
+}
+
+/// Same shape as `next_gamescope_setting`, for `sunshine.gamescope` — a
+/// deliberately separate cycle (not shared with the one above) since the two
+/// settings are resolved independently (see
+/// `Config::effective_sunshine_gamescope`).
+pub fn next_sunshine_gamescope(m: GamescopeSetting) -> GamescopeSetting {
+    match m {
+        GamescopeSetting::None => GamescopeSetting::Fullscreen,
+        GamescopeSetting::Fullscreen => GamescopeSetting::Maximize,
+        GamescopeSetting::Maximize => GamescopeSetting::None,
+    }
+}
+
+/// Same shape as `next_profile_gamescope_setting`, for a profile's
+/// `sunshine_gamescope` override — inherit → none → fullscreen → maximize →
+/// inherit.
+pub fn next_profile_sunshine_gamescope(m: Option<GamescopeSetting>) -> Option<GamescopeSetting> {
     match m {
         None => Some(GamescopeSetting::None),
         Some(GamescopeSetting::None) => Some(GamescopeSetting::Fullscreen),

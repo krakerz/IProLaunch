@@ -113,7 +113,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         Mode::ConfirmWinetricks { .. } => {
             return library::confirm_winetricks_key(app, code, terminal);
         }
-        Mode::ConfirmAddToSteam { .. } => return library::confirm_add_to_steam_key(app, code),
+        Mode::ShareTo { .. } => return library::share_to_key(app, code),
         Mode::ConfirmUpdate { .. } => return config::confirm_update_key(app, code, terminal),
         Mode::Normal => {}
     }
@@ -262,6 +262,14 @@ fn handle_text_input(app: &mut App, code: KeyCode, terminal: &mut Term) {
         TextInputPurpose::ProfileField(slug, field) => {
             profile_editor::apply_text_field(app, &slug, field, buffer)
         }
+        TextInputPurpose::SunshineUsername { slug, name } => {
+            library::submit_sunshine_username(app, &slug, &name, buffer)
+        }
+        TextInputPurpose::SunshinePassword {
+            slug,
+            name,
+            username,
+        } => library::submit_sunshine_password(app, &slug, &name, username, buffer),
     }
 }
 

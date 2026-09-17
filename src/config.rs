@@ -367,12 +367,58 @@ impl Default for GameDb {
     }
 }
 
+/// Sunshine's own local REST API — used by the Library's Share/Add-to popup
+/// to register a game with a running Sunshine install (see `sunshine.rs`).
+/// `host`/`port`/`username`/`auth_token` are inherently global (one Sunshine
+/// server, one login) — `gamescope` is the one field here with its own
+/// per-profile override (`ProfileDefaults::sunshine_gamescope`), since a
+/// streamed session often wants different framing than that same game's
+/// normal desktop launch (see `Config::effective_sunshine_gamescope`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Sunshine {
+    pub host: String,
+    pub port: u16,
+    /// Remembered only so a re-login (after `auth_token` goes stale) doesn't
+    /// need it retyped — never the password itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// The cached `Basic <base64>` auth header from the last successful
+    /// `sunshine::login` — not the raw password, but still a live credential
+    /// (equivalent to it, being reversible base64), so this is only ever
+    /// written after a real successful login, never guessed/pre-filled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
+    /// Global default for the gamescope wrapping baked into a game's own
+    /// Sunshine app `cmd` — deliberately independent of `Defaults::gamescope`
+    /// (which drives a normal `iprolaunch <slug>` launch): a streamed
+    /// session commonly wants to fill the frame even when a direct desktop
+    /// launch of the same game doesn't. Defaults to `None` (no behavior
+    /// change for an app added before this existed) rather than defaulting
+    /// to `Fullscreen`, so this is opt-in.
+    #[serde(default)]
+    pub gamescope: GamescopeSetting,
+}
+
+impl Default for Sunshine {
+    fn default() -> Self {
+        Self {
+            host: "localhost".to_string(),
+            port: 47990,
+            username: None,
+            auth_token: None,
+            gamescope: GamescopeSetting::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     pub defaults: Defaults,
     pub logging: Logging,
     #[serde(default)]
     pub gamedb: GameDb,
+    #[serde(default)]
+    pub sunshine: Sunshine,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// One line per DLL: `dllname = "n,b"` (Wine's own mode syntax — `n`
@@ -416,6 +462,19 @@ impl Config {
             return Ok(expand_home(&self.logging.path));
         }
         Ok(project_dirs()?.config_dir().join("logs"))
+    }
+
+    /// Resolves the gamescope wrapping to bake into a game's own Sunshine
+    /// app entry: this profile's own `sunshine_gamescope` override if set,
+    /// else the global `sunshine.gamescope` default. Deliberately separate
+    /// from `effective()`/`Effective::gamescope` (which drives an actual
+    /// `iprolaunch <slug>` launch) — a streamed session often wants
+    /// different framing than that same game's normal desktop launch, so
+    /// the two are resolved independently rather than sharing one setting.
+    pub fn effective_sunshine_gamescope(&self, profile: Option<&Profile>) -> GamescopeSetting {
+        profile
+            .and_then(|p| p.defaults.sunshine_gamescope)
+            .unwrap_or(self.sunshine.gamescope)
     }
 
     /// Merges this global config with an optional profile override.
@@ -558,6 +617,13 @@ pub struct ProfileDefaults {
     pub gamescope_settings: GamescopeSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_wrapper: Option<String>,
+    /// This profile's own override of `sunshine.gamescope` — independent of
+    /// the `gamescope` override just above (that one's for a normal
+    /// `iprolaunch <slug>` launch), since a streamed session of this game
+    /// often wants different framing than a direct desktop launch of it.
+    /// See `Config::effective_sunshine_gamescope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunshine_gamescope: Option<GamescopeSetting>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -9,6 +9,7 @@ mod proton;
 mod quick_launch_cmd;
 mod running;
 mod steam_shortcut;
+mod sunshine;
 mod terminal;
 mod tui;
 mod updater;
