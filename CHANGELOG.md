@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.35.0] — 2026-09-17
+
+### Added
+- Library `s` is now a Share/Add-to popup — Steam (as before) plus a new "Add to Sunshine" option, registering the game with a locally running Sunshine game-streaming server via its own REST API. Prompts for your Sunshine username/password the first time and caches the login.
+- An app added to Sunshine now also gets the same resolution-switch `prep-cmd` every LutrisToSunshine-managed app already has, when that setup is detected and enabled.
+- New `sunshine.gamescope` setting (global + per-profile override): bakes `-f`/`-w` into a Sunshine app's own launch command, independent of that game's normal desktop-launch gamescope setting. Defaults to none.
+- Re-adding a game already in Sunshine now updates its existing entry in place instead of creating a duplicate.
+
+### Fixed
+- The Config tab's "check for update" row showed a doubled `v` (e.g. "vv1.2.3") in its finished-update message.
+
 ## [1.34.0] — 2026-09-17
 
 ### Added

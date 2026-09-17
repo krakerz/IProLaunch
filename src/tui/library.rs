@@ -40,7 +40,7 @@ pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         KeyCode::Char('f') => start_filter(app),
         KeyCode::Char('c') => copy_quick_launch(app),
         KeyCode::Char('p') => prompt_winetricks(app),
-        KeyCode::Char('s') => prompt_add_to_steam(app),
+        KeyCode::Char('s') => prompt_share_to(app),
         KeyCode::Enter => launch_selected(app, terminal),
         // Only meaningful once a filter is locked (still-typing Esc is
         // handled by `edit_filter` instead, via the early return above) —
@@ -228,37 +228,30 @@ fn run_winetricks(app: &mut App, terminal: &mut Term, slug: &str, name: &str) {
     });
 }
 
-/// Library `s`: opens `Mode::ConfirmAddToSteam` for the selected profile —
-/// unless `app.steam_slugs` (populated at startup/refresh, see
-/// `App::refresh_steam_status`) already lists its slug, in which case this
-/// just reports it instead (there's no `steam://` URL to update an existing
-/// shortcut, only to add a new — necessarily duplicate — one, so re-adding
-/// isn't offered at all, per the user's own call on this).
-fn prompt_add_to_steam(app: &mut App) {
+/// Library `s`: opens `Mode::ShareTo` for the selected profile — always,
+/// regardless of Steam status (unlike the old Steam-only popup this
+/// replaced, which skipped opening at all once already added — Sunshine is
+/// an independent destination, so already being in Steam shouldn't hide the
+/// option to also share to Sunshine). Selecting an already-added Steam
+/// option is instead caught inside `share_to_key` itself.
+fn prompt_share_to(app: &mut App) {
     let Some((slug, profile)) = selected_slug_and_profile(app) else {
         return;
     };
-    if app.steam_slugs.contains(&slug) {
-        app.status = Some(format!(
-            "\"{}\" already looks added to Steam — remove it there first if you want to re-add.",
-            profile.name
-        ));
-        return;
-    }
-    app.mode = Mode::ConfirmAddToSteam {
+    app.mode = Mode::ShareTo {
         slug,
         name: profile.name,
         selected: 0,
     };
 }
 
-/// Keys while `Mode::ConfirmAddToSteam` is up: Up/Down move the selection
-/// among `app::CONFIRM_ADD_TO_STEAM_OPTIONS` (wrapping via the same
-/// `app::move_selection` every other list uses — already gamepad-ready via
-/// the D-pad, no new mapping needed for navigation itself), Enter activates
-/// whichever's highlighted, Esc always cancels regardless of selection.
-pub fn confirm_add_to_steam_key(app: &mut App, code: KeyCode) {
-    let Mode::ConfirmAddToSteam {
+/// Keys while `Mode::ShareTo` is up: Up/Down move the selection among
+/// `app::SHARE_TO_OPTIONS` (wrapping via the same `app::move_selection`
+/// every other list uses — already gamepad-ready via the D-pad, no new
+/// mapping needed for navigation itself), Enter activates whichever's
+/// highlighted, Esc always cancels regardless of selection.
+pub fn share_to_key(app: &mut App, code: KeyCode) {
+    let Mode::ShareTo {
         slug,
         name,
         selected,
@@ -268,16 +261,14 @@ pub fn confirm_add_to_steam_key(app: &mut App, code: KeyCode) {
     };
     match code {
         KeyCode::Up => {
-            let selected =
-                app::move_selection(*selected, app::CONFIRM_ADD_TO_STEAM_OPTIONS.len(), -1);
-            if let Mode::ConfirmAddToSteam { selected: s, .. } = &mut app.mode {
+            let selected = app::move_selection(*selected, app::SHARE_TO_OPTIONS.len(), -1);
+            if let Mode::ShareTo { selected: s, .. } = &mut app.mode {
                 *s = selected;
             }
         }
         KeyCode::Down => {
-            let selected =
-                app::move_selection(*selected, app::CONFIRM_ADD_TO_STEAM_OPTIONS.len(), 1);
-            if let Mode::ConfirmAddToSteam { selected: s, .. } = &mut app.mode {
+            let selected = app::move_selection(*selected, app::SHARE_TO_OPTIONS.len(), 1);
+            if let Mode::ShareTo { selected: s, .. } = &mut app.mode {
                 *s = selected;
             }
         }
@@ -287,6 +278,7 @@ pub fn confirm_add_to_steam_key(app: &mut App, code: KeyCode) {
             match selected {
                 0 => add_to_steam(app, &slug, &name, false),
                 1 => add_to_steam(app, &slug, &name, true),
+                2 => prompt_add_to_sunshine(app, &slug, &name),
                 _ => {} // "Cancel" (or anything out of range) — do nothing
             }
         }
@@ -300,6 +292,12 @@ pub fn confirm_add_to_steam_key(app: &mut App, code: KeyCode) {
 /// clone captured when the popup opened) since it's still cheap and this
 /// only runs once, on confirm.
 ///
+/// Refuses (with a status message, no popup/prompt) rather than adding a
+/// second time when `app.steam_slugs` already lists this slug — there's no
+/// `steam://` URL to update an existing shortcut, only to add a new
+/// (necessarily duplicate) one, so re-adding isn't offered at all here; the
+/// user needs to remove the old one from Steam first if they want to re-add.
+///
 /// The `refresh_steam_status()` right after a successful add is
 /// best-effort, not a guarantee the "S" marker shows up *immediately*:
 /// `steam_shortcut::add_profile`'s `steam <url>` call only waits for the
@@ -310,6 +308,12 @@ pub fn confirm_add_to_steam_key(app: &mut App, code: KeyCode) {
 /// (or just waiting a moment) picks it up if this particular refresh ran
 /// too early.
 fn add_to_steam(app: &mut App, slug: &str, name: &str, with_gamescope_flags: bool) {
+    if app.steam_slugs.contains(slug) {
+        app.status = Some(format!(
+            "\"{name}\" already looks added to Steam — remove it there first if you want to re-add."
+        ));
+        return;
+    }
     let Some(profile) = app.profile(slug).cloned() else {
         app.status = Some(format!("couldn't find profile \"{name}\" to add"));
         return;
@@ -323,6 +327,123 @@ fn add_to_steam(app: &mut App, slug: &str, name: &str, with_gamescope_flags: boo
             Err(err) => format!("couldn't add \"{name}\" to Steam: {err:#}"),
         },
     );
+}
+
+/// Library's Share/Add-to `s` popup, "Add to Sunshine" option: uses the
+/// cached login (`app.cfg.sunshine.auth_token`) straight away when there is
+/// one, otherwise starts the username/password prompt first (see
+/// `submit_sunshine_username`/`submit_sunshine_password`) and adds once
+/// that succeeds.
+fn prompt_add_to_sunshine(app: &mut App, slug: &str, name: &str) {
+    if app.cfg.sunshine.auth_token.is_some() {
+        add_to_sunshine(app, slug, name);
+        return;
+    }
+    app.mode = Mode::TextInput {
+        purpose: TextInputPurpose::SunshineUsername {
+            slug: slug.to_string(),
+            name: name.to_string(),
+        },
+        buffer: app.cfg.sunshine.username.clone().unwrap_or_default(),
+        cursor: app
+            .cfg
+            .sunshine
+            .username
+            .as_ref()
+            .map_or(0, |u| u.chars().count()),
+    };
+}
+
+/// An empty username cancels back to Normal (matching `AddLibraryPath`'s own
+/// "nothing typed, nothing to do" convention) rather than trying to log in
+/// with a blank one.
+pub fn submit_sunshine_username(app: &mut App, slug: &str, name: &str, username: String) {
+    if username.is_empty() {
+        return;
+    }
+    app.mode = Mode::TextInput {
+        purpose: TextInputPurpose::SunshinePassword {
+            slug: slug.to_string(),
+            name: name.to_string(),
+            username,
+        },
+        buffer: String::new(),
+        cursor: 0,
+    };
+}
+
+/// Logs in with the just-typed username/password (see `sunshine::login`),
+/// caches the resolved auth token on success (never the raw password
+/// itself), and immediately proceeds to add the game — same one-shot flow
+/// as `add_to_steam`, just with a credential step in front of it the first
+/// time (or whenever the cached token's gone stale, see `add_to_sunshine`).
+pub fn submit_sunshine_password(
+    app: &mut App,
+    slug: &str,
+    name: &str,
+    username: String,
+    password: String,
+) {
+    match crate::sunshine::login(&app.cfg.sunshine, &username, &password) {
+        Ok(token) => {
+            app.cfg.sunshine.username = Some(username);
+            app.cfg.sunshine.auth_token = Some(token);
+            if let Err(err) = app.cfg.save() {
+                app.status = Some(format!("logged in, but failed to save config: {err:#}"));
+                return;
+            }
+            add_to_sunshine(app, slug, name);
+        }
+        Err(err) => app.status = Some(format!("Sunshine login failed: {err:#}")),
+    }
+}
+
+/// Actually calls `sunshine::add_app` using the cached auth token and
+/// reports the result — worded as "Updated"/"Sent" depending on whether an
+/// existing entry (matched by its own launch command) was refreshed in
+/// place or a genuinely new one was created (see `sunshine::add_app`'s own
+/// doc comment for how Sunshine's `index` field makes that possible, rather
+/// than a repeat add leaving a duplicate behind the way Steam's own
+/// shortcut mechanism unavoidably does). A 401 here means the cached
+/// token's gone stale (Sunshine restarted with different credentials,
+/// password changed, etc.) — clears it and tells the user to press `s`
+/// again to re-enter their username/password, rather than looping back
+/// into a prompt on their behalf mid-flow.
+fn add_to_sunshine(app: &mut App, slug: &str, name: &str) {
+    let Some(profile) = app.profile(slug).cloned() else {
+        app.status = Some(format!("couldn't find profile \"{name}\" to add"));
+        return;
+    };
+    let Some(token) = app.cfg.sunshine.auth_token.clone() else {
+        app.status = Some("not logged in to Sunshine yet".to_string());
+        return;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        app.status = Some("couldn't resolve iprolaunch's own binary path".to_string());
+        return;
+    };
+    let sunshine_gamescope = app.cfg.effective_sunshine_gamescope(Some(&profile));
+    let extra_flags: Vec<&str> = crate::launch::gamescope_setting_cli_flag(sunshine_gamescope)
+        .into_iter()
+        .collect();
+    let cmd = crate::quick_launch_cmd::command_for(&exe, &extra_flags, slug);
+    match crate::sunshine::add_app(
+        &app.cfg.sunshine,
+        &token,
+        profile.display_title(),
+        &cmd,
+        slug,
+    ) {
+        Ok(true) => app.status = Some(format!("Updated \"{name}\" in Sunshine.")),
+        Ok(false) => app.status = Some(format!("Sent \"{name}\" to Sunshine.")),
+        Err(err) => {
+            if matches!(err, crate::sunshine::AddAppError::AuthExpired) {
+                app.cfg.sunshine.auth_token = None;
+                let _ = app.cfg.save();
+            }
+            app.status = Some(format!("couldn't add \"{name}\" to Sunshine: {err}"));
+        }
+    }
 }
 
 /// Every action below looks the currently-selected entry up through
@@ -533,12 +654,16 @@ mod tests {
     }
 
     #[test]
-    fn s_opens_the_confirm_popup_for_a_profile_not_yet_in_steam() {
+    fn s_always_opens_the_share_to_popup_regardless_of_steam_status() {
+        // Unlike the old Steam-only popup, already being in Steam no longer
+        // hides the popup entirely — Sunshine is an independent option that
+        // should still be offered (see `add_to_steam`'s own already-added
+        // guard for where the old short-circuit moved to instead).
         let mut app = test_app_with_profile("game-1", "Game#1");
-        app.steam_slugs.clear();
-        prompt_add_to_steam(&mut app);
+        app.steam_slugs.insert("game-1".to_string());
+        prompt_share_to(&mut app);
         match &app.mode {
-            Mode::ConfirmAddToSteam {
+            Mode::ShareTo {
                 slug,
                 name,
                 selected,
@@ -547,16 +672,63 @@ mod tests {
                 assert_eq!(name, "Game#1");
                 assert_eq!(*selected, 0);
             }
-            _ => panic!("expected ConfirmAddToSteam"),
+            _ => panic!("expected ShareTo"),
         }
     }
 
     #[test]
-    fn s_just_reports_already_added_without_opening_a_popup() {
+    fn share_to_up_down_wraps_within_all_four_options() {
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.mode = Mode::ShareTo {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+            selected: 0,
+        };
+        share_to_key(&mut app, KeyCode::Up); // already at 0
+        assert!(matches!(app.mode, Mode::ShareTo { selected: 0, .. }));
+        share_to_key(&mut app, KeyCode::Down);
+        share_to_key(&mut app, KeyCode::Down);
+        share_to_key(&mut app, KeyCode::Down);
+        assert!(matches!(app.mode, Mode::ShareTo { selected: 3, .. }));
+        share_to_key(&mut app, KeyCode::Down); // already at the last option
+        assert!(matches!(app.mode, Mode::ShareTo { selected: 3, .. }));
+    }
+
+    #[test]
+    fn share_to_esc_cancels_without_touching_anything() {
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.mode = Mode::ShareTo {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+            selected: 1,
+        };
+        share_to_key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn share_to_enter_on_cancel_returns_to_normal_without_side_effects() {
+        // Selecting "Cancel" (index 3) and pressing Enter must behave
+        // exactly like Esc — never reach `add_to_steam` (which would shell
+        // out to the real `steam` binary and write a real file under
+        // `~/.local/share/iprolaunch/`, neither of which anything here can
+        // safely redirect — same rule as `confirm_delete_key`'s `y` arm).
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        app.mode = Mode::ShareTo {
+            slug: "game-1".to_string(),
+            name: "Game#1".to_string(),
+            selected: 3,
+        };
+        share_to_key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, None);
+    }
+
+    #[test]
+    fn add_to_steam_refuses_a_repeat_add_with_a_status_message() {
         let mut app = test_app_with_profile("game-1", "Game#1");
         app.steam_slugs.insert("game-1".to_string());
-        prompt_add_to_steam(&mut app);
-        assert!(matches!(app.mode, Mode::Normal));
+        add_to_steam(&mut app, "game-1", "Game#1", false);
         assert!(
             app.status
                 .as_deref()
@@ -566,59 +738,63 @@ mod tests {
     }
 
     #[test]
-    fn confirm_add_to_steam_up_down_wrap_within_the_three_options() {
+    fn add_to_sunshine_without_a_cached_token_reports_not_logged_in() {
+        // `prompt_add_to_sunshine` is what normally routes to the
+        // credential prompt first — this exercises `add_to_sunshine` being
+        // reached directly with nothing cached, which shouldn't happen in
+        // practice but must fail safely (no panic, no network call
+        // attempted) rather than assume a token is always present.
         let mut app = test_app_with_profile("game-1", "Game#1");
-        app.mode = Mode::ConfirmAddToSteam {
-            slug: "game-1".to_string(),
-            name: "Game#1".to_string(),
-            selected: 0,
-        };
-        confirm_add_to_steam_key(&mut app, KeyCode::Up); // already at 0
-        assert!(matches!(
-            app.mode,
-            Mode::ConfirmAddToSteam { selected: 0, .. }
-        ));
-        confirm_add_to_steam_key(&mut app, KeyCode::Down);
-        confirm_add_to_steam_key(&mut app, KeyCode::Down);
-        assert!(matches!(
-            app.mode,
-            Mode::ConfirmAddToSteam { selected: 2, .. }
-        ));
-        confirm_add_to_steam_key(&mut app, KeyCode::Down); // already at the last option
-        assert!(matches!(
-            app.mode,
-            Mode::ConfirmAddToSteam { selected: 2, .. }
-        ));
+        assert!(app.cfg.sunshine.auth_token.is_none());
+        add_to_sunshine(&mut app, "game-1", "Game#1");
+        assert_eq!(app.status.as_deref(), Some("not logged in to Sunshine yet"));
     }
 
     #[test]
-    fn confirm_add_to_steam_esc_cancels_without_touching_anything() {
+    fn prompt_add_to_sunshine_with_no_cached_login_opens_the_username_prompt() {
         let mut app = test_app_with_profile("game-1", "Game#1");
-        app.mode = Mode::ConfirmAddToSteam {
-            slug: "game-1".to_string(),
-            name: "Game#1".to_string(),
-            selected: 1,
-        };
-        confirm_add_to_steam_key(&mut app, KeyCode::Esc);
+        prompt_add_to_sunshine(&mut app, "game-1", "Game#1");
+        match &app.mode {
+            Mode::TextInput {
+                purpose: TextInputPurpose::SunshineUsername { slug, name },
+                buffer,
+                ..
+            } => {
+                assert_eq!(slug, "game-1");
+                assert_eq!(name, "Game#1");
+                assert_eq!(buffer, "");
+            }
+            _ => panic!("expected a SunshineUsername text-input prompt"),
+        }
+    }
+
+    #[test]
+    fn submit_sunshine_username_empty_cancels_back_to_normal() {
+        let mut app = test_app_with_profile("game-1", "Game#1");
+        submit_sunshine_username(&mut app, "game-1", "Game#1", String::new());
         assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]
-    fn confirm_add_to_steam_enter_on_cancel_returns_to_normal_without_side_effects() {
-        // Selecting "Cancel" (index 2) and pressing Enter must behave
-        // exactly like Esc — never reach `add_to_steam` (which would shell
-        // out to the real `steam` binary and write a real file under
-        // `~/.local/share/iprolaunch/`, neither of which anything here can
-        // safely redirect — same rule as `confirm_delete_key`'s `y` arm).
+    fn submit_sunshine_username_non_empty_advances_to_the_password_prompt() {
         let mut app = test_app_with_profile("game-1", "Game#1");
-        app.mode = Mode::ConfirmAddToSteam {
-            slug: "game-1".to_string(),
-            name: "Game#1".to_string(),
-            selected: 2,
-        };
-        confirm_add_to_steam_key(&mut app, KeyCode::Enter);
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.status, None);
+        submit_sunshine_username(&mut app, "game-1", "Game#1", "alice".to_string());
+        match &app.mode {
+            Mode::TextInput {
+                purpose:
+                    TextInputPurpose::SunshinePassword {
+                        slug,
+                        name,
+                        username,
+                    },
+                ..
+            } => {
+                assert_eq!(slug, "game-1");
+                assert_eq!(name, "Game#1");
+                assert_eq!(username, "alice");
+            }
+            _ => panic!("expected a SunshinePassword text-input prompt"),
+        }
     }
 
     #[test]

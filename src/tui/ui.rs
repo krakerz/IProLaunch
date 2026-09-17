@@ -87,9 +87,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::ConfirmWinetricks { name, .. } => {
             draw_confirm_winetricks_popup(frame, name, app.input_kind)
         }
-        Mode::ConfirmAddToSteam { name, selected, .. } => {
-            draw_confirm_add_to_steam_popup(frame, name, *selected)
-        }
+        Mode::ShareTo { name, selected, .. } => draw_share_to_popup(frame, name, *selected),
         Mode::ConfirmUpdate {
             current,
             latest,
@@ -290,10 +288,10 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     let tick = app.marquee_tick();
     let normal_title = match app.input_kind {
         InputKind::Keyboard => {
-            "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, p = winetricks, s = add to Steam, f = search)"
+            "Library (Enter = launch, a = add, r = refresh, e = edit, d = delete, c = copy cmd, p = winetricks, s = share (Steam/Sunshine), f = search)"
         }
         InputKind::Gamepad => {
-            "Library (A = launch, X = delete, L3 = refresh, R3 = edit, LT = add to Steam, Select = search — add/copy cmd/winetricks need a keyboard)"
+            "Library (A = launch, X = delete, L3 = refresh, R3 = edit, LT = share (Steam/Sunshine), Select = search — add/copy cmd/winetricks need a keyboard)"
         }
     };
     let title = filter_title(
@@ -638,6 +636,10 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .logging
                     .auto_open_scope
                     .map_or_else(|| "(inherit)".to_string(), |s| format!("{s:?}")),
+                ProfileField::SunshineGamescope => profile
+                    .defaults
+                    .sunshine_gamescope
+                    .map_or_else(|| "(inherit)".to_string(), |g| format!("{g:?}")),
                 ProfileField::EnvTable => entry_count(&profile.env),
                 ProfileField::WineDllOverrideTable => entry_count(&profile.winedlloverride),
             };
@@ -741,15 +743,14 @@ fn draw_confirm_update_popup(
     );
 }
 
-/// `Mode::ConfirmAddToSteam` — a navigable 3-item list (Up/Down/Enter,
-/// already gamepad-ready via the D-pad + A, no `confirm_hint`-style
-/// gamepad-caption text needed) rather than a y/N prompt, since there are 3
-/// real outcomes to choose between, not 2. See
-/// `app::CONFIRM_ADD_TO_STEAM_OPTIONS`.
-fn draw_confirm_add_to_steam_popup(frame: &mut Frame, name: &str, selected: usize) {
-    let area = centered_rect(60, 30, frame.area());
+/// `Mode::ShareTo` — a navigable list (Up/Down/Enter, already gamepad-ready
+/// via the D-pad + A, no `confirm_hint`-style gamepad-caption text needed)
+/// rather than a y/N prompt, since there are several real outcomes to choose
+/// between, not 2. See `app::SHARE_TO_OPTIONS`.
+fn draw_share_to_popup(frame: &mut Frame, name: &str, selected: usize) {
+    let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
-    let items: Vec<ListItem> = app::CONFIRM_ADD_TO_STEAM_OPTIONS
+    let items: Vec<ListItem> = app::SHARE_TO_OPTIONS
         .iter()
         .map(|label| ListItem::new(*label))
         .collect();
@@ -757,7 +758,7 @@ fn draw_confirm_add_to_steam_popup(frame: &mut Frame, name: &str, selected: usiz
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Add \"{name}\" to Steam? (Esc = cancel)")),
+                .title(format!("Share/add \"{name}\"? (Esc = cancel)")),
         )
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
@@ -873,6 +874,7 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::LogAutoOpen => l.auto_open.to_string(),
                 ConfigField::LogAutoOpenScope => format!("{:?}", l.auto_open_scope),
                 ConfigField::GamedbInterval => g.update_interval_days.to_string(),
+                ConfigField::SunshineGamescope => format!("{:?}", app.cfg.sunshine.gamescope),
                 ConfigField::EnvTable => entry_count(&app.cfg.env),
                 ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
             };
@@ -998,26 +1000,55 @@ Library:
                            override if in defaults.prefix_mode = per-slug,
                            otherwise the single shared prefix/Proton pair,
                            exactly like a real launch of it would
-  s                        add this game to Steam as a non-Steam-game
-                           shortcut, live, without a Steam restart (via
-                           Steam's own `steam://addnonsteamgame/` importer —
-                           never edits shortcuts.vdf directly). Shows up in
-                           Steam under this game's title (if set) or its
-                           name with the internal \"#N\" suffix stripped —
-                           never the raw disambiguated Library name.
-                           Opens a 3-choice popup (Up/Down/Enter): add plain, add
-                           with this profile's own -f/-w/-b baked into the
-                           shortcut's Launch Options, or cancel. Already
-                           added (see the \"S\" marker below)? `s` just says
-                           so instead — there's no way to update an existing
-                           Steam shortcut through this mechanism, only add a
-                           new (duplicate) one, so re-adding isn't offered;
-                           remove the old one from Steam yourself first. The
-                           \"S\" marker can lag a successful add by up to
-                           about a second (Steam's own client writes
-                           shortcuts.vdf a moment after the launcher that
-                           handed it the URL already exited) — a stray `r`
-                           picks it up.
+  s                        share/add this game — opens a popup (Up/Down/
+                           Enter) offering:
+                             - Add to Steam as a non-Steam-game shortcut,
+                               live, without a Steam restart (via Steam's
+                               own `steam://addnonsteamgame/` importer —
+                               never edits shortcuts.vdf directly). Shows up
+                               in Steam under this game's title (if set) or
+                               its name with the internal \"#N\" suffix
+                               stripped — never the raw disambiguated
+                               Library name. A second \"with gamescope flag\"
+                               choice bakes this profile's own -f/-w/-b into
+                               the shortcut's Launch Options too. Already
+                               added (see the \"S\" marker below)? Selecting
+                               either Steam option again just reports that
+                               instead — there's no way to update an
+                               existing Steam shortcut through this
+                               mechanism, only add a new (duplicate) one, so
+                               re-adding isn't offered; remove the old one
+                               from Steam yourself first. The \"S\" marker
+                               can lag a successful add by up to about a
+                               second (Steam's own client writes
+                               shortcuts.vdf a moment after the launcher
+                               that handed it the URL already exited) — a
+                               stray `r` picks it up.
+                             - Add to Sunshine, registering this game as an
+                               app on a locally running Sunshine game-
+                               streaming server, via its own REST API
+                               (HTTP Basic auth using Sunshine's own web-UI
+                               username/password — self-signed TLS, cert
+                               verification is disabled for this). The
+                               first time (or after the cached login goes
+                               stale), you're prompted for that username
+                               then password; a successful login is cached
+                               in config.toml so it isn't asked again.
+                               Re-adding an already-added game updates that
+                               same Sunshine entry in place (matched by
+                               slug) instead of creating a duplicate. Also
+                               bakes in `sunshine.gamescope`'s effective
+                               setting (global default + this profile's own
+                               override, in the profile editor) as a
+                               `-f`/`-w` flag on the Sunshine app's own
+                               launch command — independent of this game's
+                               normal desktop-launch gamescope setting, off
+                               by default. Picks up the same resolution-
+                               switch prep-cmd every LutrisToSunshine-
+                               managed app already gets, when that's
+                               detected and enabled — nothing to configure,
+                               it's skipped entirely otherwise.
+                             - Cancel.
   f                        quick-search — filters by name or exe path as you
                            type (so e.g. a shared path segment tells apart
                            two otherwise-similar profiles); while typing,
@@ -1160,10 +1191,12 @@ Gamepad (Steam Deck Game Mode, or any plain controller):
                            mashing confirm can never delete anything by
                            accident (same as Enter alone not confirming
                            these on a keyboard either)
-  LT                       add to Steam (Library) — opens the same 3-choice
-                           popup as `s`; navigate/confirm it with the D-pad
-                           and A/B like any other list, no extra mapping
-                           needed for that part
+  LT                       share/add (Library) — opens the same popup as
+                           `s`; navigate/confirm it with the D-pad and A/B
+                           like any other list, no extra mapping needed for
+                           that part (the Sunshine option's username/
+                           password prompt still needs a keyboard, same as
+                           every other text-input field)
   Select                   quick-search
   Start                    quit
   Every title/status bar shows the matching set of captions once a gamepad
@@ -1274,12 +1307,28 @@ fn draw_text_input_popup(
                 field.label()
             )
         }
+        TextInputPurpose::SunshineUsername { .. } => {
+            "Sunshine username (Enter = continue, blank = cancel, Esc = cancel)".to_string()
+        }
+        TextInputPurpose::SunshinePassword { .. } => {
+            "Sunshine password (Enter = log in & add, Esc = cancel)".to_string()
+        }
     };
     let title = marquee_title(title, area.width, tick);
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner_width = area.width.saturating_sub(2) as usize;
+    // Masked so a Sunshine password never actually shows on screen — the
+    // real `buffer` (unmasked) is still what gets sent to `sunshine::login`,
+    // this only affects what's rendered.
+    let masked;
+    let display_buffer = if matches!(purpose, TextInputPurpose::SunshinePassword { .. }) {
+        masked = "*".repeat(buffer.chars().count());
+        masked.as_str()
+    } else {
+        buffer
+    };
     frame.render_widget(
-        Paragraph::new(cursor_line(buffer, cursor, inner_width)).block(block),
+        Paragraph::new(cursor_line(display_buffer, cursor, inner_width)).block(block),
         area,
     );
 }
@@ -1549,8 +1598,8 @@ fn marquee_signature(app: &App) -> String {
         }
         Mode::Help => "help".to_string(),
         Mode::ConfirmWinetricks { slug, .. } => format!("confirmwinetricks:{slug}"),
-        Mode::ConfirmAddToSteam { slug, selected, .. } => {
-            format!("confirmaddtosteam:{slug}:{selected}")
+        Mode::ShareTo { slug, selected, .. } => {
+            format!("shareto:{slug}:{selected}")
         }
         Mode::ConfirmUpdate { latest, .. } => format!("confirmupdate:{latest}"),
     };
@@ -1967,7 +2016,7 @@ mod tests {
         // shorter terminal will legitimately clip content, same as any
         // other list-heavy screen; that's covered by
         // `every_tab_renders_without_panicking_at_a_small_size` instead.
-        let out = rendered(&mut app, 100, 48);
+        let out = rendered(&mut app, 100, 49);
         for field in ConfigField::ALL {
             assert!(
                 out.contains(field.label()),
@@ -2130,7 +2179,7 @@ mod tests {
         app.profile_editor = Some("game-1".to_string());
         // Tall enough to fit every field row without clipping — see
         // `config_tab_lists_every_field_label`'s identical reasoning.
-        let out = rendered(&mut app, 100, 41);
+        let out = rendered(&mut app, 100, 42);
         assert!(out.contains("Game#1"));
         for field in ProfileField::ALL {
             assert!(

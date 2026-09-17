@@ -65,10 +65,21 @@ entry.
   quick-searches Running/Library by name.
 - Library `p` runs `winetricks` against the exact prefix a real launch of
   that game would use (confirms first).
-- Library `s` adds a game to Steam as a non-Steam-game shortcut, live, via
-  Steam's own importer — no `shortcuts.vdf` editing, no restart required
-  (press `?` in the TUI for the full behavior, including the gamescope-flag
-  and duplicate-detection options).
+- Library `s` opens a Share/Add-to popup: add a game to Steam as a
+  non-Steam-game shortcut, live, via Steam's own importer — no
+  `shortcuts.vdf` editing, no restart required — or add it to a locally
+  running [Sunshine](https://github.com/LizardByte/Sunshine) game-streaming
+  server via its own REST API (HTTP Basic auth with Sunshine's own web-UI
+  username/password, asked for once and cached). Re-adding an already-added
+  game updates its existing Sunshine entry in place instead of duplicating
+  it, and picks up the same resolution-switch `prep-cmd` every
+  [LutrisToSunshine](https://github.com/Arbitrate3280/LutrisToSunshine)-managed
+  app already gets, when that's set up. A separate `sunshine.gamescope`
+  setting (global + per-profile override, Config tab/profile editor) bakes
+  `-f`/`-w` into a game's Sunshine launch command independently of its
+  normal desktop-launch gamescope setting (press `?` in the TUI for the
+  full behavior, including the Steam gamescope-flag and duplicate-detection
+  options).
 - Gamepad navigation — a real controller works alongside the keyboard with
   zero setup (see the Help screen's "Gamepad" section for the full button
   map); every legend switches to the matching captions automatically.

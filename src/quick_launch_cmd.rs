@@ -5,21 +5,33 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 
 /// The quick-launch command line for a Steam non-Steam-game shortcut's
-/// "Target" field — quoted binary path followed by the slug, matching
+/// "Target" field, or a Sunshine app's own `cmd` — quoted binary path,
+/// optional `extra_flags` (e.g. `-f`/`-w`, each its own token — see
+/// `steam_shortcut::wrapper_contents`'s doc comment for why a Steam Launch
+/// Options segment can't hold more than one value), then the slug, matching
 /// `main.rs`'s own quick-launch matching (`quick_launch` there accepts
 /// either the slug or the display name — the slug's used here since it
 /// can't collide the way a display name that got renamed could). Pure, so
-/// it's unit-testable without a real clipboard; shared by the TUI's `c` key
-/// and `add_profile`/`context-menu`'s auto-copy-on-add.
-pub fn command_for(exe: &Path, slug: &str) -> String {
-    format!("\"{}\" {slug}", exe.display())
+/// it's unit-testable without a real clipboard; shared by the TUI's `c` key,
+/// `add_profile`/`context-menu`'s auto-copy-on-add, and `sunshine::add_app`.
+pub fn command_for(exe: &Path, extra_flags: &[&str], slug: &str) -> String {
+    let mut cmd = format!("\"{}\"", exe.display());
+    for flag in extra_flags {
+        cmd.push(' ');
+        cmd.push_str(flag);
+    }
+    cmd.push(' ');
+    cmd.push_str(slug);
+    cmd
 }
 
 /// Builds the command for `slug` against *this* running binary's own path
-/// and copies it to the system clipboard.
+/// and copies it to the system clipboard. No `extra_flags` here — the
+/// clipboard copy (`c` key) is meant for pasting into whatever the user is
+/// setting up themselves, not tied to any particular gamescope choice.
 pub fn copy_for_slug(slug: &str) -> Result<String> {
     let exe = std::env::current_exe().context("resolving iprolaunch's own binary path")?;
-    let command = command_for(&exe, slug);
+    let command = command_for(&exe, &[], slug);
     copy_to_clipboard(&command)?;
     Ok(command)
 }
@@ -83,8 +95,24 @@ mod tests {
     #[test]
     fn command_for_quotes_the_binary_path_and_appends_the_slug() {
         assert_eq!(
-            command_for(Path::new("/home/user/.local/bin/iprolaunch"), "eldenring"),
+            command_for(
+                Path::new("/home/user/.local/bin/iprolaunch"),
+                &[],
+                "eldenring"
+            ),
             "\"/home/user/.local/bin/iprolaunch\" eldenring"
+        );
+    }
+
+    #[test]
+    fn command_for_inserts_extra_flags_as_separate_tokens_before_the_slug() {
+        assert_eq!(
+            command_for(
+                Path::new("/home/user/.local/bin/iprolaunch"),
+                &["-w", "-b"],
+                "eldenring"
+            ),
+            "\"/home/user/.local/bin/iprolaunch\" -w -b eldenring"
         );
     }
 }

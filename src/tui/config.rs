@@ -166,7 +166,11 @@ pub fn confirm_update_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     }
 
     app.status = Some(match result {
-        Ok(()) => format!("Updated to v{latest} — restart iprolaunch to run it."),
+        // `latest` is GitHub's own tag name (e.g. "v1.35.0"), already
+        // carrying its own "v" — same as `draw_confirm_update_popup`'s
+        // "Update from v{current} to {latest}?" just above this in the
+        // flow, which doesn't prepend a second one either.
+        Ok(()) => format!("Updated to {latest} — restart iprolaunch to run it."),
         Err(err) => format!("Update failed: {err:#}"),
     });
 }
@@ -282,6 +286,9 @@ fn cycle_field(app: &mut App, field: ConfigField) {
         ConfigField::WindowsVersion => {
             app.cfg.defaults.windows_version =
                 app::next_windows_version(app.cfg.defaults.windows_version);
+        }
+        ConfigField::SunshineGamescope => {
+            app.cfg.sunshine.gamescope = app::next_sunshine_gamescope(app.cfg.sunshine.gamescope);
         }
         _ => {}
     }
