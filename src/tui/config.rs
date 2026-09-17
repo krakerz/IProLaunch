@@ -252,6 +252,10 @@ fn cycle_field(app: &mut App, field: ConfigField) {
         ConfigField::LogRecord => {
             app.cfg.logging.record = app::next_record_mode(app.cfg.logging.record);
         }
+        ConfigField::LogAutoOpenScope => {
+            app.cfg.logging.auto_open_scope =
+                app::next_auto_open_scope(app.cfg.logging.auto_open_scope);
+        }
         ConfigField::Gamescope => {
             app.cfg.defaults.gamescope = app::next_gamescope_setting(app.cfg.defaults.gamescope);
         }

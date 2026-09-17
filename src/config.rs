@@ -177,6 +177,24 @@ pub enum WindowsVersion {
     Win11,
 }
 
+/// Whether `logging.auto_open`'s new-terminal spawn (see `terminal` module)
+/// fires only for a launch triggered from the TUI, or for every launch
+/// regardless of how iprolaunch was invoked. Defaults to `TuiOnly`: a launch
+/// from the TUI already has a window (the TUI itself, switchable back to
+/// from Steam/the desktop the same way the game's own window is) for the
+/// user to return to, so popping a second one for the log is unsurprising —
+/// but a launch with no TUI involved at all (a Steam shortcut, a
+/// `binfmt_misc`/file-manager double-click, gamescope Game Mode) has no
+/// guarantee a spawned terminal window would even get focus, or that
+/// there's a keyboard attached to use it, so that stays opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutoOpenScope {
+    #[default]
+    TuiOnly,
+    Always,
+}
+
 impl WindowsVersion {
     /// The exact winetricks verb for this version.
     pub fn as_str(self) -> &'static str {
@@ -318,6 +336,8 @@ pub struct Logging {
     pub keep: u32,
     pub record: RecordMode,
     pub auto_open: bool,
+    #[serde(default)]
+    pub auto_open_scope: AutoOpenScope,
 }
 
 impl Default for Logging {
@@ -328,6 +348,7 @@ impl Default for Logging {
             keep: 3,
             record: RecordMode::Errors,
             auto_open: true,
+            auto_open_scope: AutoOpenScope::default(),
         }
     }
 }
@@ -458,6 +479,9 @@ impl Config {
         // auto_open only means anything when something is actually being recorded.
         let auto_open =
             record != RecordMode::Off && pl.and_then(|pl| pl.auto_open).unwrap_or(l.auto_open);
+        let auto_open_scope = pl
+            .and_then(|pl| pl.auto_open_scope)
+            .unwrap_or(l.auto_open_scope);
 
         let mut env = self.env.clone();
         if let Some(penv) = penv {
@@ -482,6 +506,7 @@ impl Config {
             keep,
             record,
             auto_open,
+            auto_open_scope,
             env,
             winedlloverride,
         }
@@ -503,6 +528,7 @@ pub struct Effective {
     pub keep: u32,
     pub record: RecordMode,
     pub auto_open: bool,
+    pub auto_open_scope: AutoOpenScope,
     pub env: BTreeMap<String, String>,
     pub winedlloverride: BTreeMap<String, String>,
 }
@@ -542,6 +568,8 @@ pub struct ProfileLogging {
     pub record: Option<RecordMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_open: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_open_scope: Option<AutoOpenScope>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -988,6 +1016,35 @@ mod tests {
         cfg.logging.record = RecordMode::Off;
         cfg.logging.auto_open = true;
         assert!(!cfg.effective(None).auto_open);
+    }
+
+    #[test]
+    fn profile_auto_open_scope_override_wins_when_set() {
+        let mut cfg = Config::default();
+        cfg.logging.auto_open_scope = AutoOpenScope::TuiOnly;
+        assert_eq!(cfg.effective(None).auto_open_scope, AutoOpenScope::TuiOnly);
+
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        assert_eq!(
+            cfg.effective(Some(&profile)).auto_open_scope,
+            AutoOpenScope::TuiOnly
+        );
+
+        profile.logging.auto_open_scope = Some(AutoOpenScope::Always);
+        assert_eq!(
+            cfg.effective(Some(&profile)).auto_open_scope,
+            AutoOpenScope::Always
+        );
     }
 
     #[test]

@@ -164,6 +164,7 @@ mod tests {
             keep: 3,
             record: RecordMode::Errors,
             auto_open: false,
+            auto_open_scope: Default::default(),
             env: Default::default(),
             winedlloverride: Default::default(),
         }
