@@ -44,7 +44,13 @@ entry.
   frame-generation layer's own wrapper script (see "Injecting env vars or
   a wrapper tool" below).
 - Per-launch logging with configurable retention, one shared log folder or
-  one per profile.
+  one per profile. On a failed launch, `logging.auto_open` pops the log in
+  its own new terminal window (detected from the desktop's own configured
+  terminal, falling back to a handful of common ones) instead of blocking
+  whatever invoked iprolaunch — `logging.auto_open_scope` controls whether
+  that fires for every launch or only ones started from the TUI (the
+  default, since a non-TUI launch, e.g. a Steam shortcut or Game Mode, has
+  no guarantee a spawned window would even get focus).
 - `proton list` / `config init` detect installed Proton builds everywhere
   (native/Flatpak Steam, official Steam installs, distro packages), not
   just `compatibilitytools.d`.

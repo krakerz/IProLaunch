@@ -7,11 +7,12 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{Config, Effective, Profile, RecordMode};
+use crate::config::{AutoOpenScope, Config, Effective, Profile, RecordMode};
 use crate::gamedb;
 use crate::logging::LogSession;
 use crate::prefix;
 use crate::running;
+use crate::terminal;
 
 #[derive(Default)]
 pub struct RunOptions {
@@ -20,6 +21,10 @@ pub struct RunOptions {
     pub env: Vec<(String, String)>,
     pub args: Vec<String>,
     pub gamescope: GamescopeMode,
+    /// Set by the TUI's own launch call site — see
+    /// `AutoOpenScope::TuiOnly`'s doc comment for why this gates whether a
+    /// failed launch's log gets auto-opened in a new terminal at all.
+    pub from_tui: bool,
 }
 
 /// `-f`/`-w`/`-b` (CLI) — wraps the launch in a nested `gamescope` session
@@ -432,10 +437,11 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     };
 
     if !status.success() {
-        if effective.auto_open
-            && let Some(path) = &log_path
-        {
-            open_in_pager(path);
+        let should_auto_open = effective.auto_open
+            && (effective.auto_open_scope == AutoOpenScope::Always || opts.from_tui);
+        if should_auto_open && let Some(path) = &log_path {
+            let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".into());
+            terminal::spawn_in_new_terminal(&pager, path);
         }
         bail!("umu-run exited with {status}");
     }
@@ -639,19 +645,6 @@ fn install_signal_forwarding(launch_id: &str) {
             eprintln!("iprolaunch: warning: failed to install Ctrl+C handler: {err}");
         }
     }
-}
-
-/// No-op when there's no controlling terminal (e.g. launched detached from a
-/// desktop file's double-click, which is the default — see `integrate`):
-/// spawning a pager with nothing to attach to would just fail or hang. The
-/// log file is still on disk either way, inspectable later via the TUI/CLI.
-fn open_in_pager(path: &Path) {
-    use std::io::IsTerminal;
-    if !std::io::stdout().is_terminal() {
-        return;
-    }
-    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".into());
-    let _ = Command::new(pager).arg(path).status();
 }
 
 /// Per-key merge: `cli` overrides `base` key-for-key, leaving every other key

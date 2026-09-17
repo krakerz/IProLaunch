@@ -103,6 +103,7 @@ mod tests {
             keep: 0,
             record: crate::config::RecordMode::Off,
             auto_open: false,
+            auto_open_scope: Default::default(),
             env: Default::default(),
             winedlloverride: Default::default(),
         };

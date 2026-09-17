@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.34.0] — 2026-09-17
+
+### Added
+- A failed launch's log now opens in its own new terminal window instead of blocking the invoking terminal — detected from the desktop's own configured terminal (KDE/XFCE/GNOME, plus the freedesktop `xdg-terminal-exec` tool when present), falling back to a handful of common terminal emulators; skipped entirely if none can be found.
+- `logging.auto_open_scope` (global + per-profile override): whether that new-terminal auto-open fires for every launch, or only ones started from the TUI (the default).
+
 ## [1.33.0] — 2026-09-15
 
 ### Changed

@@ -421,7 +421,14 @@ pub fn launch_path(app: &mut App, terminal: &mut Term, target: &str, label: &str
     }
 
     println!("Launching {label}...");
-    let result = launch::run(&app.cfg, Path::new(target), RunOptions::default());
+    let result = launch::run(
+        &app.cfg,
+        Path::new(target),
+        RunOptions {
+            from_tui: true,
+            ..Default::default()
+        },
+    );
     match &result {
         Ok(()) => println!("\n{label} exited normally."),
         Err(err) => println!("\n{label} failed: {err:#}"),

@@ -82,6 +82,10 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
             ProfileField::LogAutoOpen => {
                 profile.logging.auto_open = app::next_optional_bool(profile.logging.auto_open);
             }
+            ProfileField::LogAutoOpenScope => {
+                profile.logging.auto_open_scope =
+                    app::next_profile_auto_open_scope(profile.logging.auto_open_scope);
+            }
             ProfileField::PrefixMode => {
                 profile.defaults.prefix_mode =
                     app::next_profile_prefix_mode(profile.defaults.prefix_mode);
@@ -458,6 +462,7 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::Proton
         | ProfileField::LogRecord
         | ProfileField::LogAutoOpen
+        | ProfileField::LogAutoOpenScope
         | ProfileField::Gamescope
         | ProfileField::WindowsVersion
         | ProfileField::GamescopeFilter

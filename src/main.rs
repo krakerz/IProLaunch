@@ -9,6 +9,7 @@ mod proton;
 mod quick_launch_cmd;
 mod running;
 mod steam_shortcut;
+mod terminal;
 mod tui;
 mod updater;
 
@@ -411,6 +412,7 @@ fn main() -> Result<()> {
                 env,
                 args,
                 gamescope,
+                from_tui: false,
             },
         ),
         Some(Command::Add { target }) => add_profile(&target),

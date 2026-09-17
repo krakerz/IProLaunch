@@ -634,6 +634,10 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .logging
                     .auto_open
                     .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
+                ProfileField::LogAutoOpenScope => profile
+                    .logging
+                    .auto_open_scope
+                    .map_or_else(|| "(inherit)".to_string(), |s| format!("{s:?}")),
                 ProfileField::EnvTable => entry_count(&profile.env),
                 ProfileField::WineDllOverrideTable => entry_count(&profile.winedlloverride),
             };
@@ -867,6 +871,7 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::LogKeep => l.keep.to_string(),
                 ConfigField::LogRecord => format!("{:?}", l.record),
                 ConfigField::LogAutoOpen => l.auto_open.to_string(),
+                ConfigField::LogAutoOpenScope => format!("{:?}", l.auto_open_scope),
                 ConfigField::GamedbInterval => g.update_interval_days.to_string(),
                 ConfigField::EnvTable => entry_count(&app.cfg.env),
                 ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
@@ -1962,7 +1967,7 @@ mod tests {
         // shorter terminal will legitimately clip content, same as any
         // other list-heavy screen; that's covered by
         // `every_tab_renders_without_panicking_at_a_small_size` instead.
-        let out = rendered(&mut app, 100, 47);
+        let out = rendered(&mut app, 100, 48);
         for field in ConfigField::ALL {
             assert!(
                 out.contains(field.label()),
@@ -2125,7 +2130,7 @@ mod tests {
         app.profile_editor = Some("game-1".to_string());
         // Tall enough to fit every field row without clipping — see
         // `config_tab_lists_every_field_label`'s identical reasoning.
-        let out = rendered(&mut app, 100, 40);
+        let out = rendered(&mut app, 100, 41);
         assert!(out.contains("Game#1"));
         for field in ProfileField::ALL {
             assert!(

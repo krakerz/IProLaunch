@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::config::{
-    Config, GamescopeFilter, GamescopeScaler, GamescopeSetting, LogMode, PrefixMode, Profile,
-    RecordMode, WindowsVersion,
+    AutoOpenScope, Config, GamescopeFilter, GamescopeScaler, GamescopeSetting, LogMode, PrefixMode,
+    Profile, RecordMode, WindowsVersion,
 };
 use crate::proton::ProtonBuild;
 use crate::running::{self, RunningEntry};
@@ -70,13 +70,14 @@ pub enum ConfigField {
     LogKeep,
     LogRecord,
     LogAutoOpen,
+    LogAutoOpenScope,
     GamedbInterval,
     EnvTable,
     WineDllOverrideTable,
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 25] = [
+    pub const ALL: [ConfigField; 26] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
@@ -99,6 +100,7 @@ impl ConfigField {
         ConfigField::LogKeep,
         ConfigField::LogRecord,
         ConfigField::LogAutoOpen,
+        ConfigField::LogAutoOpenScope,
         ConfigField::GamedbInterval,
         ConfigField::EnvTable,
         ConfigField::WineDllOverrideTable,
@@ -128,6 +130,7 @@ impl ConfigField {
             ConfigField::LogKeep => "logging.keep",
             ConfigField::LogRecord => "logging.record",
             ConfigField::LogAutoOpen => "logging.auto_open",
+            ConfigField::LogAutoOpenScope => "logging.auto_open_scope",
             ConfigField::GamedbInterval => "gamedb.update_interval_days",
             ConfigField::EnvTable => "env (global)",
             ConfigField::WineDllOverrideTable => "winedlloverride (global)",
@@ -144,6 +147,7 @@ impl ConfigField {
             ConfigField::PrefixMode
             | ConfigField::LogMode
             | ConfigField::LogRecord
+            | ConfigField::LogAutoOpenScope
             | ConfigField::Gamescope
             | ConfigField::WindowsVersion
             | ConfigField::GamescopeFilter
@@ -266,12 +270,13 @@ pub enum ProfileField {
     LogKeep,
     LogRecord,
     LogAutoOpen,
+    LogAutoOpenScope,
     EnvTable,
     WineDllOverrideTable,
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 26] = [
+    pub const ALL: [ProfileField; 27] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
@@ -296,6 +301,7 @@ impl ProfileField {
         ProfileField::LogKeep,
         ProfileField::LogRecord,
         ProfileField::LogAutoOpen,
+        ProfileField::LogAutoOpenScope,
         ProfileField::EnvTable,
         ProfileField::WineDllOverrideTable,
     ];
@@ -326,6 +332,7 @@ impl ProfileField {
             ProfileField::LogKeep => "logging.keep override",
             ProfileField::LogRecord => "logging.record override",
             ProfileField::LogAutoOpen => "logging.auto_open override",
+            ProfileField::LogAutoOpenScope => "logging.auto_open_scope override",
             ProfileField::EnvTable => "env override",
             ProfileField::WineDllOverrideTable => "winedlloverride override",
         }
@@ -343,6 +350,7 @@ impl ProfileField {
             ProfileField::Proton => FieldKind::ProtonPicker,
             ProfileField::LogRecord
             | ProfileField::LogAutoOpen
+            | ProfileField::LogAutoOpenScope
             | ProfileField::PrefixMode
             | ProfileField::Gamescope
             | ProfileField::WindowsVersion
@@ -931,6 +939,24 @@ pub fn next_optional_bool(v: Option<bool>) -> Option<bool> {
     }
 }
 
+pub fn next_auto_open_scope(s: AutoOpenScope) -> AutoOpenScope {
+    match s {
+        AutoOpenScope::TuiOnly => AutoOpenScope::Always,
+        AutoOpenScope::Always => AutoOpenScope::TuiOnly,
+    }
+}
+
+/// Same as `next_profile_record_mode`, for a profile's own
+/// `logging.auto_open_scope` override — inherit → tui-only → always →
+/// inherit.
+pub fn next_profile_auto_open_scope(s: Option<AutoOpenScope>) -> Option<AutoOpenScope> {
+    match s {
+        None => Some(AutoOpenScope::TuiOnly),
+        Some(AutoOpenScope::TuiOnly) => Some(AutoOpenScope::Always),
+        Some(AutoOpenScope::Always) => None,
+    }
+}
+
 pub fn next_gamescope_setting(m: GamescopeSetting) -> GamescopeSetting {
     match m {
         GamescopeSetting::None => GamescopeSetting::Fullscreen,
@@ -1223,6 +1249,26 @@ mod tests {
         assert_eq!(r, Some(RecordMode::Off));
         r = next_profile_record_mode(r);
         assert_eq!(r, None);
+    }
+
+    #[test]
+    fn auto_open_scope_cycle_covers_both_variants_and_wraps() {
+        let mut s = AutoOpenScope::TuiOnly;
+        s = next_auto_open_scope(s);
+        assert_eq!(s, AutoOpenScope::Always);
+        s = next_auto_open_scope(s);
+        assert_eq!(s, AutoOpenScope::TuiOnly);
+    }
+
+    #[test]
+    fn profile_auto_open_scope_cycle_includes_inherit_and_returns_to_it() {
+        let mut s = None;
+        s = next_profile_auto_open_scope(s);
+        assert_eq!(s, Some(AutoOpenScope::TuiOnly));
+        s = next_profile_auto_open_scope(s);
+        assert_eq!(s, Some(AutoOpenScope::Always));
+        s = next_profile_auto_open_scope(s);
+        assert_eq!(s, None);
     }
 
     #[test]
