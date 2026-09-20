@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.35.1] — 2026-09-20
+
+### Fixed
+- Editing a text field (e.g. `target-path`) with wide characters (CJK, etc.) in it rendered past the popup's own right border instead of staying within it.
+
 ## [1.35.0] — 2026-09-17
 
 ### Added

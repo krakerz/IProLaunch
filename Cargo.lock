@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "iprolaunch"
-version = "1.35.0"
+version = "1.35.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -717,6 +717,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "unicode-width 0.2.0",
  "ureq",
 ]
 
