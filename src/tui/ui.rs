@@ -1338,23 +1338,74 @@ fn draw_text_input_popup(
 /// last character) — a text-editor-style block cursor, so Left/Right
 /// movement (see `mod::handle_text_input`) has something to actually show
 /// where it landed, not just always-append-at-the-end like before.
+/// `cursor` is a *char* index throughout (see `Mode::TextInput::cursor`'s
+/// own doc comment), but `width` is *terminal columns* — the two only
+/// coincide when every character is single-width.
 ///
 /// Horizontally scrolls to keep the cursor in view when `buffer` is wider
-/// than `width` — a real reported bug: `Paragraph` doesn't wrap by
-/// default, so a buffer longer than the popup just got silently clipped
-/// from the left edge, and the cursor (and everything after it) could
-/// scroll fully off-screen and become invisible for any text longer than
-/// the box, e.g. a real file path. Once the buffer (+ its own trailing
-/// cursor cell, for when the cursor sits past the last character) no
-/// longer fits, the window scrolls just far enough to keep the cursor
-/// pinned at the rightmost visible column — same as a normal shell
-/// prompt/address bar.
+/// than `width`. Two real reported bugs, both fixed here:
+/// - `Paragraph` doesn't wrap by default, so a buffer longer than the popup
+///   just got silently clipped from the left edge, and the cursor (and
+///   everything after it) could scroll fully off-screen and become
+///   invisible for any text longer than the box, e.g. a real file path.
+///   Once the buffer (+ its own trailing cursor cell, for when the cursor
+///   sits past the last character) no longer fits, the window scrolls just
+///   far enough to keep the cursor pinned at the rightmost visible column —
+///   same as a normal shell prompt/address bar.
+/// - A first version of that fix counted *characters*, not display columns,
+///   as the scroll unit — correct for plain ASCII, but a real reported bug
+///   once a path contained CJK characters (each rendering as 2 terminal
+///   columns, not 1): the computed window still held `width`-many
+///   *characters*, so its actual rendered width could run up to 2x `width`
+///   columns, overflowing the popup's own border. Walks characters one at a
+///   time instead, accumulating each one's real `unicode_width` display
+///   width, so the window's rendered width never exceeds `width` columns
+///   regardless of how many wide characters it contains — and a wide
+///   character is never split, since each step either includes a whole
+///   character or stops before it.
 fn cursor_line(buffer: &str, cursor: usize, width: usize) -> Line<'static> {
+    use unicode_width::UnicodeWidthChar;
+
     let chars: Vec<char> = buffer.chars().collect();
     let cursor = cursor.min(chars.len());
     let width = width.max(1);
-    let scroll = (cursor + 1).saturating_sub(width).min(chars.len());
-    let visible_end = (scroll + width).min(chars.len());
+    let char_width = |c: char| UnicodeWidthChar::width(c).unwrap_or(1).max(1);
+
+    // The cursor's own on-screen cell: the character it sits on, or a
+    // single blank cell when it's past the end of the buffer.
+    let cursor_cell_width = if cursor < chars.len() {
+        char_width(chars[cursor])
+    } else {
+        1
+    };
+
+    // Walk backward from the cursor, one whole character at a time, while
+    // there's still column budget — this is what keeps a wide character
+    // from ever being split across the window's left edge.
+    let mut scroll = cursor;
+    let mut used = cursor_cell_width;
+    while scroll > 0 {
+        let w = char_width(chars[scroll - 1]);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        scroll -= 1;
+    }
+
+    // Then extend forward past the cursor with whatever budget is left, so
+    // trailing text still fills the box instead of stopping dead at the
+    // cursor (matches the old char-count version's own reach).
+    let mut visible_end = cursor + usize::from(cursor < chars.len());
+    while visible_end < chars.len() {
+        let w = char_width(chars[visible_end]);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        visible_end += 1;
+    }
+
     let visible: Vec<char> = chars[scroll..visible_end].to_vec();
     let visible_cursor = cursor - scroll;
 
@@ -2071,6 +2122,43 @@ mod tests {
         // The cursor (a trailing reversed space, since it's past the last
         // char) must be the *last* visible cell, not scrolled away.
         assert!(text.ends_with(' '));
+    }
+
+    #[test]
+    fn cursor_line_caps_rendered_width_in_columns_not_characters_for_wide_chars() {
+        // Real reported bug: a target-path full of CJK characters (each 2
+        // terminal columns wide, not 1) rendered past the popup's own right
+        // border — the old scroll math counted *characters* as the unit,
+        // so a 10-character window could still be 20 columns wide on
+        // screen. 10 wide characters (20 columns) into a 10-column box:
+        // only half of them (10 columns' worth) may actually be shown.
+        let long = "姉".repeat(10);
+        let line = cursor_line(&long, 10, 10);
+        let text = visible_text(line);
+        use unicode_width::UnicodeWidthStr;
+        assert!(
+            UnicodeWidthStr::width(text.as_str()) <= 10,
+            "rendered text {text:?} is wider than the 10-column box"
+        );
+        // The cursor (trailing reversed space, past the last char) must
+        // still be the last visible cell.
+        assert!(text.ends_with(' '));
+    }
+
+    #[test]
+    fn cursor_line_never_splits_a_wide_character_at_the_window_edge() {
+        // A width budget that lands exactly mid-character (here: 1 narrow
+        // 'a' + 5 wide chars, window width 4 — 3 columns is only "half" of
+        // a wide char's own 2) must exclude that character entirely rather
+        // than render half of it.
+        let mixed = format!("a{}", "姉".repeat(5));
+        let line = cursor_line(&mixed, 6, 4);
+        let text = visible_text(line);
+        use unicode_width::UnicodeWidthStr;
+        assert!(UnicodeWidthStr::width(text.as_str()) <= 4);
+        // Every char in the result must be a real, whole character — never
+        // an empty/partial one.
+        assert!(text.chars().all(|c| c == ' ' || c == '姉'));
     }
 
     #[test]
