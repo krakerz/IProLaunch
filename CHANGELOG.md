@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.36.0] — 2026-09-20
+
+### Added
+- Launch logs now filter out known Steam-overlay `LD_PRELOAD` noise instead of passing it through verbatim.
+
+### Fixed
+- `defaults.windows-version` was reapplied via `winetricks` on every single launch even when it hadn't changed; now only reapplies when the effective version for that prefix actually differs from last time.
+
 ## [1.35.1] — 2026-09-20
 
 ### Fixed

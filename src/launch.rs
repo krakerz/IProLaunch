@@ -594,13 +594,46 @@ fn summarize_protonfixes(log_text: &str) -> Option<String> {
     })
 }
 
-/// Sets the prefix's reported Windows version via `winetricks -q <version>`.
+/// Where `apply_windows_version` remembers which version it last actually
+/// applied to this exact prefix — a plain dotfile inside the prefix
+/// directory itself (not iprolaunch's own `~/.config/iprolaunch/` tree),
+/// since this is a property of *that prefix's* registry state, not of
+/// iprolaunch's own settings, and needs to travel with the prefix if it's
+/// ever moved/renamed rather than living somewhere keyed by slug.
+fn windows_version_marker_path(prefix_path: &Path) -> PathBuf {
+    prefix_path.join(".iprolaunch-windows-version")
+}
+
+/// The version last recorded as applied to this prefix, or `None` — covers
+/// "never applied by iprolaunch yet" (a fresh prefix, or one from before
+/// this marker existed) the same as any read failure, so a missing/corrupt
+/// marker just means "apply once and start tracking," never an error.
+fn cached_windows_version(prefix_path: &Path) -> Option<String> {
+    fs::read_to_string(windows_version_marker_path(prefix_path))
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+/// Sets the prefix's reported Windows version via `winetricks -q <version>`,
+/// but only when `version` actually differs from what's cached as already
+/// applied to this exact prefix (see `cached_windows_version`) — a real
+/// reported problem: winetricks' own "already applied" bookkeeping wasn't
+/// enough to stop this from re-running (and killing/relaunching wineserver
+/// below) on *every single launch*, version unchanged or not, which is real
+/// overhead/disruption on every launch rather than just the first one for a
+/// given version. Deliberately independent of *why* the effective value is
+/// what it is (the global default changed, a per-slug profile's own
+/// override changed, or this is just a brand new prefix) — any of those
+/// just means "does the marker already say this string?", same check
+/// either way, so a change in *either* direction (global 11 → profile
+/// override 10, or a later global 11 → 10 with no override) is picked up
+/// correctly, while a launch where nothing changed short-circuits before
+/// spawning anything at all.
+///
 /// Uses the system winetricks/wine rather than the Proton build's own bundled
 /// wine (there's no clean way to know which build umu-run resolved to ahead
 /// of its own run) — fine for these verbs specifically, since `win7`/`win10`/
-/// etc. only rewrite a few registry keys rather than run real Windows code,
-/// and winetricks already tracks applied verbs in the prefix and skips
-/// reapplying, so calling this on every launch is cheap once it's set.
+/// etc. only rewrite a few registry keys rather than run real Windows code.
 ///
 /// Kills any wineserver already bound to this prefix first, but only when
 /// nothing of ours is actually running against it — a previous launch's
@@ -612,6 +645,10 @@ fn summarize_protonfixes(log_text: &str) -> Option<String> {
 /// that's genuinely still in use (e.g. the same exe launched twice, or two
 /// exes sharing a prefix in single mode).
 fn apply_windows_version(prefix_path: &Path, version: &str) -> Result<()> {
+    if cached_windows_version(prefix_path).as_deref() == Some(version) {
+        return Ok(());
+    }
+
     if !running::is_prefix_active(&prefix_path.to_string_lossy()) {
         Command::new("wineserver")
             .arg("-k")
@@ -629,6 +666,11 @@ fn apply_windows_version(prefix_path: &Path, version: &str) -> Result<()> {
     if !status.success() {
         bail!("winetricks {version} exited with {status}");
     }
+
+    // Best-effort: a failed write here just means the next launch reapplies
+    // a no-op (winetricks itself still skips real work once it's already
+    // set) — never worth failing the whole launch over.
+    let _ = fs::write(windows_version_marker_path(prefix_path), version);
     Ok(())
 }
 
@@ -975,6 +1017,47 @@ mod tests {
     fn clear_execute_bit_is_a_no_op_for_a_missing_file() {
         // Best-effort: must not panic when the target doesn't exist.
         clear_execute_bit(Path::new("/nonexistent/iprolaunch-test.exe"));
+    }
+
+    fn windows_version_test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "iprolaunch-launch-test-{name}-{}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn cached_windows_version_is_none_for_a_fresh_prefix() {
+        let dir = windows_version_test_dir("wv-missing");
+        assert_eq!(cached_windows_version(&dir), None);
+    }
+
+    #[test]
+    fn cached_windows_version_reads_and_trims_what_was_written() {
+        let dir = windows_version_test_dir("wv-roundtrip");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(windows_version_marker_path(&dir), "win10\n").unwrap();
+
+        assert_eq!(cached_windows_version(&dir), Some("win10".to_string()));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_windows_version_short_circuits_when_the_marker_already_matches() {
+        // Real reported bug: unconditionally re-running `winetricks` (and
+        // killing/relaunching wineserver) on every launch even when the
+        // version hadn't changed. This is safe to test for real (no
+        // wineserver/winetricks needed) specifically *because* a matching
+        // marker means the function must return before spawning anything.
+        let dir = windows_version_test_dir("wv-shortcircuit");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(windows_version_marker_path(&dir), "win11").unwrap();
+
+        let result = apply_windows_version(&dir, "win11");
+        assert!(result.is_ok(), "should short-circuit, not fail: {result:?}");
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
