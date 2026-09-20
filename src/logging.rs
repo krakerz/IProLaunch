@@ -70,16 +70,61 @@ impl LogSession {
     }
 
     /// Call once the child has exited. Discards the just-written log on a
-    /// clean exit when `record == Errors`, then prunes this exe's remaining
-    /// history down to `keep`. Returns the surviving path, if any.
+    /// clean exit when `record == Errors`, then strips known Steam-runtime
+    /// noise (see `strip_noise`) and prunes this exe's remaining history
+    /// down to `keep`. Returns the surviving path, if any — the same path
+    /// `launch::run` hands to `terminal::spawn_in_new_terminal`, so the
+    /// auto-opened log window shows the filtered content too, not just a
+    /// file read directly some other way.
     pub fn finish(self, exit_success: bool) -> Result<Option<PathBuf>> {
         if self.record == RecordMode::Errors && exit_success {
             let _ = fs::remove_file(&self.path);
             return Ok(None);
         }
+        strip_noise(&self.path);
         prune(&self.dir, &self.slug, self.keep)?;
         Ok(Some(self.path))
     }
+}
+
+/// Recognizes known Steam-runtime chatter that clutters every launch's log
+/// without saying anything about the game itself: Steam force-injects its
+/// own overlay via `LD_PRELOAD` into *anything* it launches, Steam or
+/// non-Steam shortcut alike, and a real user report confirmed the per-game
+/// "Enable Steam Overlay" checkbox isn't reliably honored for this from
+/// Game Mode (still happened with it unchecked — see NOTES.md, 2026-09-20)
+/// — so filtering iprolaunch's own captured log is the only lever left,
+/// not something fixable by telling the user to flip a Steam setting.
+/// `pid X != Y, skipping destruction (fork without exec?)` is the same
+/// injected library's own internal bookkeeping, always seen alongside the
+/// `LD_PRELOAD` failure in every real report so far — filtered for the
+/// same reason.
+fn is_noise_line(line: &str) -> bool {
+    line.contains("gameoverlayrenderer.so")
+        || line.contains("skipping destruction (fork without exec?)")
+}
+
+/// Rewrites `path` in place with `is_noise_line` matches stripped out.
+/// Best-effort: any read/write failure just leaves the file exactly as the
+/// child process wrote it — this is a cosmetic cleanup pass, never worth
+/// blocking (or failing) finishing a launch over. Runs once, after the
+/// tracked child has already exited, rather than filtering live as lines
+/// arrive — piping and filtering the child's stdout/stderr in real time
+/// was considered and rejected: a background reader thread blocked
+/// waiting for the pipe's write end to fully close would never see EOF
+/// while any lingering Wine-spawned helper process (`services.exe`,
+/// `plugplay.exe`, etc. routinely outlive the game's own main exe) still
+/// holds it open, risking a hang instead of just clutter.
+fn strip_noise(path: &Path) {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return;
+    };
+    let filtered: String = raw
+        .lines()
+        .filter(|line| !is_noise_line(line))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let _ = fs::write(path, filtered);
 }
 
 fn timestamp() -> String {
@@ -175,6 +220,52 @@ mod tests {
         let effective = test_effective(LogMode::Single);
         let dir = session_dir(&effective, Path::new("/tmp/custom-logs"), "game-1").unwrap();
         assert_eq!(dir, Path::new("/tmp/custom-logs"));
+    }
+
+    #[test]
+    fn is_noise_line_recognizes_the_two_real_reported_patterns() {
+        assert!(is_noise_line(
+            "ERROR: ld.so: object '/home/user/.local/share/Steam/ubuntu12_32/gameoverlayrenderer.so' from LD_PRELOAD cannot be preloaded (wrong ELF class: ELFCLASS32): ignored."
+        ));
+        assert!(is_noise_line(
+            "pid 874042 != 869873, skipping destruction (fork without exec?)"
+        ));
+        assert!(!is_noise_line("iprolaunch: logging to /some/real/path.log"));
+        assert!(!is_noise_line(
+            "wine: could not load kernel32.dll, status c0000135"
+        ));
+    }
+
+    #[test]
+    fn strip_noise_removes_only_the_matching_lines_and_keeps_the_rest_in_order() {
+        let path = std::env::temp_dir().join(format!(
+            "iprolaunch-logging-test-{}.log",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "iprolaunch: logging to /some/path.log\n\
+             ERROR: ld.so: object '.../gameoverlayrenderer.so' from LD_PRELOAD cannot be preloaded (wrong ELF class: ELFCLASS32): ignored.\n\
+             pid 1 != 2, skipping destruction (fork without exec?)\n\
+             a real error the user actually needs to see\n",
+        )
+        .unwrap();
+
+        strip_noise(&path);
+
+        let remaining = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            remaining,
+            "iprolaunch: logging to /some/path.log\na real error the user actually needs to see\n"
+        );
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn strip_noise_is_a_no_op_for_a_missing_file() {
+        // Best-effort: must not panic when the target doesn't exist.
+        strip_noise(Path::new("/nonexistent/iprolaunch-logging-test.log"));
     }
 
     #[test]
