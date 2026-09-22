@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.36.1] — 2026-09-22
+
+### Fixed
+- Adding a game to Steam, or killing a running game from the Running tab, could corrupt the TUI's own rendered screen with stray text from the spawned process.
+
 ## [1.36.0] — 2026-09-20
 
 ### Added

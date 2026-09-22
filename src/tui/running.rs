@@ -1,9 +1,10 @@
 use crossterm::event::KeyCode;
 
 use super::app::{self, App};
+use super::{Term, resume, suspend};
 use crate::running;
 
-pub fn on_key(app: &mut App, code: KeyCode) {
+pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     if app.running_filter_editing {
         return filter_key(app, code);
     }
@@ -19,7 +20,7 @@ pub fn on_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('r') => app.refresh_running(),
         KeyCode::Char('f') => start_filter(app),
-        KeyCode::Enter | KeyCode::Char('k') | KeyCode::Delete => kill_selected(app),
+        KeyCode::Enter | KeyCode::Char('k') | KeyCode::Delete => kill_selected(app, terminal),
         // Only meaningful once a filter is locked (still-typing Esc is
         // handled by `filter_key` instead, via the early return above) —
         // a no-op otherwise, same as Esc always was here.
@@ -75,7 +76,18 @@ fn filter_key(app: &mut App, code: KeyCode) {
     }
 }
 
-fn kill_selected(app: &mut App) {
+/// Suspends the TUI (leaves raw mode/the alternate screen) around the
+/// actual `running::terminate` call, but only when there's genuinely
+/// something to kill — a real reported bug (the same class as
+/// `library::add_to_steam`'s): `kill`'s inherited stdout/stderr wrote
+/// straight into the TUI's own live screen when it printed anything,
+/// visibly corrupting the rendered Running list. Checking
+/// `running::matching_pids_for_launch` first (the same scan `terminate`
+/// itself would otherwise do internally) means the common "already
+/// gone"/nothing-to-kill case never touches the terminal at all, keeping
+/// this safe to exercise directly in tests with a fake launch id — mirrors
+/// `add_to_steam`'s own `steam_add_precheck` split for the same reason.
+fn kill_selected(app: &mut App, terminal: &mut Term) {
     let indices = app.filtered_running_indices();
     let Some(&real_index) = indices.get(app.running_selected) else {
         return;
@@ -84,10 +96,27 @@ fn kill_selected(app: &mut App) {
         return;
     };
     let name = entry.name.clone();
-    match running::terminate(&entry.launch_id) {
-        Ok(()) => app.status = Some(format!("Killed {name}.")),
-        Err(err) => app.status = Some(format!("Failed to kill {name}: {err:#}")),
-    }
+    let launch_id = entry.launch_id.clone();
+
+    let result = if running::matching_pids_for_launch(&launch_id).is_empty() {
+        running::terminate(&launch_id)
+    } else {
+        if suspend(terminal).is_err() {
+            app.status = Some("Failed to suspend the TUI to kill the process.".to_string());
+            return;
+        }
+        let result = running::terminate(&launch_id);
+        if resume(terminal).is_err() {
+            app.status = Some("Failed to restore the TUI after killing the process.".to_string());
+            return;
+        }
+        result
+    };
+
+    app.status = Some(match result {
+        Ok(()) => format!("Killed {name}."),
+        Err(err) => format!("Failed to kill {name}: {err:#}"),
+    });
     app.refresh_running();
 }
 
@@ -98,10 +127,31 @@ mod tests {
     use crate::running::RunningEntry;
 
     // `kill_selected` -> `running::terminate` is safe to exercise directly:
-    // with a fake `launch_id` that matches no real process, `terminate`
-    // just returns an `Err("nothing running against launch ...")` (see
-    // `running.rs`) — no real process is ever touched. `refresh_running`
-    // (called afterwards) only re-scans real state, which is read-only.
+    // with a fake `launch_id` that matches no real process,
+    // `matching_pids_for_launch` finds nothing, so `kill_selected` never
+    // suspends the terminal at all and `terminate` just returns an
+    // `Err("nothing running against launch ...")` (see `running.rs`) — no
+    // real process is ever touched, no real terminal is ever suspended.
+    // `refresh_running` (called afterwards) only re-scans real state, which
+    // is read-only.
+
+    /// A `Term` safe to construct in a test process regardless of whether
+    /// it's actually attached to a real terminal (`Viewport::Fixed` skips
+    /// `Terminal::new`'s own default `backend.size()?` query, which fails
+    /// under a non-tty stdout). Only ever used to satisfy a function
+    /// signature that takes `&mut Term` — every test using this deliberately
+    /// never reaches a real `suspend`/`resume` call, per the comment above.
+    fn test_term() -> Term {
+        use ratatui::Terminal;
+        use ratatui::backend::CrosstermBackend;
+        Terminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 10, 10)),
+            },
+        )
+        .expect("a Fixed-viewport terminal never queries real terminal size")
+    }
 
     fn entry(name: &str) -> RunningEntry {
         RunningEntry {
@@ -225,7 +275,7 @@ mod tests {
             filter_key(&mut app, KeyCode::Char(c));
         }
         filter_key(&mut app, KeyCode::Enter); // locks
-        on_key(&mut app, KeyCode::Enter); // now a normal key again, scoped to the filtered subset
+        on_key(&mut app, KeyCode::Enter, &mut test_term()); // now a normal key again, scoped to the filtered subset
         assert_eq!(
             app.status.as_deref(),
             Some(
@@ -241,7 +291,7 @@ mod tests {
         filter_key(&mut app, KeyCode::Char('r')); // still typing: 'r' is filter text, not refresh
         assert_eq!(app.running_filter.as_deref(), Some("r"));
         filter_key(&mut app, KeyCode::Enter); // locks
-        on_key(&mut app, KeyCode::Char('r')); // now refresh again, not more filter text
+        on_key(&mut app, KeyCode::Char('r'), &mut test_term()); // now refresh again, not more filter text
         // refresh_running() only touches `status` on error — reaching here
         // at all (rather than 'r' silently becoming "rr" in the filter
         // text) is what actually matters.
@@ -257,7 +307,7 @@ mod tests {
         start_filter(&mut app);
         filter_key(&mut app, KeyCode::Char('x'));
         filter_key(&mut app, KeyCode::Enter); // locks
-        on_key(&mut app, KeyCode::Esc);
+        on_key(&mut app, KeyCode::Esc, &mut test_term());
         assert_eq!(app.running_filter, None);
         assert!(!app.running_filter_editing);
     }

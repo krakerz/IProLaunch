@@ -249,8 +249,11 @@ fn prompt_share_to(app: &mut App) {
 /// `app::SHARE_TO_OPTIONS` (wrapping via the same `app::move_selection`
 /// every other list uses — already gamepad-ready via the D-pad, no new
 /// mapping needed for navigation itself), Enter activates whichever's
-/// highlighted, Esc always cancels regardless of selection.
-pub fn share_to_key(app: &mut App, code: KeyCode) {
+/// highlighted, Esc always cancels regardless of selection. Takes
+/// `terminal` (unlike most key handlers) only because the Steam options
+/// (0/1) need to suspend the TUI before shelling out — see `add_to_steam`'s
+/// own doc comment for why.
+pub fn share_to_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     let Mode::ShareTo {
         slug,
         name,
@@ -276,8 +279,8 @@ pub fn share_to_key(app: &mut App, code: KeyCode) {
             let (slug, name, selected) = (slug.clone(), name.clone(), *selected);
             app.mode = Mode::Normal;
             match selected {
-                0 => add_to_steam(app, &slug, &name, false),
-                1 => add_to_steam(app, &slug, &name, true),
+                0 => add_to_steam(app, &slug, &name, false, terminal),
+                1 => add_to_steam(app, &slug, &name, true, terminal),
                 2 => prompt_add_to_sunshine(app, &slug, &name),
                 _ => {} // "Cancel" (or anything out of range) — do nothing
             }
@@ -285,6 +288,23 @@ pub fn share_to_key(app: &mut App, code: KeyCode) {
         KeyCode::Esc => app.mode = Mode::Normal,
         _ => {}
     }
+}
+
+/// Whether `slug` can actually be added to Steam right now, and the profile
+/// to add if so — pure (no terminal/subprocess involved), so it stays
+/// unit-testable on its own; see `add_to_steam`'s own doc comment for the
+/// "already added" reasoning. Kept separate from `add_to_steam` itself
+/// specifically so a test can exercise this guard without needing a real
+/// `Term` to satisfy that function's signature.
+fn steam_add_precheck(app: &App, slug: &str, name: &str) -> Result<Profile, String> {
+    if app.steam_slugs.contains(slug) {
+        return Err(format!(
+            "\"{name}\" already looks added to Steam — remove it there first if you want to re-add."
+        ));
+    }
+    app.profile(slug)
+        .cloned()
+        .ok_or_else(|| format!("couldn't find profile \"{name}\" to add"))
 }
 
 /// Actually calls `steam_shortcut::add_profile` and reports the result —
@@ -298,6 +318,14 @@ pub fn share_to_key(app: &mut App, code: KeyCode) {
 /// (necessarily duplicate) one, so re-adding isn't offered at all here; the
 /// user needs to remove the old one from Steam first if they want to re-add.
 ///
+/// Suspends the TUI (leaves raw mode/the alternate screen) around the
+/// actual `steam_shortcut::add_profile` call — a real reported bug: without
+/// this, the spawned `steam <url>` command's inherited stdout/stderr wrote
+/// straight into the TUI's own live screen (crossterm's alternate-screen
+/// buffer doesn't shield it), visibly corrupting the rendered Library list
+/// with stray text (e.g. a stray `LD_PRELOAD` line from Steam's own client).
+/// Mirrors `run_winetricks`'s existing suspend/resume shape exactly.
+///
 /// The `refresh_steam_status()` right after a successful add is
 /// best-effort, not a guarantee the "S" marker shows up *immediately*:
 /// `steam_shortcut::add_profile`'s `steam <url>` call only waits for the
@@ -307,26 +335,38 @@ pub fn share_to_key(app: &mut App, code: KeyCode) {
 /// can trail the launcher's own exit by up to roughly a second. A stray `r`
 /// (or just waiting a moment) picks it up if this particular refresh ran
 /// too early.
-fn add_to_steam(app: &mut App, slug: &str, name: &str, with_gamescope_flags: bool) {
-    if app.steam_slugs.contains(slug) {
-        app.status = Some(format!(
-            "\"{name}\" already looks added to Steam — remove it there first if you want to re-add."
-        ));
+fn add_to_steam(
+    app: &mut App,
+    slug: &str,
+    name: &str,
+    with_gamescope_flags: bool,
+    terminal: &mut Term,
+) {
+    let profile = match steam_add_precheck(app, slug, name) {
+        Ok(profile) => profile,
+        Err(msg) => {
+            app.status = Some(msg);
+            return;
+        }
+    };
+
+    if suspend(terminal).is_err() {
+        app.status = Some("Failed to suspend the TUI to add to Steam.".to_string());
         return;
     }
-    let Some(profile) = app.profile(slug).cloned() else {
-        app.status = Some(format!("couldn't find profile \"{name}\" to add"));
+    let result = crate::steam_shortcut::add_profile(&app.cfg, &profile, slug, with_gamescope_flags);
+    if resume(terminal).is_err() {
+        app.status = Some("Failed to restore the TUI after adding to Steam.".to_string());
         return;
-    };
-    app.status = Some(
-        match crate::steam_shortcut::add_profile(&app.cfg, &profile, slug, with_gamescope_flags) {
-            Ok(_) => {
-                app.refresh_steam_status();
-                format!("Sent \"{name}\" to Steam — check your Steam library.")
-            }
-            Err(err) => format!("couldn't add \"{name}\" to Steam: {err:#}"),
-        },
-    );
+    }
+
+    app.status = Some(match result {
+        Ok(_) => {
+            app.refresh_steam_status();
+            format!("Sent \"{name}\" to Steam — check your Steam library.")
+        }
+        Err(err) => format!("couldn't add \"{name}\" to Steam: {err:#}"),
+    });
 }
 
 /// Library's Share/Add-to `s` popup, "Add to Sunshine" option: uses the
@@ -625,6 +665,27 @@ mod tests {
     // itself — both would shell out to the real `steam` binary and write a
     // real file under `~/.local/share/iprolaunch/`.
 
+    /// A `Term` that's safe to construct in a test process regardless of
+    /// whether it's actually attached to a real terminal — `Viewport::Fixed`
+    /// skips `Terminal::new`'s own default `backend.size()?` query (which
+    /// fails under a non-tty stdout, e.g. `cargo test`'s own captured
+    /// output). Only ever used to satisfy a function signature that takes
+    /// `&mut Term`; every test using this deliberately never reaches a real
+    /// `suspend`/`resume` call (those touch real raw-mode/alternate-screen
+    /// state, which is exactly what the project's existing convention keeps
+    /// out of unit tests — see this module's own top-of-mod-tests comment).
+    fn test_term() -> Term {
+        use ratatui::Terminal;
+        use ratatui::backend::CrosstermBackend;
+        Terminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 10, 10)),
+            },
+        )
+        .expect("a Fixed-viewport terminal never queries real terminal size")
+    }
+
     fn test_app_with_profile(slug: &str, name: &str) -> App {
         let mut app = App::new(Config::default());
         app.profiles = vec![(
@@ -684,13 +745,14 @@ mod tests {
             name: "Game#1".to_string(),
             selected: 0,
         };
-        share_to_key(&mut app, KeyCode::Up); // already at 0
+        let mut term = test_term();
+        share_to_key(&mut app, KeyCode::Up, &mut term); // already at 0
         assert!(matches!(app.mode, Mode::ShareTo { selected: 0, .. }));
-        share_to_key(&mut app, KeyCode::Down);
-        share_to_key(&mut app, KeyCode::Down);
-        share_to_key(&mut app, KeyCode::Down);
+        share_to_key(&mut app, KeyCode::Down, &mut term);
+        share_to_key(&mut app, KeyCode::Down, &mut term);
+        share_to_key(&mut app, KeyCode::Down, &mut term);
         assert!(matches!(app.mode, Mode::ShareTo { selected: 3, .. }));
-        share_to_key(&mut app, KeyCode::Down); // already at the last option
+        share_to_key(&mut app, KeyCode::Down, &mut term); // already at the last option
         assert!(matches!(app.mode, Mode::ShareTo { selected: 3, .. }));
     }
 
@@ -702,7 +764,7 @@ mod tests {
             name: "Game#1".to_string(),
             selected: 1,
         };
-        share_to_key(&mut app, KeyCode::Esc);
+        share_to_key(&mut app, KeyCode::Esc, &mut test_term());
         assert!(matches!(app.mode, Mode::Normal));
     }
 
@@ -719,22 +781,21 @@ mod tests {
             name: "Game#1".to_string(),
             selected: 3,
         };
-        share_to_key(&mut app, KeyCode::Enter);
+        share_to_key(&mut app, KeyCode::Enter, &mut test_term());
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.status, None);
     }
 
     #[test]
-    fn add_to_steam_refuses_a_repeat_add_with_a_status_message() {
+    fn steam_add_precheck_refuses_a_repeat_add_with_a_status_message() {
+        // Exercises the guard on its own (pure, no `Term` involved) —
+        // `add_to_steam` itself is deliberately not covered here since it
+        // now suspends the real terminal around a real `steam` subprocess
+        // spawn; verified by hand instead (see project NOTES.md).
         let mut app = test_app_with_profile("game-1", "Game#1");
         app.steam_slugs.insert("game-1".to_string());
-        add_to_steam(&mut app, "game-1", "Game#1", false);
-        assert!(
-            app.status
-                .as_deref()
-                .unwrap()
-                .contains("already looks added")
-        );
+        let result = steam_add_precheck(&app, "game-1", "Game#1");
+        assert!(matches!(result, Err(msg) if msg.contains("already looks added")));
     }
 
     #[test]
