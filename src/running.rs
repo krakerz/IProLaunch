@@ -167,7 +167,10 @@ fn matching_pids_for_prefix(prefix_path: &str) -> Vec<u32> {
 /// the same way). Unlike `WINEPREFIX`, this value is unique per launch even
 /// when several profiles share one prefix, so it's what actually identifies
 /// "everything belonging to this one launch" for killing/liveness checks.
-fn matching_pids_for_launch(launch_id: &str) -> Vec<u32> {
+/// `pub(crate)` so `tui/running.rs`'s `kill_selected` can check this first
+/// (deciding whether there's actually anything to suspend the TUI for)
+/// without duplicating this same scan.
+pub(crate) fn matching_pids_for_launch(launch_id: &str) -> Vec<u32> {
     matching_pids_by_env("IPROLAUNCH_LAUNCH_ID", |v| v == launch_id)
 }
 

@@ -113,7 +113,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         Mode::ConfirmWinetricks { .. } => {
             return library::confirm_winetricks_key(app, code, terminal);
         }
-        Mode::ShareTo { .. } => return library::share_to_key(app, code),
+        Mode::ShareTo { .. } => return library::share_to_key(app, code, terminal),
         Mode::ConfirmUpdate { .. } => return config::confirm_update_key(app, code, terminal),
         Mode::Normal => {}
     }
@@ -126,7 +126,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     // these fall through to the normal global-key handling below, same as
     // ever.
     if app.tab == app::Tab::Running && app.running_filter_editing {
-        return running::on_key(app, code);
+        return running::on_key(app, code, terminal);
     }
     if app.tab == app::Tab::Library && app.library_filter_editing {
         return library::on_key(app, code, terminal);
@@ -154,7 +154,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         KeyCode::Tab => app.next_tab(),
         KeyCode::BackTab => app.prev_tab(),
         _ => match app.tab {
-            app::Tab::Running => running::on_key(app, code),
+            app::Tab::Running => running::on_key(app, code, terminal),
             app::Tab::Library => library::on_key(app, code, terminal),
             app::Tab::Config => config::on_key(app, code, terminal),
             app::Tab::Help => help_scroll_key(app, code),

@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "iprolaunch"
-version = "1.36.0"
+version = "1.36.1"
 dependencies = [
  "anyhow",
  "base64",
