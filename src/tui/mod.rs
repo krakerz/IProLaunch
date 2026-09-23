@@ -355,9 +355,22 @@ pub fn resume(terminal: &mut Term) -> Result<()> {
 
 /// Blocks until the user acknowledges a suspended external process's result
 /// (a launch, winetricks, a self-update, desktop integration) — Enter on a
-/// keyboard, or any button on a gamepad, so this doesn't strand someone
-/// playing entirely on a controller (e.g. Steam Deck Game Mode) with no
-/// easy way to dismiss it short of summoning the on-screen keyboard.
+/// keyboard, or B on a gamepad, so this doesn't strand someone playing
+/// entirely on a controller (e.g. Steam Deck Game Mode) with no easy way to
+/// dismiss it short of summoning the on-screen keyboard.
+///
+/// Deliberately B (`gamepad::translate`'s `Esc`), not "any button" (a real
+/// reported bug with that first version): this uses its own freshly opened
+/// `Gilrs` handle, a separate reader from the main loop's own persistent
+/// `GamepadSource`, and evdev delivers a copy of the same physical
+/// button-press to every open reader — so whatever button dismisses this
+/// also lands, buffered, in `GamepadSource`'s own queue and gets replayed as
+/// a real keypress the moment the main loop resumes polling it. A on
+/// Library's list is Enter/confirm, so pressing A here to return promptly
+/// re-launched whatever was selected. Esc is a safe no-op to replay (there's
+/// nothing open yet to cancel), so B sidesteps the whole class of bug
+/// without needing to plumb `GamepadSource` down through every caller just
+/// to drain the *same* reader instead of a second one.
 ///
 /// Briefly re-enables raw mode of its own accord so a keypress doesn't need
 /// a trailing newline to register, and disables it again before returning —
@@ -366,7 +379,7 @@ pub fn resume(terminal: &mut Term) -> Result<()> {
 /// Falls back to the old plain blocking line read, keyboard-only, if raw
 /// mode can't be re-enabled here for some reason, rather than hanging.
 pub fn wait_for_return() {
-    print!("\nPress Enter (or a gamepad button) to return to iprolaunch. ");
+    print!("\nPress Enter (or B on a gamepad) to return to iprolaunch. ");
     io::stdout().flush().ok();
 
     if enable_raw_mode().is_err() {
@@ -385,14 +398,18 @@ pub fn wait_for_return() {
         {
             break;
         }
-        let any_gamepad_button = gilrs.as_mut().is_some_and(|g| {
+        let pressed_b = gilrs.as_mut().is_some_and(|g| {
             let mut pressed = false;
             while let Some(gilrs::Event { event, .. }) = g.next_event() {
-                pressed |= matches!(event, GilrsEventType::ButtonPressed(..));
+                if let GilrsEventType::ButtonPressed(button, _) = event
+                    && gamepad::translate(button) == Some(KeyCode::Esc)
+                {
+                    pressed = true;
+                }
             }
             pressed
         });
-        if any_gamepad_button {
+        if pressed_b {
             break;
         }
     }

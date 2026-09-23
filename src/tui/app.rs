@@ -668,6 +668,18 @@ pub struct App {
     /// frame's freshly-computed one to detect "the user moved to something
     /// else" (a different row selected, a different popup/field open).
     marquee_last_signature: String,
+
+    /// When `status` was last set — drives `sync_status_ttl` clearing it
+    /// automatically after `STATUS_TTL`, so a one-off message (e.g. "profile
+    /// saved") doesn't permanently sit over the global key-hint legend
+    /// `draw_status_bar` falls back to once `status` is `None` — a real
+    /// reported annoyance (the hints becoming unreadable/unreachable).
+    status_set_at: std::time::Instant,
+    /// What `sync_status_ttl` last saw `status` as — compared each frame the
+    /// same way `marquee_last_signature` detects a changed marquee target,
+    /// since `status` is written directly at each of its many call sites
+    /// rather than through a setter that could stamp a timestamp itself.
+    status_last_seen: Option<String>,
 }
 
 impl App {
@@ -695,6 +707,8 @@ impl App {
             help_scroll: 0,
             marquee_reset_at: std::time::Instant::now(),
             marquee_last_signature: String::new(),
+            status_set_at: std::time::Instant::now(),
+            status_last_seen: None,
         };
         app.refresh_running();
         app.refresh_profiles();
@@ -869,9 +883,9 @@ impl App {
     /// long enough to actually read before it starts moving — then
     /// advances roughly once every 200ms. Driven entirely by the TUI's
     /// existing idle redraw cadence (`tui::mod::event_loop` calls
-    /// `terminal.draw` every loop iteration, including the ~4/sec ticks
-    /// where `event::poll`'s 250ms timeout expires with no key pressed), so
-    /// animating a marquee needs no extra thread or timer of its own.
+    /// `terminal.draw` every loop iteration, including the idle ticks where
+    /// `event::poll`'s timeout expires with no key pressed), so animating a
+    /// marquee needs no extra thread or timer of its own.
     pub fn marquee_tick(&self) -> usize {
         const DELAY: std::time::Duration = std::time::Duration::from_secs(2);
         let elapsed = self.marquee_reset_at.elapsed();
@@ -893,6 +907,27 @@ impl App {
         if self.marquee_last_signature != signature {
             self.marquee_last_signature = signature;
             self.marquee_reset_at = std::time::Instant::now();
+        }
+    }
+
+    /// Clears `status` on its own `STATUS_TTL` after it was last set — a
+    /// one-off result message (e.g. "profile saved", "refreshed") is useful
+    /// for a few seconds, then just sits there hiding the global key-hint
+    /// legend `draw_status_bar` shows in its place once `status` is `None`
+    /// (a real reported annoyance: the hints becoming unreadable). Called
+    /// once per frame, same as `sync_marquee` — detects "freshly set" by
+    /// comparing against what was seen last frame, since `status` is
+    /// written directly at each of its many call sites, not through a
+    /// setter that could stamp its own timestamp.
+    pub fn sync_status_ttl(&mut self) {
+        const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+        if self.status != self.status_last_seen {
+            self.status_last_seen = self.status.clone();
+            self.status_set_at = std::time::Instant::now();
+        } else if self.status.is_some() && self.status_set_at.elapsed() >= STATUS_TTL {
+            self.status = None;
+            self.status_last_seen = None;
         }
     }
 }
@@ -1147,6 +1182,61 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         app.sync_marquee("two".to_string());
         assert!(app.marquee_reset_at > reset_at_first);
+    }
+
+    #[test]
+    fn setting_status_starts_its_ttl_timer() {
+        let mut app = App::new(Config::default());
+        app.status = Some("saved".to_string());
+        app.sync_status_ttl();
+        assert_eq!(app.status.as_deref(), Some("saved"));
+    }
+
+    #[test]
+    fn resyncing_with_the_same_status_does_not_reset_its_timer() {
+        let mut app = App::new(Config::default());
+        app.status = Some("saved".to_string());
+        app.sync_status_ttl();
+        let set_at_first = app.status_set_at;
+        app.sync_status_ttl();
+        assert_eq!(
+            app.status_set_at, set_at_first,
+            "same status again shouldn't restart its TTL"
+        );
+    }
+
+    #[test]
+    fn a_new_status_resets_the_previous_ones_timer() {
+        let mut app = App::new(Config::default());
+        app.status = Some("first".to_string());
+        app.sync_status_ttl();
+        let set_at_first = app.status_set_at;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.status = Some("second".to_string());
+        app.sync_status_ttl();
+        assert!(app.status_set_at > set_at_first);
+    }
+
+    #[test]
+    fn status_survives_a_sync_before_its_ttl_elapses() {
+        let mut app = App::new(Config::default());
+        app.status = Some("saved".to_string());
+        app.sync_status_ttl();
+        app.status_set_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
+        app.status_last_seen = app.status.clone();
+        app.sync_status_ttl();
+        assert_eq!(app.status.as_deref(), Some("saved"));
+    }
+
+    #[test]
+    fn status_clears_itself_once_its_ttl_elapses() {
+        let mut app = App::new(Config::default());
+        app.status = Some("saved".to_string());
+        app.sync_status_ttl();
+        app.status_set_at = std::time::Instant::now() - std::time::Duration::from_secs(6);
+        app.status_last_seen = app.status.clone();
+        app.sync_status_ttl();
+        assert_eq!(app.status, None);
     }
 
     #[test]
