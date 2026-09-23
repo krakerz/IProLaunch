@@ -5,7 +5,7 @@ use super::app::{
     ProtonPickerTarget, TextInputPurpose,
 };
 use super::profile_editor;
-use super::{Term, resume, suspend};
+use super::{Term, resume, suspend, wait_for_return};
 use crate::proton;
 
 /// The Config tab's main field list and its "Desktop integration" table
@@ -154,11 +154,7 @@ pub fn confirm_update_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         println!("Error: {err:#}");
     }
 
-    use std::io::Write;
-    print!("\nPress Enter to return to iprolaunch. ");
-    std::io::stdout().flush().ok();
-    let mut discard = String::new();
-    std::io::stdin().read_line(&mut discard).ok();
+    wait_for_return();
 
     if resume(terminal).is_err() {
         app.status = Some("Failed to restore the TUI.".to_string());
@@ -226,11 +222,7 @@ fn run_integrate_action(app: &mut App, terminal: &mut Term, action: IntegrateAct
         println!("Error: {err:#}");
     }
 
-    use std::io::Write;
-    print!("\nPress Enter to return to iprolaunch. ");
-    std::io::stdout().flush().ok();
-    let mut discard = String::new();
-    std::io::stdin().read_line(&mut discard).ok();
+    wait_for_return();
 
     if resume(terminal).is_err() {
         app.status = Some("Failed to restore the TUI.".to_string());

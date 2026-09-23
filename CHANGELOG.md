@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.37.0] — 2026-09-23
+
+### Added
+- A gamepad D-pad direction held down now auto-repeats smoothly, so scrolling through a long list/settings screen no longer needs pressing it one row at a time.
+- The "Press Enter to return" prompt after a launch/winetricks/update/desktop-integration action now also accepts any gamepad button, no keyboard needed.
+
 ## [1.36.2] — 2026-09-23
 
 ### Fixed

@@ -7,11 +7,14 @@
 //! it — needs zero changes to support a gamepad: a translated button press
 //! is indistinguishable from a real keystroke by the time it reaches them.
 //!
-//! Deliberately edge-triggered (`ButtonPressed` events only, no analog-stick
-//! axis handling) — a D-pad is a real, always-present input on every
-//! controller this matters for (Steam Deck, Xbox/PlayStation-style pads),
-//! and adding continuous-navigation-with-repeat for an analog stick would
-//! need its own timing/repeat model for comparatively little benefit.
+//! Edge-triggered (`ButtonPressed`) for every button except the D-pad, which
+//! also auto-repeats while held (`ButtonRepeated`, via gilrs's own `Repeat`
+//! filter) so navigating a long list/settings screen doesn't need pressing
+//! it one row at a time — see `GamepadSource::poll`'s own doc comment. No
+//! analog-stick axis handling — a D-pad is a real, always-present input on
+//! every controller this matters for (Steam Deck, Xbox/PlayStation-style
+//! pads), so continuous-navigation off an analog stick's own timing/repeat
+//! model would add little beyond what the D-pad already covers.
 //!
 //! The exact button assignments below are a starting point, not a fixed
 //! contract — Steam Input can freely remap any physical input on the pad to
@@ -25,7 +28,8 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
-use gilrs::{Button, Event, EventType, Gilrs};
+use gilrs::ev::filter::Repeat;
+use gilrs::{Button, EventType, Filter, Gilrs};
 
 /// How often `poll` retries `Gilrs::new()` while no gamepad is currently
 /// visible — see `should_retry_init`'s doc comment for why this exists.
@@ -35,6 +39,10 @@ pub struct GamepadSource {
     gilrs: Option<Gilrs>,
     /// When `gilrs` was last (re)created — throttles `should_retry_init`.
     last_init_attempt: Instant,
+    /// Synthesizes `ButtonRepeated` events for a held-down button (gilrs
+    /// defaults: after 500ms, then every 30ms) — see `poll`'s own doc
+    /// comment for why this only actually reaches D-pad buttons.
+    repeat: Repeat,
 }
 
 impl GamepadSource {
@@ -47,12 +55,22 @@ impl GamepadSource {
         Self {
             gilrs: Gilrs::new().ok(),
             last_init_attempt: Instant::now(),
+            repeat: Repeat::new(),
         }
     }
 
     /// Drains every pending gamepad event and returns the `KeyCode`s they
     /// map to, in order. Called once per event-loop tick, right after the
     /// keyboard poll — non-blocking either way.
+    ///
+    /// A D-pad direction held down keeps producing its `KeyCode` (via
+    /// gilrs's own `Repeat` filter, `ButtonRepeated`) so navigating a long
+    /// list/settings screen doesn't need pressing it one row at a time —
+    /// a real user ask (2026-09-23). Deliberately scoped to just the D-pad:
+    /// every other button stays edge-triggered (`ButtonPressed` only,
+    /// exactly as before), since auto-repeating a one-shot action button
+    /// (kill/delete, confirm, etc.) held a beat too long has no equivalent
+    /// upside and only invites surprises.
     ///
     /// Also retries a fresh `Gilrs::new()` roughly every `RETRY_INTERVAL`
     /// while no gamepad is currently visible (see `should_retry_init`) —
@@ -81,11 +99,18 @@ impl GamepadSource {
         let Some(gilrs) = &mut self.gilrs else {
             return Vec::new();
         };
+        let repeat = self.repeat;
         let mut codes = Vec::new();
-        while let Some(Event { event, .. }) = gilrs.next_event() {
-            if let EventType::ButtonPressed(button, _) = event
-                && let Some(code) = translate(button)
-            {
+        while let Some(event) = gilrs.next_event().filter_ev(&repeat, gilrs) {
+            // `Repeat` needs each event fed back through `update` to track
+            // per-button press timestamps — see its own module docs.
+            gilrs.update(&event);
+            let button = match event.event {
+                EventType::ButtonPressed(button, _) => Some(button),
+                EventType::ButtonRepeated(button, _) if is_repeatable(button) => Some(button),
+                _ => None,
+            };
+            if let Some(code) = button.and_then(translate) {
                 codes.push(code);
             }
         }
@@ -97,6 +122,15 @@ impl GamepadSource {
             .as_ref()
             .is_some_and(|g| g.gamepads().next().is_some())
     }
+}
+
+/// Which buttons `poll` lets a `ButtonRepeated` event through for — see its
+/// own doc comment for why this is D-pad-only.
+fn is_repeatable(button: Button) -> bool {
+    matches!(
+        button,
+        Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight
+    )
 }
 
 /// Pure gating decision for `GamepadSource::poll`'s retry, kept separate so
@@ -185,6 +219,17 @@ mod tests {
     fn right_trigger_2_confirms_a_destructive_prompt_distinctly_from_south() {
         assert_eq!(translate(Button::RightTrigger2), Some(KeyCode::Char('y')));
         assert_ne!(translate(Button::RightTrigger2), translate(Button::South));
+    }
+
+    #[test]
+    fn only_dpad_buttons_are_repeatable() {
+        assert!(is_repeatable(Button::DPadUp));
+        assert!(is_repeatable(Button::DPadDown));
+        assert!(is_repeatable(Button::DPadLeft));
+        assert!(is_repeatable(Button::DPadRight));
+        assert!(!is_repeatable(Button::South));
+        assert!(!is_repeatable(Button::West));
+        assert!(!is_repeatable(Button::RightTrigger2));
     }
 
     #[test]
