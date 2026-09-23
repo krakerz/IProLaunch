@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.38.0] — 2026-09-23
+
+### Added
+- The status-bar message (e.g. "profile saved", "refreshed") now auto-clears after 5 seconds instead of permanently hiding the key-hint legend shown in its place.
+
+### Fixed
+- Dismissing the "Press Enter to return" prompt with a gamepad button other than B could replay that same press once back in the TUI — pressing A right after a launch finished could immediately relaunch the selected game. Gamepad dismissal is now B-only.
+
 ## [1.37.0] — 2026-09-23
 
 ### Added

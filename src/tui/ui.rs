@@ -27,6 +27,7 @@ const LOGO: [&str; 5] = [
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let signature = marquee_signature(app);
     app.sync_marquee(signature);
+    app.sync_status_ttl();
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

@@ -156,7 +156,7 @@ fn should_retry_init(has_gamepad: bool, since_last_attempt: Duration) -> bool {
 /// access (gamescope settings, env vars, etc.) is the more valuable thing
 /// to have one-button access to. `p`/winetricks still works fine from a
 /// keyboard, just no longer has its own dedicated gamepad button.
-fn translate(button: Button) -> Option<KeyCode> {
+pub(super) fn translate(button: Button) -> Option<KeyCode> {
     match button {
         Button::DPadUp => Some(KeyCode::Up),
         Button::DPadDown => Some(KeyCode::Down),
