@@ -76,24 +76,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ..
         } => draw_map_entry_input_popup(frame, field, *step, key, value, tick),
         Mode::ConfirmDeleteProfile { name, .. } => {
-            draw_confirm_delete_popup(frame, name, app.input_kind)
+            draw_confirm_delete_popup(frame, name, app.input_kind, tick)
         }
         Mode::ConfirmRenameSlug {
             old_prefix_dir,
             new_prefix_dir,
             ..
-        } => draw_confirm_rename_slug_popup(frame, old_prefix_dir, new_prefix_dir, app.input_kind),
+        } => draw_confirm_rename_slug_popup(
+            frame,
+            old_prefix_dir,
+            new_prefix_dir,
+            app.input_kind,
+            tick,
+        ),
         Mode::Help => draw_help_popup(frame, app),
         Mode::ConfirmWinetricks { name, .. } => {
-            draw_confirm_winetricks_popup(frame, name, app.input_kind)
+            draw_confirm_winetricks_popup(frame, name, app.input_kind, tick)
         }
-        Mode::ShareTo { name, selected, .. } => draw_share_to_popup(frame, name, *selected),
+        Mode::ShareTo { name, selected, .. } => draw_share_to_popup(frame, name, *selected, tick),
         Mode::ConfirmUpdate {
             current,
             latest,
             asset_name,
             ..
-        } => draw_confirm_update_popup(frame, current, latest, asset_name, app.input_kind),
+        } => draw_confirm_update_popup(frame, current, latest, asset_name, app.input_kind, tick),
         Mode::Normal => {}
     }
 }
@@ -689,34 +695,45 @@ fn confirm_title(label: &str, input_kind: InputKind) -> String {
 const CONFIRM_POPUP_MAX_WIDTH: u16 = 70;
 const RENAME_SLUG_POPUP_MAX_WIDTH: u16 = 90;
 
-fn draw_confirm_delete_popup(frame: &mut Frame, name: &str, input_kind: InputKind) {
+fn draw_confirm_delete_popup(frame: &mut Frame, name: &str, input_kind: InputKind, tick: usize) {
     let text = format!(
         "Delete \"{name}\"?\nRemoves its profile.toml (settings/history) — not the exe itself."
     );
     let area = content_sized_rect(frame.area(), &text, CONFIRM_POPUP_MAX_WIDTH);
     frame.render_widget(Clear, area);
+    let title = marquee_title(
+        confirm_title("Confirm delete", input_kind),
+        area.width,
+        tick,
+    );
     frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(confirm_title("Confirm delete", input_kind)),
-        ),
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
 
-fn draw_confirm_winetricks_popup(frame: &mut Frame, name: &str, input_kind: InputKind) {
+fn draw_confirm_winetricks_popup(
+    frame: &mut Frame,
+    name: &str,
+    input_kind: InputKind,
+    tick: usize,
+) {
     let text = format!(
         "Launch winetricks for \"{name}\"?\nRuns against the exact same prefix a normal launch of this game would use."
     );
     let area = content_sized_rect(frame.area(), &text, CONFIRM_POPUP_MAX_WIDTH);
     frame.render_widget(Clear, area);
+    let title = marquee_title(
+        confirm_title("Confirm winetricks", input_kind),
+        area.width,
+        tick,
+    );
     frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(confirm_title("Confirm winetricks", input_kind)),
-        ),
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
@@ -727,18 +744,22 @@ fn draw_confirm_update_popup(
     latest: &str,
     asset_name: &str,
     input_kind: InputKind,
+    tick: usize,
 ) {
     let text = format!(
         "Update from v{current} to {latest}?\nDownloads {asset_name} and swaps it in over this binary — restart iprolaunch afterward to run it."
     );
     let area = content_sized_rect(frame.area(), &text, CONFIRM_POPUP_MAX_WIDTH);
     frame.render_widget(Clear, area);
+    let title = marquee_title(
+        confirm_title("Confirm update", input_kind),
+        area.width,
+        tick,
+    );
     frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(confirm_title("Confirm update", input_kind)),
-        ),
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
@@ -747,19 +768,20 @@ fn draw_confirm_update_popup(
 /// via the D-pad + A, no `confirm_hint`-style gamepad-caption text needed)
 /// rather than a y/N prompt, since there are several real outcomes to choose
 /// between, not 2. See `app::SHARE_TO_OPTIONS`.
-fn draw_share_to_popup(frame: &mut Frame, name: &str, selected: usize) {
+fn draw_share_to_popup(frame: &mut Frame, name: &str, selected: usize, tick: usize) {
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
+    let title = marquee_title(
+        format!("Share/add \"{name}\"? (Esc = cancel)"),
+        area.width,
+        tick,
+    );
     let items: Vec<ListItem> = app::SHARE_TO_OPTIONS
         .iter()
         .map(|label| ListItem::new(*label))
         .collect();
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Share/add \"{name}\"? (Esc = cancel)")),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(selected));
@@ -770,6 +792,7 @@ fn draw_confirm_rename_slug_popup(
     old_prefix_dir: &std::path::Path,
     new_prefix_dir: &std::path::Path,
     input_kind: InputKind,
+    tick: usize,
 ) {
     let hint = match input_kind {
         InputKind::Keyboard => "y = confirm (renames both), any other key = cancel",
@@ -782,12 +805,11 @@ fn draw_confirm_rename_slug_popup(
     );
     let area = content_sized_rect(frame.area(), &text, RENAME_SLUG_POPUP_MAX_WIDTH);
     frame.render_widget(Clear, area);
+    let title = marquee_title(format!("Confirm prefix rename — {hint}"), area.width, tick);
     frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Confirm prefix rename — {hint}")),
-        ),
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
@@ -1573,25 +1595,32 @@ fn draw_map_entry_input_popup(
     let area = centered_rect(60, 20, frame.area());
     frame.render_widget(Clear, area);
 
-    let (title, text) = match step {
+    let (title, buffer) = match step {
         MapEntryStep::Key => (
             format!(
                 "{} — variable name (Enter = next, Esc = cancel)",
                 field.label()
             ),
-            format!("{key}_"),
+            key,
         ),
         MapEntryStep::Value => (
             format!(
                 "{} — value for \"{key}\" (Enter = save, Esc = cancel)",
                 field.label()
             ),
-            format!("{value}_"),
+            value,
         ),
     };
     let title = marquee_title(title, area.width, tick);
+    // Always append-at-end (see `config::map_entry_input_key` — no Left/Right
+    // cursor movement for this popup), so the cursor sits at the buffer's own
+    // end; `cursor_line` still scrolls the window to keep it in view once
+    // `buffer` outgrows the box, same as the main text-input popup.
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let cursor = buffer.chars().count();
     frame.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(title)),
+        Paragraph::new(cursor_line(buffer, cursor, inner_width))
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }

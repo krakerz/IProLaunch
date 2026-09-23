@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.36.2] — 2026-09-23
+
+### Fixed
+- Confirm/delete/update/rename and Share/add popup titles no longer clip silently on a narrow terminal — they now scroll like every other popup title.
+- The env/wine-DLL-override map entry editor's key and value inputs now scroll to keep the cursor in view once the typed text outgrows the popup, matching the main text-input popup.
+
 ## [1.36.1] — 2026-09-22
 
 ### Fixed
