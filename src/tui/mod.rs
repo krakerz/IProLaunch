@@ -6,7 +6,7 @@ mod profile_editor;
 mod running;
 mod ui;
 
-use std::io::{self, IsTerminal, Stdout};
+use std::io::{self, IsTerminal, Stdout, Write};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -15,6 +15,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use gilrs::{EventType as GilrsEventType, Gilrs};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -73,7 +74,13 @@ fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -
         terminal.draw(|f| ui::draw(f, app))?;
 
         let mut handled = false;
-        if event::poll(Duration::from_millis(250))?
+        // 30ms matches gilrs's own `Repeat` filter interval (`gamepad::poll`'s
+        // held-D-pad auto-repeat) — that's the fastest a new repeat step can
+        // actually appear, so polling faster just burns cycles finding
+        // nothing new, and polling slower starts batching two repeat steps
+        // into one redraw (a visible double-row jump instead of a smooth
+        // one-row-per-frame scroll).
+        if event::poll(Duration::from_millis(30))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
@@ -344,6 +351,54 @@ pub fn resume(terminal: &mut Term) -> Result<()> {
     terminal.hide_cursor()?;
     terminal.clear()?;
     Ok(())
+}
+
+/// Blocks until the user acknowledges a suspended external process's result
+/// (a launch, winetricks, a self-update, desktop integration) — Enter on a
+/// keyboard, or any button on a gamepad, so this doesn't strand someone
+/// playing entirely on a controller (e.g. Steam Deck Game Mode) with no
+/// easy way to dismiss it short of summoning the on-screen keyboard.
+///
+/// Briefly re-enables raw mode of its own accord so a keypress doesn't need
+/// a trailing newline to register, and disables it again before returning —
+/// paired, so the caller's own subsequent `resume` (which does its own
+/// `enable_raw_mode`) sees the same disabled-raw-mode state it always has.
+/// Falls back to the old plain blocking line read, keyboard-only, if raw
+/// mode can't be re-enabled here for some reason, rather than hanging.
+pub fn wait_for_return() {
+    print!("\nPress Enter (or a gamepad button) to return to iprolaunch. ");
+    io::stdout().flush().ok();
+
+    if enable_raw_mode().is_err() {
+        let mut discard = String::new();
+        io::stdin().read_line(&mut discard).ok();
+        println!();
+        return;
+    }
+
+    let mut gilrs = Gilrs::new().ok();
+    loop {
+        if matches!(event::poll(Duration::from_millis(50)), Ok(true))
+            && let Ok(Event::Key(key)) = event::read()
+            && key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Enter
+        {
+            break;
+        }
+        let any_gamepad_button = gilrs.as_mut().is_some_and(|g| {
+            let mut pressed = false;
+            while let Some(gilrs::Event { event, .. }) = g.next_event() {
+                pressed |= matches!(event, GilrsEventType::ButtonPressed(..));
+            }
+            pressed
+        });
+        if any_gamepad_button {
+            break;
+        }
+    }
+
+    disable_raw_mode().ok();
+    println!();
 }
 
 #[cfg(test)]

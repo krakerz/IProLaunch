@@ -1,11 +1,10 @@
-use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 
 use crossterm::event::KeyCode;
 
 use super::app::{self, App, Mode, TextInputPurpose};
-use super::{Term, resume, suspend};
+use super::{Term, resume, suspend, wait_for_return};
 use crate::config::Profile;
 use crate::launch::{self, RunOptions};
 use crate::{prefix, proton};
@@ -211,10 +210,7 @@ fn run_winetricks(app: &mut App, terminal: &mut Term, slug: &str, name: &str) {
         Ok(status) => println!("\nwinetricks exited with {status}."),
         Err(err) => println!("\nfailed to launch winetricks: {err}"),
     }
-    print!("\nPress Enter to return to iprolaunch. ");
-    io::stdout().flush().ok();
-    let mut discard = String::new();
-    io::stdin().read_line(&mut discard).ok();
+    wait_for_return();
 
     if resume(terminal).is_err() {
         app.status = Some("Failed to restore the TUI after winetricks.".to_string());
@@ -594,10 +590,7 @@ pub fn launch_path(app: &mut App, terminal: &mut Term, target: &str, label: &str
         Ok(()) => println!("\n{label} exited normally."),
         Err(err) => println!("\n{label} failed: {err:#}"),
     }
-    print!("\nPress Enter to return to iprolaunch. ");
-    io::stdout().flush().ok();
-    let mut discard = String::new();
-    io::stdin().read_line(&mut discard).ok();
+    wait_for_return();
 
     if resume(terminal).is_err() {
         app.status = Some("Failed to restore the TUI after launch.".to_string());
