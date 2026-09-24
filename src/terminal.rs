@@ -17,17 +17,26 @@
 //! on that machine — those follow their own documented convention instead).
 //! Any candidate that fails to spawn (not installed, unexpected flags) just
 //! falls through to the next rather than erroring — this is a best-effort
-//! convenience, never a required tool.
+//! convenience, never a required tool. "Fails to spawn" means more than a
+//! bare unsuccessful `Command::spawn()` for `xdg-terminal-exec` and wezterm
+//! specifically — see `try_xdg_terminal_exec`/`try_wezterm`'s own doc
+//! comments for two real, reported bugs where a candidate's *process*
+//! launched fine but never actually produced a working terminal, and the
+//! blind `.spawn().is_ok()` check this module used to rely on for every
+//! candidate couldn't tell the difference.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 /// How a given terminal emulator wants the command-to-run passed, keyed by
 /// its binary's file name. Everything not listed is assumed to take `-e`
 /// (confirmed the convention for xterm/konsole/alacritty/ghostty via their
 /// own `--help`; xfce4-terminal follows the same convention per its own
 /// docs, unconfirmed live since it isn't installed on the dev machine).
+/// wezterm isn't here — see `try_wezterm`'s own doc comment for why it needs
+/// a two-command dance instead of a single fixed invocation style.
 enum ExecStyle {
     /// `<term> -e <cmd> <args...>`, as the last argument.
     DashE,
@@ -36,9 +45,6 @@ enum ExecStyle {
     DoubleDash,
     /// `<term> <cmd> <args...>` with no flag at all (kitty, foot).
     BareArgv,
-    /// `wezterm start -- <cmd> <args...>` — wezterm's own subcommand shape,
-    /// confirmed via `wezterm start --help`.
-    WeztermStart,
 }
 
 /// KDE's/GNOME's configured terminal value can be an absolute path (e.g.
@@ -55,7 +61,6 @@ fn exec_style(program_basename: &str) -> ExecStyle {
     match program_basename {
         "gnome-terminal" | "gnome-terminal.wrapper" => ExecStyle::DoubleDash,
         "kitty" | "foot" => ExecStyle::BareArgv,
-        "wezterm" => ExecStyle::WeztermStart,
         _ => ExecStyle::DashE,
     }
 }
@@ -66,6 +71,16 @@ fn exec_style(program_basename: &str) -> ExecStyle {
 /// window actually appeared or that `program` accepted the flags it was
 /// given.
 fn spawn_with_style(program: &str, existing_args: &[&str], pager: &str, log_path: &str) -> bool {
+    if basename(program) == "wezterm" {
+        // wezterm's own two-command dance (try an already-running instance,
+        // fall back to starting a fresh one) doesn't fit this function's
+        // single-command-per-style model — see `try_wezterm`. `existing_args`
+        // (e.g. from a KDE/GNOME-configured terminal value) is dropped here
+        // rather than threaded through both wezterm subcommands — a rare
+        // enough edge case (a desktop configuring wezterm *with* extra flags
+        // as its default terminal) not to be worth the complexity.
+        return try_wezterm(pager, log_path);
+    }
     let mut cmd = Command::new(program);
     cmd.args(existing_args);
     match exec_style(basename(program)) {
@@ -78,32 +93,82 @@ fn spawn_with_style(program: &str, existing_args: &[&str], pager: &str, log_path
         ExecStyle::BareArgv => {
             cmd.arg(pager).arg(log_path);
         }
-        ExecStyle::WeztermStart => {
-            cmd.arg("start").arg("--").arg(pager).arg(log_path);
-        }
     }
-    spawn_detached(cmd)
+    spawn_detached(cmd).is_some()
 }
 
 /// Own process group, no inherited stdio — decouples the new terminal from
 /// this process's controlling terminal/job control (so e.g. Ctrl+C on
 /// iprolaunch's own shell, or `running::terminate`'s signal-forwarding
 /// sweep, can't reach it) and from its lifetime (it outlives iprolaunch
-/// exiting, same as any other orphaned child reparented to init).
-fn spawn_detached(mut command: Command) -> bool {
+/// exiting, same as any other orphaned child reparented to init). Returns
+/// the child on a successful spawn — most callers only care whether that
+/// succeeded at all (`.is_some()`), but `try_xdg_terminal_exec` needs the
+/// handle itself to check back in on it shortly after.
+fn spawn_detached(mut command: Command) -> Option<Child> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()
-        .is_ok()
+        .ok()
 }
 
+/// A bare successful spawn only proves the `xdg-terminal-exec` *binary*
+/// launched — not that it actually found a terminal. A real reported bug:
+/// on a machine with no viable terminal at all, this returned `true` (the
+/// process spawned fine) while `xdg-terminal-exec` itself failed internally
+/// ("No viable candidates found in PATH"), so `spawn_in_new_terminal` never
+/// fell through to try anything else. Per the freedesktop spec, a
+/// successful run execs directly into the resolved terminal without forking
+/// (so it keeps running, transformed, for as long as that terminal window
+/// stays open) — a failed one exits fast with a nonzero status, having never
+/// found anything to exec into. A short grace period distinguishes those
+/// two cases (still running vs. already exited) without ever blocking on a
+/// real terminal's own — potentially very long — lifetime.
 fn try_xdg_terminal_exec(pager: &str, log_path: &str) -> bool {
     let mut cmd = Command::new("xdg-terminal-exec");
     cmd.arg(pager).arg(log_path);
-    spawn_detached(cmd)
+    let Some(mut child) = spawn_detached(cmd) else {
+        return false;
+    };
+    std::thread::sleep(Duration::from_millis(400));
+    matches!(child.try_wait(), Ok(None))
+}
+
+/// `wezterm start -- <cmd>` (confirmed against wezterm's own docs/GitHub
+/// discussions) always starts a brand-new, independent wezterm GUI instance
+/// — it never detects or reuses one already running. A real reported bug:
+/// on a machine where wezterm was already running as the user's daily
+/// terminal, `wezterm start -- less <log>` failed outright ("Unable to spawn
+/// start because: No viable candidates found in PATH ..."), leaving a
+/// zombie `wezterm-gui` process behind and never showing the log.
+///
+/// The correct way to open a new window in an *already-running* instance is
+/// `wezterm cli spawn --new-window -- <cmd>` — a fast client/server request
+/// over wezterm's own socket, safe to wait for (unlike a real terminal's own
+/// lifetime), and one that fails fast and cleanly when no instance is
+/// listening. So this tries that first, and only falls back to `wezterm
+/// start` (which — since it really is starting a brand-new, long-lived GUI
+/// process this time — stays detached, not waited on) if no instance was
+/// there to spawn into.
+fn try_wezterm(pager: &str, log_path: &str) -> bool {
+    let status = Command::new("wezterm")
+        .args(["cli", "spawn", "--new-window", "--"])
+        .arg(pager)
+        .arg(log_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if matches!(status, Ok(s) if s.success()) {
+        return true;
+    }
+
+    let mut cmd = Command::new("wezterm");
+    cmd.arg("start").arg("--").arg(pager).arg(log_path);
+    spawn_detached(cmd).is_some()
 }
 
 /// KDE's own configured default terminal — same value Dolphin's "Open
@@ -149,7 +214,7 @@ fn try_kde(pager: &str, log_path: &str) -> bool {
 fn try_xfce(pager: &str, log_path: &str) -> bool {
     let mut cmd = Command::new("exo-open");
     cmd.args(["--launch", "TerminalEmulator", pager, log_path]);
-    spawn_detached(cmd)
+    spawn_detached(cmd).is_some()
 }
 
 /// GNOME's configured terminal — `gsettings get
@@ -252,7 +317,6 @@ mod tests {
         ));
         assert!(matches!(exec_style("kitty"), ExecStyle::BareArgv));
         assert!(matches!(exec_style("foot"), ExecStyle::BareArgv));
-        assert!(matches!(exec_style("wezterm"), ExecStyle::WeztermStart));
         assert!(matches!(exec_style("konsole"), ExecStyle::DashE));
         assert!(matches!(
             exec_style("some-unknown-terminal"),

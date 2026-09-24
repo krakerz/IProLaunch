@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::config::{
     AutoOpenScope, Config, GamescopeFilter, GamescopeScaler, GamescopeSetting, LogMode, PrefixMode,
-    Profile, RecordMode, WindowsVersion,
+    Profile, RecordMode, WindowsVersion, WineArch,
 };
 use crate::proton::ProtonBuild;
 use crate::running::{self, RunningEntry};
@@ -53,6 +53,7 @@ pub enum ConfigField {
     PrefixPath,
     PrefixesRoot,
     WindowsVersion,
+    WineArch,
     Gamescope,
     GamescopeOutputWidth,
     GamescopeOutputHeight,
@@ -73,17 +74,19 @@ pub enum ConfigField {
     LogAutoOpenScope,
     GamedbInterval,
     SunshineGamescope,
+    SunshineBorderless,
     EnvTable,
     WineDllOverrideTable,
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 27] = [
+    pub const ALL: [ConfigField; 29] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
         ConfigField::PrefixesRoot,
         ConfigField::WindowsVersion,
+        ConfigField::WineArch,
         ConfigField::Gamescope,
         ConfigField::GamescopeOutputWidth,
         ConfigField::GamescopeOutputHeight,
@@ -104,6 +107,7 @@ impl ConfigField {
         ConfigField::LogAutoOpenScope,
         ConfigField::GamedbInterval,
         ConfigField::SunshineGamescope,
+        ConfigField::SunshineBorderless,
         ConfigField::EnvTable,
         ConfigField::WineDllOverrideTable,
     ];
@@ -115,6 +119,7 @@ impl ConfigField {
             ConfigField::PrefixPath => "defaults.prefix_path",
             ConfigField::PrefixesRoot => "defaults.prefixes_root",
             ConfigField::WindowsVersion => "defaults.windows-version",
+            ConfigField::WineArch => "defaults.winearch",
             ConfigField::Gamescope => "defaults.gamescope",
             ConfigField::GamescopeOutputWidth => "gamescope_settings.output_width",
             ConfigField::GamescopeOutputHeight => "gamescope_settings.output_height",
@@ -135,6 +140,7 @@ impl ConfigField {
             ConfigField::LogAutoOpenScope => "logging.auto_open_scope",
             ConfigField::GamedbInterval => "gamedb.update_interval_days",
             ConfigField::SunshineGamescope => "sunshine.gamescope",
+            ConfigField::SunshineBorderless => "sunshine.borderless",
             ConfigField::EnvTable => "env (global)",
             ConfigField::WineDllOverrideTable => "winedlloverride (global)",
         }
@@ -153,13 +159,14 @@ impl ConfigField {
             | ConfigField::LogAutoOpenScope
             | ConfigField::Gamescope
             | ConfigField::WindowsVersion
+            | ConfigField::WineArch
             | ConfigField::GamescopeFilter
             | ConfigField::GamescopeScaler
             | ConfigField::GamescopeBorderless
             | ConfigField::GamescopeGrabCursor
             | ConfigField::GamescopeAdaptiveSync
             | ConfigField::SunshineGamescope => FieldKind::Cycle,
-            ConfigField::LogAutoOpen => FieldKind::Toggle,
+            ConfigField::LogAutoOpen | ConfigField::SunshineBorderless => FieldKind::Toggle,
             ConfigField::LogKeep | ConfigField::GamedbInterval => FieldKind::Number,
             ConfigField::PrefixPath
             | ConfigField::PrefixesRoot
@@ -259,6 +266,7 @@ pub enum ProfileField {
     Proton,
     PrefixPath,
     WindowsVersion,
+    WineArch,
     Gamescope,
     GamescopeOutputWidth,
     GamescopeOutputHeight,
@@ -276,12 +284,13 @@ pub enum ProfileField {
     LogAutoOpen,
     LogAutoOpenScope,
     SunshineGamescope,
+    SunshineBorderless,
     EnvTable,
     WineDllOverrideTable,
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 28] = [
+    pub const ALL: [ProfileField; 30] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
@@ -291,6 +300,7 @@ impl ProfileField {
         ProfileField::Proton,
         ProfileField::PrefixPath,
         ProfileField::WindowsVersion,
+        ProfileField::WineArch,
         ProfileField::Gamescope,
         ProfileField::GamescopeOutputWidth,
         ProfileField::GamescopeOutputHeight,
@@ -308,6 +318,7 @@ impl ProfileField {
         ProfileField::LogAutoOpen,
         ProfileField::LogAutoOpenScope,
         ProfileField::SunshineGamescope,
+        ProfileField::SunshineBorderless,
         ProfileField::EnvTable,
         ProfileField::WineDllOverrideTable,
     ];
@@ -323,6 +334,7 @@ impl ProfileField {
             ProfileField::Proton => "defaults.proton override (per-slug mode only)",
             ProfileField::PrefixPath => "defaults.prefix_path override",
             ProfileField::WindowsVersion => "defaults.windows-version override",
+            ProfileField::WineArch => "defaults.winearch override (per-slug mode only)",
             ProfileField::Gamescope => "defaults.gamescope override",
             ProfileField::GamescopeOutputWidth => "gamescope_settings.output_width override",
             ProfileField::GamescopeOutputHeight => "gamescope_settings.output_height override",
@@ -340,6 +352,7 @@ impl ProfileField {
             ProfileField::LogAutoOpen => "logging.auto_open override",
             ProfileField::LogAutoOpenScope => "logging.auto_open_scope override",
             ProfileField::SunshineGamescope => "sunshine.gamescope override",
+            ProfileField::SunshineBorderless => "sunshine.borderless override",
             ProfileField::EnvTable => "env override",
             ProfileField::WineDllOverrideTable => "winedlloverride override",
         }
@@ -361,12 +374,14 @@ impl ProfileField {
             | ProfileField::PrefixMode
             | ProfileField::Gamescope
             | ProfileField::WindowsVersion
+            | ProfileField::WineArch
             | ProfileField::GamescopeFilter
             | ProfileField::GamescopeScaler
             | ProfileField::GamescopeBorderless
             | ProfileField::GamescopeGrabCursor
             | ProfileField::GamescopeAdaptiveSync
-            | ProfileField::SunshineGamescope => FieldKind::Cycle,
+            | ProfileField::SunshineGamescope
+            | ProfileField::SunshineBorderless => FieldKind::Cycle,
             ProfileField::TargetPath
             | ProfileField::Slug
             | ProfileField::Name
@@ -1141,6 +1156,27 @@ pub fn next_profile_windows_version(m: Option<WindowsVersion>) -> Option<Windows
     }
 }
 
+/// Toggles the global `defaults.winearch` — only two values, so this is a
+/// straight swap, same as `next_prefix_mode`/`next_log_mode`.
+pub fn next_winearch(a: WineArch) -> WineArch {
+    match a {
+        WineArch::Win32 => WineArch::Win64,
+        WineArch::Win64 => WineArch::Win32,
+    }
+}
+
+/// Same idea as `next_profile_windows_version`, for a profile's own
+/// `winearch` override — inherit → win32 → win64 → inherit. Only takes
+/// effect once *this profile's* own resolved prefix mode is `PerSlug` —
+/// see `Config::effective`.
+pub fn next_profile_winearch(a: Option<WineArch>) -> Option<WineArch> {
+    match a {
+        None => Some(WineArch::Win32),
+        Some(WineArch::Win32) => Some(WineArch::Win64),
+        Some(WineArch::Win64) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1382,6 +1418,26 @@ mod tests {
         assert_eq!(v, Some(WindowsVersion::Win11));
         v = next_profile_windows_version(v);
         assert_eq!(v, None);
+    }
+
+    #[test]
+    fn winearch_cycle_covers_both_variants_and_wraps() {
+        let mut a = WineArch::Win32;
+        a = next_winearch(a);
+        assert_eq!(a, WineArch::Win64);
+        a = next_winearch(a);
+        assert_eq!(a, WineArch::Win32);
+    }
+
+    #[test]
+    fn profile_winearch_cycle_includes_inherit_and_returns_to_it() {
+        let mut a = None;
+        a = next_profile_winearch(a);
+        assert_eq!(a, Some(WineArch::Win32));
+        a = next_profile_winearch(a);
+        assert_eq!(a, Some(WineArch::Win64));
+        a = next_profile_winearch(a);
+        assert_eq!(a, None);
     }
 
     #[test]

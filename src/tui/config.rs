@@ -41,7 +41,13 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
     match field.kind() {
         FieldKind::Cycle => cycle_field(app, field),
         FieldKind::Toggle => {
-            app.cfg.logging.auto_open = !app.cfg.logging.auto_open;
+            match field {
+                ConfigField::LogAutoOpen => app.cfg.logging.auto_open = !app.cfg.logging.auto_open,
+                ConfigField::SunshineBorderless => {
+                    app.cfg.sunshine.borderless = !app.cfg.sunshine.borderless;
+                }
+                _ => {}
+            }
             save_config(app);
         }
         FieldKind::Number => {} // Left/Right, not Enter
@@ -278,6 +284,14 @@ fn cycle_field(app: &mut App, field: ConfigField) {
         ConfigField::WindowsVersion => {
             app.cfg.defaults.windows_version =
                 app::next_windows_version(app.cfg.defaults.windows_version);
+        }
+        ConfigField::WineArch => {
+            app.cfg.defaults.winearch = app::next_winearch(app.cfg.defaults.winearch);
+            app.status = Some(
+                "winearch changed — delete/recreate any prefix using it for this to take \
+                 effect (only meaningful once, at prefix creation)."
+                    .to_string(),
+            );
         }
         ConfigField::SunshineGamescope => {
             app.cfg.sunshine.gamescope = app::next_sunshine_gamescope(app.cfg.sunshine.gamescope);

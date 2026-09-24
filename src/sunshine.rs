@@ -349,6 +349,7 @@ mod tests {
             username: None,
             auth_token: None,
             gamescope: crate::config::GamescopeSetting::None,
+            borderless: false,
         };
         assert_eq!(base_url(&cfg), "https://localhost:47990");
     }

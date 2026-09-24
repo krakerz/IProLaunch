@@ -153,6 +153,32 @@ pub fn resolve_binary_dir(id: &str) -> Result<PathBuf> {
         .join(id))
 }
 
+/// The distro's own `wine`/`wineserver` on `$PATH` — `run_winetricks`'s
+/// fallback when `proton` is `"system"`, since `resolve_binary_dir` has no
+/// pinned build to point winetricks at there at all (that setting means
+/// "let `umu-run` auto-manage its own UMU-Proton build", not "use the
+/// distro's Wine"). Worth having as a real fallback rather than just
+/// failing outright: unlike `umu-launcher`/`umu-run` itself (actively
+/// maintained), the specific UMU-Proton build it downloads for `"system"`
+/// hasn't had a new release since 2026-03 — a distro Wine package is often
+/// the more current, more reliable thing to point winetricks at anyway.
+pub fn system_wine_binaries() -> Option<(PathBuf, PathBuf)> {
+    let path = std::env::var_os("PATH")?;
+    Some((
+        find_on_path(&path, "wine")?,
+        find_on_path(&path, "wineserver")?,
+    ))
+}
+
+/// Pure PATH search, kept separate from `system_wine_binaries` so it's
+/// testable without mutating the real process-wide `$PATH` — parallel tests
+/// mutating a global env var would race each other.
+fn find_on_path(path_var: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path_var)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+}
+
 /// Community Proton builds (GE-Proton, CachyOS Proton, umu's own
 /// auto-downloaded UMU-Proton, etc). A directory only counts if it has a
 /// `toolmanifest.vdf` — the same file Steam itself uses to recognize a
@@ -352,6 +378,24 @@ mod tests {
     fn resolve_binary_dir_rejects_system_and_empty() {
         assert!(resolve_binary_dir("system").is_err());
         assert!(resolve_binary_dir("").is_err());
+    }
+
+    #[test]
+    fn find_on_path_locates_a_file_in_one_of_several_search_dirs() {
+        let dir = temp_dir("find-on-path-hit");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("wine"), "").unwrap();
+        let path_var = std::env::join_paths([Path::new("/nonexistent"), dir.as_path()]).unwrap();
+
+        assert_eq!(find_on_path(&path_var, "wine"), Some(dir.join("wine")));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn find_on_path_returns_none_when_absent_from_every_search_dir() {
+        let path_var = std::env::join_paths([Path::new("/nonexistent")]).unwrap();
+        assert_eq!(find_on_path(&path_var, "wine"), None);
     }
 
     /// Regression test for a real failure: a build found under a
