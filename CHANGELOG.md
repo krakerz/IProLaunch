@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [1.40.0] — 2026-09-24
+
+### Added
+- New `winearch` setting (global and per-profile, `win32`/`win64`) controls a prefix's architecture — passed through as `WINEARCH` on every launch. Only takes effect at prefix creation; the TUI warns to delete/recreate the prefix after changing it, and a per-profile override only applies in that profile's own per-slug prefix mode.
+- New `sunshine.borderless` setting (global and per-profile override) bakes `-b`/`--borderless` into a game's Sunshine app entry, independent of its normal desktop-launch borderless setting — same pattern as the existing `sunshine.gamescope`.
+
+### Fixed
+- A fresh prefix always came up `win64` regardless of the configured `winearch` — the windows-version/winetricks setup step that actually creates a new prefix wasn't passing `WINEARCH` through.
+- Auto-opening a failed launch's log in a new terminal could silently do nothing and leave a zombie process behind — `xdg-terminal-exec` succeeding at merely spawning didn't mean it actually found a terminal, and wezterm's `start` subcommand doesn't reuse an already-running instance the way `wezterm cli spawn` does.
+- Config tab and profile editor field lists had misaligned value columns — a hardcoded label-padding width didn't account for several labels (including the new `winearch` one) being longer than it, so those rows' values started at the wrong column.
+
+## [1.39.0] — 2026-09-24
+
+### Added
+- Winetricks now falls back to the distro's own system Wine when `proton` is `"system"` (no pinned build), instead of failing outright.
+
 ## [1.38.0] — 2026-09-23
 
 ### Added

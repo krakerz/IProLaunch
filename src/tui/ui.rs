@@ -531,6 +531,7 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
 
     let inner_width = area.width.saturating_sub(4) as usize;
     let tick = app.marquee_tick();
+    let label_width = label_column_width(ProfileField::ALL.iter().map(|f| f.label()));
     let items: Vec<ListItem> = ProfileField::ALL
         .iter()
         .enumerate()
@@ -568,6 +569,10 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .defaults
                     .windows_version
                     .map_or_else(|| "(inherit)".to_string(), |v| format!("{v:?}")),
+                ProfileField::WineArch => profile
+                    .defaults
+                    .winearch
+                    .map_or_else(|| "(inherit)".to_string(), |a| format!("{a:?}")),
                 ProfileField::Gamescope => profile
                     .defaults
                     .gamescope
@@ -647,10 +652,14 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .defaults
                     .sunshine_gamescope
                     .map_or_else(|| "(inherit)".to_string(), |g| format!("{g:?}")),
+                ProfileField::SunshineBorderless => profile
+                    .defaults
+                    .sunshine_borderless
+                    .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
                 ProfileField::EnvTable => entry_count(&profile.env),
                 ProfileField::WineDllOverrideTable => entry_count(&profile.winedlloverride),
             };
-            let combined = format!("{:<34} {}", field.label(), value);
+            let combined = format!("{:<label_width$} {value}", field.label());
             let text = if i == app.profile_field_selected && combined.chars().count() > inner_width
             {
                 marquee(&combined, inner_width, tick)
@@ -834,6 +843,7 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
     let g = &app.cfg.gamedb;
     let inner_width = area.width.saturating_sub(4) as usize;
     let tick = app.marquee_tick();
+    let label_width = label_column_width(ConfigField::ALL.iter().map(|f| f.label()));
 
     let items: Vec<ListItem> = ConfigField::ALL
         .iter()
@@ -845,6 +855,7 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::PrefixPath => d.prefix_path.clone(),
                 ConfigField::PrefixesRoot => d.prefixes_root.clone(),
                 ConfigField::WindowsVersion => format!("{:?}", d.windows_version),
+                ConfigField::WineArch => format!("{:?}", d.winearch),
                 ConfigField::Gamescope => format!("{:?}", d.gamescope),
                 ConfigField::GamescopeOutputWidth => d
                     .gamescope_settings
@@ -898,10 +909,11 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
                 ConfigField::LogAutoOpenScope => format!("{:?}", l.auto_open_scope),
                 ConfigField::GamedbInterval => g.update_interval_days.to_string(),
                 ConfigField::SunshineGamescope => format!("{:?}", app.cfg.sunshine.gamescope),
+                ConfigField::SunshineBorderless => app.cfg.sunshine.borderless.to_string(),
                 ConfigField::EnvTable => entry_count(&app.cfg.env),
                 ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
             };
-            let combined = format!("{:<34} {}", field.label(), value);
+            let combined = format!("{:<label_width$} {value}", field.label());
             let text = if i == app.config_selected && combined.chars().count() > inner_width {
                 marquee(&combined, inner_width, tick)
             } else {
@@ -929,6 +941,7 @@ fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
     let inner_width = area.width.saturating_sub(4) as usize;
     let tick = app.marquee_tick();
     let selected_local = app.config_selected.checked_sub(ConfigField::ALL.len());
+    let label_width = label_column_width(IntegrateField::ALL.iter().map(|f| f.label()));
 
     let items: Vec<ListItem> = IntegrateField::ALL
         .iter()
@@ -952,7 +965,7 @@ fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
                     )
                 }
             };
-            let combined = format!("{:<34} {}", field.label(), value);
+            let combined = format!("{:<label_width$} {value}", field.label());
             let text = if selected_local == Some(i) && combined.chars().count() > inner_width {
                 marquee(&combined, inner_width, tick)
             } else {
@@ -1063,10 +1076,13 @@ Library:
                                bakes in `sunshine.gamescope`'s effective
                                setting (global default + this profile's own
                                override, in the profile editor) as a
-                               `-f`/`-w` flag on the Sunshine app's own
-                               launch command — independent of this game's
-                               normal desktop-launch gamescope setting, off
-                               by default. Picks up the same resolution-
+                               `-f`/`-w` flag, plus `sunshine.borderless`'s
+                               effective setting (same global+override
+                               pattern) as `-b`, on the Sunshine app's own
+                               launch command — both independent of this
+                               game's normal desktop-launch gamescope
+                               setting, off by default. Picks up the same
+                               resolution-
                                switch prep-cmd every LutrisToSunshine-
                                managed app already gets, when that's
                                detected and enabled — nothing to configure,
@@ -1122,11 +1138,17 @@ Profile editor (Library, after 'e'):
       the global default — cycles inherit -> single -> per-slug -> inherit.
       Lets one game get an isolated prefix without moving every other
       profile to per-slug mode too.
-    - the proton/windows-version overrides only have any effect once this
-      profile's *effective* prefix mode (global default, or its own
-      override just above) is per-slug — in single-prefix mode they're
+    - the proton/windows-version/winearch overrides only have any effect
+      once this profile's *effective* prefix mode (global default, or its
+      own override just above) is per-slug — in single-prefix mode they're
       ignored (every profile shares one prefix, so a mismatched Proton
-      version/Windows version there risks corrupting it).
+      version/Windows version/architecture there risks corrupting it).
+    - winearch (global or per-profile) only actually does anything at
+      prefix *creation* — changing it against an already-existing prefix
+      does nothing (or errors, depending on the Proton build); delete and
+      recreate the prefix after changing it. win32 also needs a Proton
+      build old enough to still support it — most current builds have
+      dropped it entirely.
     - gamescope override cycles inherit -> none -> fullscreen -> maximize ->
       inherit — same as -f/-w on the command line, remembered per game so
       \"iprolaunch <slug>\" doesn't need retyping it (an explicit -f/-w still
@@ -1487,6 +1509,18 @@ fn draw_proton_picker_popup(
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, area, &mut list_state(selected));
+}
+
+/// The width to left-pad a field-list row's label to, so every row's value
+/// starts at the same column — a real reported bug otherwise: a fixed
+/// guessed width (34, previously hardcoded at each of this function's three
+/// call sites) silently stops aligning anything the moment a label grows
+/// past it, which several already had (the "(per-slug mode only)"/
+/// "(blank = none)"-suffixed ones) — computed from the *actual* longest
+/// label in `labels` instead, so it can never fall out of date as fields
+/// are added/renamed.
+fn label_column_width<'a>(labels: impl Iterator<Item = &'a str>) -> usize {
+    labels.map(|l| l.chars().count()).max().unwrap_or(0)
 }
 
 fn entry_count(map: &std::collections::BTreeMap<String, String>) -> String {
@@ -1858,6 +1892,19 @@ mod tests {
     }
 
     #[test]
+    fn label_column_width_is_the_longest_labels_length() {
+        assert_eq!(
+            label_column_width(["short", "a much longer label here", "mid"].into_iter()),
+            "a much longer label here".chars().count()
+        );
+    }
+
+    #[test]
+    fn label_column_width_of_an_empty_list_is_zero() {
+        assert_eq!(label_column_width(std::iter::empty()), 0);
+    }
+
+    #[test]
     fn marquee_signature_differs_when_the_selected_row_changes() {
         let mut app = test_app();
         app.tab = Tab::Config;
@@ -2097,7 +2144,7 @@ mod tests {
         // shorter terminal will legitimately clip content, same as any
         // other list-heavy screen; that's covered by
         // `every_tab_renders_without_panicking_at_a_small_size` instead.
-        let out = rendered(&mut app, 100, 49);
+        let out = rendered(&mut app, 100, 51);
         for field in ConfigField::ALL {
             assert!(
                 out.contains(field.label()),
@@ -2297,7 +2344,7 @@ mod tests {
         app.profile_editor = Some("game-1".to_string());
         // Tall enough to fit every field row without clipping — see
         // `config_tab_lists_every_field_label`'s identical reasoning.
-        let out = rendered(&mut app, 100, 42);
+        let out = rendered(&mut app, 100, 44);
         assert!(out.contains("Game#1"));
         for field in ProfileField::ALL {
             assert!(

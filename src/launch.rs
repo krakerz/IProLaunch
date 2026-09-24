@@ -104,10 +104,11 @@ pub fn iprolaunch_cli_flags_for(effective: &Effective) -> Vec<&'static str> {
 
 /// A bare `GamescopeSetting` mapped to iprolaunch's own CLI flag (`None` for
 /// `GamescopeSetting::None` — no flag at all), with no borderless axis of
-/// its own. Shared by `iprolaunch_cli_flags_for` above (which also folds in
-/// the separate borderless override) and Sunshine's own dedicated
-/// `sunshine.gamescope` setting (`tui/library.rs`'s `add_to_sunshine`),
-/// which has no borderless equivalent to fold in.
+/// its own. Shared by `iprolaunch_cli_flags_for` above (which folds in its
+/// own separate `gamescope_settings.borderless` override) and Sunshine's own
+/// dedicated `sunshine.gamescope` setting (`tui/library.rs`'s
+/// `add_to_sunshine`, which folds in its own separate
+/// `sunshine.borderless` the same way).
 pub fn gamescope_setting_cli_flag(
     setting: crate::config::GamescopeSetting,
 ) -> Option<&'static str> {
@@ -287,7 +288,11 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     fs::create_dir_all(&prefix_path)
         .with_context(|| format!("creating prefix dir {}", prefix_path.display()))?;
 
-    if let Err(err) = apply_windows_version(&prefix_path, effective.windows_version.as_str()) {
+    if let Err(err) = apply_windows_version(
+        &prefix_path,
+        effective.windows_version.as_str(),
+        effective.winearch.as_str(),
+    ) {
         // Best-effort: a failed registry tweak shouldn't block the game itself.
         eprintln!(
             "iprolaunch: warning: failed to apply windows-version={}: {err:#}",
@@ -378,6 +383,14 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     }
     command.env("WINEPREFIX", &prefix_path);
     command.env("IPROLAUNCH_LAUNCH_ID", &launch_id);
+    // `umu-run` doesn't touch `WINEARCH` itself (confirmed against its own
+    // source — not part of its whitelisted env dict, and it never clears
+    // the inherited environment before spawning Proton), so this reaches
+    // the actual wine process untouched, same as every other env var here.
+    // Only meaningful at prefix *creation*; changing it against an
+    // already-existing prefix does nothing (or errors, depending on the
+    // Proton build) — the TUI warns about this when the value changes.
+    command.env("WINEARCH", effective.winearch.as_str());
     if !effective.proton.is_empty() && effective.proton != "system" {
         command.env("PROTONPATH", &effective.proton);
     }
@@ -634,6 +647,18 @@ fn cached_windows_version(prefix_path: &Path) -> Option<String> {
 /// wine (there's no clean way to know which build umu-run resolved to ahead
 /// of its own run) — fine for these verbs specifically, since `win7`/`win10`/
 /// etc. only rewrite a few registry keys rather than run real Windows code.
+/// A real consequence of that: since this is also the *first* thing to ever
+/// touch a brand new prefix (see `winearch` below), it's the *system*
+/// wine's own support for `WINEARCH=win32` that actually gates whether a
+/// `win32` prefix can be created at all — not whichever Proton build the
+/// profile/global default has selected for the real launch.
+///
+/// `winearch`: threaded through as `WINEARCH` alongside `WINEPREFIX` on the
+/// same `winetricks` call — a real reported bug otherwise: without it, a
+/// freshly deleted/nonexistent prefix always came up `win64` regardless of
+/// the configured `winearch`, since this function runs (and creates the
+/// prefix) before the actual game-launch command below ever gets a chance
+/// to apply its own `WINEARCH`.
 ///
 /// Kills any wineserver already bound to this prefix first, but only when
 /// nothing of ours is actually running against it — a previous launch's
@@ -644,7 +669,7 @@ fn cached_windows_version(prefix_path: &Path) -> Option<String> {
 /// unconditionally killing it would just as easily tear down a wineserver
 /// that's genuinely still in use (e.g. the same exe launched twice, or two
 /// exes sharing a prefix in single mode).
-fn apply_windows_version(prefix_path: &Path, version: &str) -> Result<()> {
+fn apply_windows_version(prefix_path: &Path, version: &str, winearch: &str) -> Result<()> {
     if cached_windows_version(prefix_path).as_deref() == Some(version) {
         return Ok(());
     }
@@ -657,10 +682,17 @@ fn apply_windows_version(prefix_path: &Path, version: &str) -> Result<()> {
             .ok();
     }
 
+    // A real reported bug: this is the *first* thing to ever touch a freshly
+    // deleted/nonexistent prefix (before the actual game launch's own
+    // umu-run invocation), so it — not that later invocation — is what
+    // actually decides a new prefix's architecture. Without `WINEARCH` set
+    // here too, a fresh prefix always came up `win64` regardless of the
+    // configured `winearch`, since this ran and created it first.
     let status = Command::new("winetricks")
         .arg("-q")
         .arg(version)
         .env("WINEPREFIX", prefix_path)
+        .env("WINEARCH", winearch)
         .status()
         .context("failed to run winetricks (is it installed and on $PATH?)")?;
     if !status.success() {
@@ -1054,7 +1086,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(windows_version_marker_path(&dir), "win11").unwrap();
 
-        let result = apply_windows_version(&dir, "win11");
+        let result = apply_windows_version(&dir, "win11", "win64");
         assert!(result.is_ok(), "should short-circuit, not fail: {result:?}");
 
         fs::remove_dir_all(&dir).ok();

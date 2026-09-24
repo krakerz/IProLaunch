@@ -98,6 +98,9 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
                 profile.defaults.windows_version =
                     app::next_profile_windows_version(profile.defaults.windows_version);
             }
+            ProfileField::WineArch => {
+                profile.defaults.winearch = app::next_profile_winearch(profile.defaults.winearch);
+            }
             ProfileField::GamescopeFilter => {
                 profile.defaults.gamescope_settings.filter =
                     app::next_gamescope_filter(profile.defaults.gamescope_settings.filter);
@@ -122,8 +125,19 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
                 profile.defaults.sunshine_gamescope =
                     app::next_profile_sunshine_gamescope(profile.defaults.sunshine_gamescope);
             }
+            ProfileField::SunshineBorderless => {
+                profile.defaults.sunshine_borderless =
+                    app::next_optional_bool(profile.defaults.sunshine_borderless);
+            }
             _ => {}
         }
+    }
+    if field == ProfileField::WineArch {
+        app.status = Some(
+            "winearch changed — delete/recreate this profile's own prefix for it to take \
+             effect (only meaningful once, at prefix creation)."
+                .to_string(),
+        );
     }
     save_profile(app, slug);
 }
@@ -469,12 +483,14 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::LogAutoOpenScope
         | ProfileField::Gamescope
         | ProfileField::WindowsVersion
+        | ProfileField::WineArch
         | ProfileField::GamescopeFilter
         | ProfileField::GamescopeScaler
         | ProfileField::GamescopeBorderless
         | ProfileField::GamescopeGrabCursor
         | ProfileField::GamescopeAdaptiveSync
         | ProfileField::SunshineGamescope
+        | ProfileField::SunshineBorderless
         | ProfileField::EnvTable
         | ProfileField::WineDllOverrideTable => {}
     }

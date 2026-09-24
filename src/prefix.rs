@@ -96,6 +96,7 @@ mod tests {
             prefix_path: "~/unused".to_string(),
             prefixes_root: "~/prefixes".to_string(),
             windows_version: crate::config::WindowsVersion::Win10,
+            winearch: Default::default(),
             gamescope: Default::default(),
             gamescope_settings: Default::default(),
             launch_wrapper: None,

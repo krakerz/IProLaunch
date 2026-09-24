@@ -173,6 +173,13 @@ pub fn confirm_winetricks_key(app: &mut App, code: KeyCode, terminal: &mut Term)
 /// profile's own `proton` override is ignored (mirrors `Config::effective`),
 /// so this always resolves to the one shared prefix/Proton pair regardless
 /// of which profile was selected when `p` was pressed.
+///
+/// Also passes `WINEARCH` — this can be the very first thing to touch a
+/// prefix that doesn't exist yet (pressing `p` before ever launching the
+/// game), so it needs to agree with the configured `winearch` the same way
+/// `launch::apply_windows_version` does, for the same reason (see its own
+/// doc comment) — otherwise a fresh prefix created here would silently come
+/// up `win64` regardless of what's configured.
 fn run_winetricks(app: &mut App, terminal: &mut Term, slug: &str, name: &str) {
     let Some(profile) = app
         .profiles
@@ -184,26 +191,57 @@ fn run_winetricks(app: &mut App, terminal: &mut Term, slug: &str, name: &str) {
     };
     let effective = app.cfg.effective(Some(&profile));
     let prefix_path = prefix::resolve(&effective, slug);
-    let proton_dir = match proton::resolve_binary_dir(&effective.proton) {
-        Ok(dir) => dir,
-        Err(err) => {
-            app.status = Some(format!("Can't run winetricks: {err:#}"));
-            return;
+    // `proton == "system"` means "let umu-run auto-manage its own
+    // UMU-Proton build" — there's no pinned build directory for
+    // `resolve_binary_dir` to point winetricks at there, so this falls back
+    // to a real distro Wine on `$PATH` instead of just failing outright.
+    // Worth having: unlike `umu-run` itself, the specific UMU-Proton build
+    // it downloads for `"system"` hasn't had a new release since 2026-03.
+    let (wine, wineserver, using_system_wine) = if effective.proton == "system" {
+        match proton::system_wine_binaries() {
+            Some((wine, wineserver)) => (wine, wineserver, true),
+            None => {
+                app.status = Some(
+                    "Can't run winetricks: proton=\"system\" has no pinned build, and no \
+                     system wine/wineserver found on PATH — pick a Proton build in the TUI, \
+                     or install your distro's wine/winetricks."
+                        .to_string(),
+                );
+                return;
+            }
+        }
+    } else {
+        match proton::resolve_binary_dir(&effective.proton) {
+            Ok(dir) => (
+                dir.join("files/bin/wine"),
+                dir.join("files/bin/wineserver"),
+                false,
+            ),
+            Err(err) => {
+                app.status = Some(format!("Can't run winetricks: {err:#}"));
+                return;
+            }
         }
     };
-    let wine = proton_dir.join("files/bin/wine");
-    let wineserver = proton_dir.join("files/bin/wineserver");
 
     if suspend(terminal).is_err() {
         app.status = Some("Failed to suspend the TUI for winetricks.".to_string());
         return;
     }
 
+    if using_system_wine {
+        println!(
+            "Note: proton=\"system\" has no pinned build — using the system Wine on $PATH \
+             instead ({}), not a Proton build.",
+            wine.display()
+        );
+    }
     println!("Launching winetricks for {name}...");
     let result = Command::new("winetricks")
         .env("WINEPREFIX", &prefix_path)
         .env("WINE", &wine)
         .env("WINESERVER", &wineserver)
+        .env("WINEARCH", effective.winearch.as_str())
         .status();
     match &result {
         Ok(status) if status.success() => println!("\nwinetricks exited normally."),
@@ -459,9 +497,12 @@ fn add_to_sunshine(app: &mut App, slug: &str, name: &str) {
         return;
     };
     let sunshine_gamescope = app.cfg.effective_sunshine_gamescope(Some(&profile));
-    let extra_flags: Vec<&str> = crate::launch::gamescope_setting_cli_flag(sunshine_gamescope)
+    let mut extra_flags: Vec<&str> = crate::launch::gamescope_setting_cli_flag(sunshine_gamescope)
         .into_iter()
         .collect();
+    if app.cfg.effective_sunshine_borderless(Some(&profile)) {
+        extra_flags.push("-b");
+    }
     let cmd = crate::quick_launch_cmd::command_for(&exe, &extra_flags, slug);
     match crate::sunshine::add_app(
         &app.cfg.sunshine,

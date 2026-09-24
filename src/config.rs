@@ -157,6 +157,42 @@ pub enum GamescopeScaler {
     Stretch,
 }
 
+/// A prefix's bit-ness — passed straight through as the `WINEARCH` env var
+/// on every launch (see `launch::run`). Only actually *decided* the moment a
+/// prefix is first created; changing it against an already-existing prefix
+/// does nothing (wine keeps whatever arch that prefix was created with, or
+/// on some builds errors outright on the mismatch) — the TUI warns about
+/// this whenever the value changes (see `tui::config::cycle_field`/
+/// `tui::profile_editor::cycle_field`), since there's no way to convert an
+/// existing prefix in place; it has to be deleted and recreated.
+///
+/// `Win32` is increasingly unsupported: Wine's WoW64 rewrite (the
+/// architecture every current Proton/GE-Proton build is based on) dropped
+/// the ability to create a pure 32-bit-only prefix at all — attempting it
+/// against a build that has already made that jump fails outright with
+/// "WINEARCH is set to 'win32' but this is not supported in wow64 mode".
+/// Only an older, pre-rewrite Proton/GE-Proton build still honors it.
+/// `Win64`'s WoW64 layer already runs 32-bit *and* 64-bit Windows binaries
+/// side by side — `Win32` is never needed just to run a 32-bit game, only
+/// for the narrower case of wanting a prefix with no 64-bit support at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WineArch {
+    Win32,
+    #[default]
+    Win64,
+}
+
+impl WineArch {
+    /// The exact `WINEARCH` value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WineArch::Win32 => "win32",
+            WineArch::Win64 => "win64",
+        }
+    }
+}
+
 /// The Windows version a prefix reports itself as — passed straight through
 /// to `winetricks -q <verb>` (see `launch::apply_windows_version`), so each
 /// variant's `#[serde(rename)]` is the exact winetricks verb, confirmed
@@ -286,6 +322,8 @@ pub struct Defaults {
     #[serde(rename = "windows-version", default)]
     pub windows_version: WindowsVersion,
     #[serde(default)]
+    pub winearch: WineArch,
+    #[serde(default)]
     pub gamescope: GamescopeSetting,
     #[serde(default, skip_serializing_if = "is_default_gamescope_settings")]
     pub gamescope_settings: GamescopeSettings,
@@ -320,6 +358,7 @@ impl Default for Defaults {
             prefix_path: "~/.local/share/iprolaunch/prefix".into(),
             prefixes_root: "~/.local/share/iprolaunch/prefixes".into(),
             windows_version: WindowsVersion::default(),
+            winearch: WineArch::default(),
             gamescope: GamescopeSetting::None,
             gamescope_settings: GamescopeSettings::default(),
             launch_wrapper: None,
@@ -397,6 +436,16 @@ pub struct Sunshine {
     /// to `Fullscreen`, so this is opt-in.
     #[serde(default)]
     pub gamescope: GamescopeSetting,
+    /// Same idea as `gamescope` just above, for `-b`/`--borderless` —
+    /// deliberately independent of `Defaults::gamescope_settings.borderless`
+    /// (a normal desktop launch's own borderless toggle) for the identical
+    /// reason: a streamed session's framing needs often don't match a direct
+    /// desktop launch's. Unlike `gamescope_settings.borderless`, this has a
+    /// real global default (`false`) rather than `Option<bool>` — there's no
+    /// third "unset" state needed here, since Sunshine's own `cmd` either
+    /// gets `-b` or it doesn't; see `Config::effective_sunshine_borderless`.
+    #[serde(default)]
+    pub borderless: bool,
 }
 
 impl Default for Sunshine {
@@ -407,6 +456,7 @@ impl Default for Sunshine {
             username: None,
             auth_token: None,
             gamescope: GamescopeSetting::default(),
+            borderless: false,
         }
     }
 }
@@ -477,6 +527,15 @@ impl Config {
             .unwrap_or(self.sunshine.gamescope)
     }
 
+    /// Same idea as `effective_sunshine_gamescope`, for `-b`/`--borderless`:
+    /// this profile's own `sunshine_borderless` override if set, else the
+    /// global `sunshine.borderless` default.
+    pub fn effective_sunshine_borderless(&self, profile: Option<&Profile>) -> bool {
+        profile
+            .and_then(|p| p.defaults.sunshine_borderless)
+            .unwrap_or(self.sunshine.borderless)
+    }
+
     /// Merges this global config with an optional profile override.
     pub fn effective(&self, profile: Option<&Profile>) -> Effective {
         let d = &self.defaults;
@@ -525,6 +584,15 @@ impl Config {
         } else {
             d.windows_version
         };
+        // Same restriction as `proton`/`windows_version` above, for the same
+        // reason — only more so: two profiles sharing one prefix but
+        // resolving to a *different* architecture wouldn't just look wrong,
+        // it'd corrupt (or simply refuse to boot) that shared prefix.
+        let winearch = if prefix_mode == PrefixMode::PerSlug {
+            pd.and_then(|pd| pd.winearch).unwrap_or(d.winearch)
+        } else {
+            d.winearch
+        };
         let gamescope = pd.and_then(|pd| pd.gamescope).unwrap_or(d.gamescope);
         let gamescope_settings = d
             .gamescope_settings
@@ -558,6 +626,7 @@ impl Config {
             prefix_path,
             prefixes_root: d.prefixes_root.clone(),
             windows_version,
+            winearch,
             gamescope,
             gamescope_settings,
             launch_wrapper,
@@ -580,6 +649,7 @@ pub struct Effective {
     pub prefix_path: String,
     pub prefixes_root: String,
     pub windows_version: WindowsVersion,
+    pub winearch: WineArch,
     pub gamescope: GamescopeSetting,
     pub gamescope_settings: GamescopeSettings,
     pub launch_wrapper: Option<String>,
@@ -601,8 +671,9 @@ pub struct ProfileDefaults {
     /// other profile to per-slug mode too. `None` means "inherit the
     /// global setting", same as every other override here. See
     /// `Config::effective` for how this also gates `proton`/
-    /// `windows_version` below — those only apply once *this profile's*
-    /// resolved mode (not necessarily the global one) is `PerSlug`.
+    /// `windows_version`/`winearch` below — those only apply once *this
+    /// profile's* resolved mode (not necessarily the global one) is
+    /// `PerSlug`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix_mode: Option<PrefixMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -611,6 +682,8 @@ pub struct ProfileDefaults {
     pub prefix_path: Option<String>,
     #[serde(rename = "windows-version", skip_serializing_if = "Option::is_none")]
     pub windows_version: Option<WindowsVersion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub winearch: Option<WineArch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gamescope: Option<GamescopeSetting>,
     #[serde(default, skip_serializing_if = "is_default_gamescope_settings")]
@@ -624,6 +697,11 @@ pub struct ProfileDefaults {
     /// See `Config::effective_sunshine_gamescope`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sunshine_gamescope: Option<GamescopeSetting>,
+    /// This profile's own override of `sunshine.borderless` — same
+    /// independence reasoning as `sunshine_gamescope` just above. See
+    /// `Config::effective_sunshine_borderless`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunshine_borderless: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -888,6 +966,68 @@ mod tests {
             cfg.effective(Some(&profile)).windows_version,
             WindowsVersion::WinXp
         );
+    }
+
+    #[test]
+    fn winearch_global_default_applies_regardless_of_prefix_mode() {
+        let mut cfg = Config::default();
+        cfg.defaults.prefix_mode = PrefixMode::Single;
+        assert_eq!(cfg.effective(None).winearch, cfg.defaults.winearch);
+
+        cfg.defaults.prefix_mode = PrefixMode::PerSlug;
+        assert_eq!(cfg.effective(None).winearch, cfg.defaults.winearch);
+    }
+
+    #[test]
+    fn profile_winearch_override_is_ignored_outside_per_slug_mode() {
+        let mut cfg = Config::default();
+        cfg.defaults.winearch = WineArch::Win64;
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        profile.defaults.winearch = Some(WineArch::Win32);
+
+        cfg.defaults.prefix_mode = PrefixMode::Single;
+        assert_eq!(cfg.effective(Some(&profile)).winearch, WineArch::Win64);
+
+        cfg.defaults.prefix_mode = PrefixMode::PerSlug;
+        assert_eq!(cfg.effective(Some(&profile)).winearch, WineArch::Win32);
+    }
+
+    #[test]
+    fn effective_sunshine_borderless_falls_back_to_the_global_default() {
+        let mut cfg = Config::default();
+        cfg.sunshine.borderless = true;
+        assert!(cfg.effective_sunshine_borderless(None));
+    }
+
+    #[test]
+    fn profile_sunshine_borderless_override_wins_when_set() {
+        let mut cfg = Config::default();
+        cfg.sunshine.borderless = false;
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        assert!(!cfg.effective_sunshine_borderless(Some(&profile)));
+
+        profile.defaults.sunshine_borderless = Some(true);
+        assert!(cfg.effective_sunshine_borderless(Some(&profile)));
     }
 
     #[test]
