@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [1.41.0] — 2026-10-07
+
+### Added
+- Sunshine tab in the TUI for the streaming virtual desktop's settings.
+- Built-in headless Sway virtual desktop for Sunshine streams (`iprolaunch sunshine service`).
+- Stream resolution, refresh and audio channels follow the connecting client, with fixed-mode and per-game overrides.
+- Streamed mouse/keyboard are kept off the host desktop on Hyprland, Sway and KDE.
+- Game audio is routed into the stream automatically, including after the game pauses or reopens its audio.
+- `iprolaunch sunshine install-service` sets Sunshine's systemd service up to use it.
+- Sunshine tab has a service section to set up, restart or restore Sunshine's service and audio sink setting.
+
+### Changed
+- Sunshine's gamescope/borderless settings moved from the Config tab to the Sunshine tab.
+- Games added to Sunshine now use IProLaunch's own prep commands, and setup updates games already added.
+
 ## [1.40.0] — 2026-09-24
 
 ### Added

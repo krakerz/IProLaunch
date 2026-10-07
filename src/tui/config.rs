@@ -2,7 +2,7 @@ use crossterm::event::KeyCode;
 
 use super::app::{
     self, App, ConfigField, FieldKind, IntegrateAction, IntegrateField, MapField, Mode,
-    ProtonPickerTarget, TextInputPurpose,
+    ProtonPickerTarget, SunshineServiceField, TextInputPurpose,
 };
 use super::profile_editor;
 use super::{Term, resume, suspend, wait_for_return};
@@ -16,36 +16,58 @@ fn total_rows() -> usize {
     ConfigField::ALL.len() + IntegrateField::ALL.len()
 }
 
+/// The Config and Sunshine tabs share this handler; each keeps its own selection.
+fn on_sunshine_tab(app: &App) -> bool {
+    app.tab == app::Tab::Sunshine
+}
+
+/// The `ConfigField` row currently selected on whichever of the two tabs is
+/// active, or `None` when the selection is in that tab's bottom table.
+fn selected_field(app: &App) -> Option<ConfigField> {
+    if on_sunshine_tab(app) {
+        ConfigField::SUNSHINE.get(app.sunshine_selected).copied()
+    } else {
+        ConfigField::ALL.get(app.config_selected).copied()
+    }
+}
+
 pub fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
-    match code {
-        KeyCode::Up => {
-            app.config_selected = app::move_selection(app.config_selected, total_rows(), -1);
-        }
-        KeyCode::Down => {
-            app.config_selected = app::move_selection(app.config_selected, total_rows(), 1);
-        }
-        KeyCode::Left => adjust_number(app, -1),
-        KeyCode::Right => adjust_number(app, 1),
-        KeyCode::Enter => activate_selected(app, terminal),
-        _ => {}
+    let delta = match code {
+        KeyCode::Up => -1,
+        KeyCode::Down => 1,
+        KeyCode::Left => return adjust_number(app, -1),
+        KeyCode::Right => return adjust_number(app, 1),
+        KeyCode::Enter => return activate_selected(app, terminal),
+        _ => return,
+    };
+    if on_sunshine_tab(app) {
+        let rows = ConfigField::SUNSHINE.len() + SunshineServiceField::ALL.len();
+        app.sunshine_selected = app::move_selection(app.sunshine_selected, rows, delta);
+    } else {
+        app.config_selected = app::move_selection(app.config_selected, total_rows(), delta);
     }
 }
 
 fn activate_selected(app: &mut App, terminal: &mut Term) {
-    if app.config_selected >= ConfigField::ALL.len() {
+    let Some(field) = selected_field(app) else {
+        if on_sunshine_tab(app) {
+            let field =
+                SunshineServiceField::ALL[app.sunshine_selected - ConfigField::SUNSHINE.len()];
+            return run_sunshine_service_action(app, terminal, field);
+        }
         let field = IntegrateField::ALL[app.config_selected - ConfigField::ALL.len()];
         return activate_integrate_field(app, terminal, field);
-    }
+    };
 
-    let field = ConfigField::ALL[app.config_selected];
     match field.kind() {
         FieldKind::Cycle => cycle_field(app, field),
         FieldKind::Toggle => {
+            let s = &mut app.cfg.sunshine;
             match field {
                 ConfigField::LogAutoOpen => app.cfg.logging.auto_open = !app.cfg.logging.auto_open,
-                ConfigField::SunshineBorderless => {
-                    app.cfg.sunshine.borderless = !app.cfg.sunshine.borderless;
-                }
+                ConfigField::SunshineBorderless => s.borderless = !s.borderless,
+                ConfigField::SunshineInputIsolation => s.input_isolation = !s.input_isolation,
+                ConfigField::SunshineHideCursor => s.hide_cursor = !s.hide_cursor,
                 _ => {}
             }
             save_config(app);
@@ -86,6 +108,40 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
             };
         }
     }
+}
+
+/// Same suspend/print/wait/resume shape as `run_integrate_action`.
+fn run_sunshine_service_action(app: &mut App, terminal: &mut Term, field: SunshineServiceField) {
+    let action: fn(&crate::config::Config) -> anyhow::Result<()> = match field {
+        SunshineServiceField::Status => return,
+        SunshineServiceField::Setup => crate::vdesktop::install_service,
+        SunshineServiceField::Restart => |_| crate::vdesktop::restart_service(),
+        SunshineServiceField::Restore => |_| crate::vdesktop::restore_service(),
+    };
+    if suspend(terminal).is_err() {
+        app.status = Some("Failed to suspend the TUI.".to_string());
+        return;
+    }
+    let result = action(&app.cfg);
+    if let Err(err) = &result {
+        println!("Error: {err:#}");
+    }
+    wait_for_return();
+    if resume(terminal).is_err() {
+        app.status = Some("Failed to restore the TUI.".to_string());
+        return;
+    }
+    app.sunshine_service_status = crate::vdesktop::service_status();
+    app.status = Some(match (field, result) {
+        (_, Err(err)) => format!("{} failed: {err:#}", field.label()),
+        (SunshineServiceField::Setup, Ok(())) => {
+            "Sunshine set up — restart Sunshine to start using it.".to_string()
+        }
+        (SunshineServiceField::Restore, Ok(())) => {
+            "Original Sunshine service restored — restart it to apply.".to_string()
+        }
+        _ => "Sunshine restarted.".to_string(),
+    });
 }
 
 fn activate_integrate_field(app: &mut App, terminal: &mut Term, field: IntegrateField) {
@@ -296,6 +352,14 @@ fn cycle_field(app: &mut App, field: ConfigField) {
         ConfigField::SunshineGamescope => {
             app.cfg.sunshine.gamescope = app::next_sunshine_gamescope(app.cfg.sunshine.gamescope);
         }
+        ConfigField::SunshineResolutionMode => {
+            app.cfg.sunshine.resolution_mode =
+                app::next_resolution_mode(app.cfg.sunshine.resolution_mode);
+        }
+        ConfigField::SunshineAudioChannels => {
+            app.cfg.sunshine.audio_channels =
+                app::next_audio_channels(app.cfg.sunshine.audio_channels);
+        }
         _ => {}
     }
     save_config(app);
@@ -321,8 +385,67 @@ fn current_text_value(app: &App, field: ConfigField) -> String {
             gs.nested_height.map_or(String::new(), |v| v.to_string())
         }
         ConfigField::LaunchWrapper => app.cfg.defaults.launch_wrapper.clone().unwrap_or_default(),
+        ConfigField::SunshineWidth => app.cfg.sunshine.width.to_string(),
+        ConfigField::SunshineHeight => app.cfg.sunshine.height.to_string(),
+        ConfigField::SunshineRefresh => app.cfg.sunshine.refresh.to_string(),
+        ConfigField::SunshineRefreshCap => app
+            .cfg
+            .sunshine
+            .refresh_cap
+            .map_or(String::new(), |v| v.to_string()),
+        ConfigField::SunshineScale => app.cfg.sunshine.scale.to_string(),
+        ConfigField::SunshineAudioSink => app.cfg.sunshine.audio_sink.clone(),
+        ConfigField::SunshineInputMatch => app.cfg.sunshine.input_match.join(", "),
+        ConfigField::SunshineSocketName => app.cfg.sunshine.socket_name.clone(),
         _ => String::new(),
     }
+}
+
+/// Applies a Sunshine-tab text field; `Err` is the status message for a rejected value.
+fn apply_sunshine_text(app: &mut App, field: ConfigField, trimmed: &str) -> Result<(), String> {
+    let s = &mut app.cfg.sunshine;
+    let whole = |v: &str| {
+        v.parse::<u32>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| format!("\"{v}\" isn't a positive whole number"))
+    };
+    let non_empty = |v: &str| {
+        (!v.is_empty())
+            .then(|| v.to_string())
+            .ok_or_else(|| "can't be blank".to_string())
+    };
+    match field {
+        ConfigField::SunshineWidth => s.width = whole(trimmed)?,
+        ConfigField::SunshineHeight => s.height = whole(trimmed)?,
+        ConfigField::SunshineRefresh => s.refresh = whole(trimmed)?,
+        ConfigField::SunshineRefreshCap => {
+            s.refresh_cap = if trimmed.is_empty() {
+                None
+            } else {
+                Some(whole(trimmed)?)
+            };
+        }
+        ConfigField::SunshineScale => {
+            s.scale = trimmed
+                .parse::<f64>()
+                .ok()
+                .filter(|v| *v > 0.0)
+                .ok_or_else(|| format!("\"{trimmed}\" isn't a positive number"))?;
+        }
+        ConfigField::SunshineAudioSink => s.audio_sink = non_empty(trimmed)?,
+        ConfigField::SunshineSocketName => s.socket_name = non_empty(trimmed)?,
+        ConfigField::SunshineInputMatch => {
+            s.input_match = trimmed
+                .split(',')
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Applies a confirmed text-input popup value to the field it was opened
@@ -336,6 +459,15 @@ fn current_text_value(app: &App, field: ConfigField) -> String {
 /// silently discarded.
 pub fn apply_text_field(app: &mut App, field: ConfigField, value: String) {
     let trimmed = value.trim().to_string();
+    if ConfigField::SUNSHINE.contains(&field) {
+        match apply_sunshine_text(app, field, &trimmed) {
+            Ok(()) => save_config(app),
+            Err(msg) => {
+                app.status = Some(format!("{msg} — {} left unchanged.", field.label()));
+            }
+        }
+        return;
+    }
     let is_numeric_field = matches!(
         field,
         ConfigField::GamescopeOutputWidth
@@ -417,10 +549,9 @@ pub fn apply_proton_choice(
 }
 
 fn adjust_number(app: &mut App, delta: i64) {
-    if app.config_selected >= ConfigField::ALL.len() {
+    let Some(field) = selected_field(app) else {
         return; // no Number-kind field in the integrate table
-    }
-    let field = ConfigField::ALL[app.config_selected];
+    };
     match field {
         ConfigField::LogKeep => {
             app.cfg.logging.keep = adjust_u32(app.cfg.logging.keep, delta);

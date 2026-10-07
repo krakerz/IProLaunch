@@ -70,7 +70,13 @@ pub fn run(cfg: Config) -> Result<()> {
 }
 
 fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -> Result<()> {
+    let mut last_tab = app.tab;
     loop {
+        // systemctl is too slow to query every frame; refresh on entering the tab.
+        if app.tab == app::Tab::Sunshine && last_tab != app::Tab::Sunshine {
+            app.sunshine_service_status = crate::vdesktop::service_status();
+        }
+        last_tab = app.tab;
         terminal.draw(|f| ui::draw(f, app))?;
 
         let mut handled = false;
@@ -155,6 +161,10 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         }
         KeyCode::Char('4') => {
             app.clear_filters();
+            app.tab = app::Tab::Sunshine;
+        }
+        KeyCode::Char('5') => {
+            app.clear_filters();
             app.tab = app::Tab::Help;
         }
         KeyCode::Char('?') => app.mode = Mode::Help,
@@ -163,7 +173,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         _ => match app.tab {
             app::Tab::Running => running::on_key(app, code, terminal),
             app::Tab::Library => library::on_key(app, code, terminal),
-            app::Tab::Config => config::on_key(app, code, terminal),
+            app::Tab::Config | app::Tab::Sunshine => config::on_key(app, code, terminal),
             app::Tab::Help => help_scroll_key(app, code),
         },
     }

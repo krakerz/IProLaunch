@@ -9,7 +9,7 @@ use ratatui::widgets::{
 
 use super::app::{
     self, App, ConfigField, InputKind, IntegrateField, MapEntryStep, MapField, Mode, ProfileField,
-    ProtonPickerTarget, Tab, TextInputPurpose,
+    ProtonPickerTarget, SunshineServiceField, Tab, TextInputPurpose,
 };
 
 /// figlet, font "slant". Kept as literal art rather than generated at
@@ -49,6 +49,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             None => draw_library(frame, chunks[2], app),
         },
         Tab::Config => draw_config(frame, chunks[2], app),
+        Tab::Sunshine => draw_sunshine(frame, chunks[2], app),
         Tab::Help => draw_help(frame, chunks[2], app),
     }
 
@@ -656,6 +657,22 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .defaults
                     .sunshine_borderless
                     .map_or_else(|| "(inherit)".to_string(), |b| b.to_string()),
+                ProfileField::SunshineResolutionMode => profile
+                    .defaults
+                    .sunshine_resolution_mode
+                    .map_or_else(|| "(inherit)".to_string(), |m| format!("{m:?}")),
+                ProfileField::SunshineWidth => profile
+                    .defaults
+                    .sunshine_width
+                    .map_or_else(|| "(inherit)".to_string(), |v| v.to_string()),
+                ProfileField::SunshineHeight => profile
+                    .defaults
+                    .sunshine_height
+                    .map_or_else(|| "(inherit)".to_string(), |v| v.to_string()),
+                ProfileField::SunshineRefresh => profile
+                    .defaults
+                    .sunshine_refresh
+                    .map_or_else(|| "(inherit)".to_string(), |v| v.to_string()),
                 ProfileField::EnvTable => entry_count(&profile.env),
                 ProfileField::WineDllOverrideTable => entry_count(&profile.winedlloverride),
             };
@@ -838,83 +855,66 @@ fn draw_config(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
-    let d = &app.cfg.defaults;
-    let l = &app.cfg.logging;
-    let g = &app.cfg.gamedb;
+    draw_field_list(
+        frame,
+        area,
+        app,
+        &ConfigField::ALL,
+        app.config_selected,
+        "Config (Enter = edit/cycle, Left/Right = adjust number)",
+        config_row_state(app, 0, ConfigField::ALL.len()),
+    );
+}
+
+fn draw_sunshine(frame: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(SunshineServiceField::ALL.len() as u16 + 2),
+        ])
+        .split(area);
+    draw_field_list(
+        frame,
+        chunks[0],
+        app,
+        &ConfigField::SUNSHINE,
+        app.sunshine_selected,
+        "Sunshine virtual desktop (Enter = edit/cycle)",
+        sunshine_row_state(app, 0, ConfigField::SUNSHINE.len()),
+    );
+    draw_sunshine_service_table(frame, chunks[1], app);
+}
+
+fn draw_sunshine_service_table(frame: &mut Frame, area: Rect, app: &App) {
     let inner_width = area.width.saturating_sub(4) as usize;
     let tick = app.marquee_tick();
-    let label_width = label_column_width(ConfigField::ALL.iter().map(|f| f.label()));
+    let selected_local = app
+        .sunshine_selected
+        .checked_sub(ConfigField::SUNSHINE.len());
+    let label_width = label_column_width(SunshineServiceField::ALL.iter().map(|f| f.label()));
 
-    let items: Vec<ListItem> = ConfigField::ALL
+    let items: Vec<ListItem> = SunshineServiceField::ALL
         .iter()
         .enumerate()
         .map(|(i, field)| {
             let value = match field {
-                ConfigField::Proton => d.proton.clone(),
-                ConfigField::PrefixMode => format!("{:?}", d.prefix_mode),
-                ConfigField::PrefixPath => d.prefix_path.clone(),
-                ConfigField::PrefixesRoot => d.prefixes_root.clone(),
-                ConfigField::WindowsVersion => format!("{:?}", d.windows_version),
-                ConfigField::WineArch => format!("{:?}", d.winearch),
-                ConfigField::Gamescope => format!("{:?}", d.gamescope),
-                ConfigField::GamescopeOutputWidth => d
-                    .gamescope_settings
-                    .output_width
-                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
-                ConfigField::GamescopeOutputHeight => d
-                    .gamescope_settings
-                    .output_height
-                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
-                ConfigField::GamescopeRefresh => d
-                    .gamescope_settings
-                    .refresh
-                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
-                ConfigField::GamescopeNestedWidth => d
-                    .gamescope_settings
-                    .nested_width
-                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
-                ConfigField::GamescopeNestedHeight => d
-                    .gamescope_settings
-                    .nested_height
-                    .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
-                ConfigField::GamescopeFilter => d
-                    .gamescope_settings
-                    .filter
-                    .map_or_else(|| "(unset)".to_string(), |f| format!("{f:?}")),
-                ConfigField::GamescopeScaler => d
-                    .gamescope_settings
-                    .scaler
-                    .map_or_else(|| "(unset)".to_string(), |s| format!("{s:?}")),
-                ConfigField::GamescopeBorderless => d
-                    .gamescope_settings
-                    .borderless
-                    .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
-                ConfigField::GamescopeGrabCursor => d
-                    .gamescope_settings
-                    .grab_cursor
-                    .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
-                ConfigField::GamescopeAdaptiveSync => d
-                    .gamescope_settings
-                    .adaptive_sync
-                    .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
-                ConfigField::LaunchWrapper => d
-                    .launch_wrapper
-                    .clone()
-                    .unwrap_or_else(|| "(none)".to_string()),
-                ConfigField::LogMode => format!("{:?}", l.mode),
-                ConfigField::LogPath => l.path.clone(),
-                ConfigField::LogKeep => l.keep.to_string(),
-                ConfigField::LogRecord => format!("{:?}", l.record),
-                ConfigField::LogAutoOpen => l.auto_open.to_string(),
-                ConfigField::LogAutoOpenScope => format!("{:?}", l.auto_open_scope),
-                ConfigField::GamedbInterval => g.update_interval_days.to_string(),
-                ConfigField::SunshineGamescope => format!("{:?}", app.cfg.sunshine.gamescope),
-                ConfigField::SunshineBorderless => app.cfg.sunshine.borderless.to_string(),
-                ConfigField::EnvTable => entry_count(&app.cfg.env),
-                ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
+                SunshineServiceField::Status if app.sunshine_service_status.is_empty() => {
+                    "(checking...)".to_string()
+                }
+                SunshineServiceField::Status => app.sunshine_service_status.clone(),
+                SunshineServiceField::Setup => {
+                    "Enter = run Sunshine's systemd service inside this virtual desktop".to_string()
+                }
+                SunshineServiceField::Restart => {
+                    "Enter = restart Sunshine to apply changes".to_string()
+                }
+                SunshineServiceField::Restore => {
+                    "Enter = put back the service config from before setup".to_string()
+                }
             };
             let combined = format!("{:<label_width$} {value}", field.label());
-            let text = if i == app.config_selected && combined.chars().count() > inner_width {
+            let text = if selected_local == Some(i) && combined.chars().count() > inner_width {
                 marquee(&combined, inner_width, tick)
             } else {
                 combined
@@ -926,15 +926,157 @@ fn draw_config_fields(frame: &mut Frame, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Config (Enter = edit/cycle, Left/Right = adjust number)"),
+                .title("Sunshine service"),
         )
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("> ");
     frame.render_stateful_widget(
         list,
         area,
-        &mut config_row_state(app, 0, ConfigField::ALL.len()),
+        &mut sunshine_row_state(
+            app,
+            ConfigField::SUNSHINE.len(),
+            SunshineServiceField::ALL.len(),
+        ),
     );
+}
+
+/// Same as `config_row_state`, for the Sunshine tab's two tables.
+fn sunshine_row_state(app: &App, offset: usize, len: usize) -> ratatui::widgets::ListState {
+    let mut state = ratatui::widgets::ListState::default();
+    if app.sunshine_selected >= offset && app.sunshine_selected < offset + len {
+        state.select(Some(app.sunshine_selected - offset));
+    }
+    state
+}
+
+fn draw_field_list(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    fields: &[ConfigField],
+    selected: usize,
+    title: &str,
+    mut state: ratatui::widgets::ListState,
+) {
+    let inner_width = area.width.saturating_sub(4) as usize;
+    let tick = app.marquee_tick();
+    let label_width = label_column_width(fields.iter().map(|f| f.label()));
+
+    let items: Vec<ListItem> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, field)| {
+            let value = config_field_value(app, *field);
+            let combined = format!("{:<label_width$} {value}", field.label());
+            let text = if i == selected && combined.chars().count() > inner_width {
+                marquee(&combined, inner_width, tick)
+            } else {
+                combined
+            };
+            ListItem::new(text)
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title.to_string()),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn config_field_value(app: &App, field: ConfigField) -> String {
+    let d = &app.cfg.defaults;
+    let l = &app.cfg.logging;
+    let g = &app.cfg.gamedb;
+    let s = &app.cfg.sunshine;
+    match field {
+        ConfigField::Proton => d.proton.clone(),
+        ConfigField::PrefixMode => format!("{:?}", d.prefix_mode),
+        ConfigField::PrefixPath => d.prefix_path.clone(),
+        ConfigField::PrefixesRoot => d.prefixes_root.clone(),
+        ConfigField::WindowsVersion => format!("{:?}", d.windows_version),
+        ConfigField::WineArch => format!("{:?}", d.winearch),
+        ConfigField::Gamescope => format!("{:?}", d.gamescope),
+        ConfigField::GamescopeOutputWidth => d
+            .gamescope_settings
+            .output_width
+            .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+        ConfigField::GamescopeOutputHeight => d
+            .gamescope_settings
+            .output_height
+            .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+        ConfigField::GamescopeRefresh => d
+            .gamescope_settings
+            .refresh
+            .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+        ConfigField::GamescopeNestedWidth => d
+            .gamescope_settings
+            .nested_width
+            .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+        ConfigField::GamescopeNestedHeight => d
+            .gamescope_settings
+            .nested_height
+            .map_or_else(|| "(unset)".to_string(), |v| v.to_string()),
+        ConfigField::GamescopeFilter => d
+            .gamescope_settings
+            .filter
+            .map_or_else(|| "(unset)".to_string(), |f| format!("{f:?}")),
+        ConfigField::GamescopeScaler => d
+            .gamescope_settings
+            .scaler
+            .map_or_else(|| "(unset)".to_string(), |s| format!("{s:?}")),
+        ConfigField::GamescopeBorderless => d
+            .gamescope_settings
+            .borderless
+            .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
+        ConfigField::GamescopeGrabCursor => d
+            .gamescope_settings
+            .grab_cursor
+            .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
+        ConfigField::GamescopeAdaptiveSync => d
+            .gamescope_settings
+            .adaptive_sync
+            .map_or_else(|| "(unset)".to_string(), |b| b.to_string()),
+        ConfigField::LaunchWrapper => d
+            .launch_wrapper
+            .clone()
+            .unwrap_or_else(|| "(none)".to_string()),
+        ConfigField::LogMode => format!("{:?}", l.mode),
+        ConfigField::LogPath => l.path.clone(),
+        ConfigField::LogKeep => l.keep.to_string(),
+        ConfigField::LogRecord => format!("{:?}", l.record),
+        ConfigField::LogAutoOpen => l.auto_open.to_string(),
+        ConfigField::LogAutoOpenScope => format!("{:?}", l.auto_open_scope),
+        ConfigField::GamedbInterval => g.update_interval_days.to_string(),
+        ConfigField::SunshineGamescope => format!("{:?}", s.gamescope),
+        ConfigField::SunshineBorderless => s.borderless.to_string(),
+        ConfigField::SunshineResolutionMode => format!("{:?}", s.resolution_mode),
+        ConfigField::SunshineWidth => s.width.to_string(),
+        ConfigField::SunshineHeight => s.height.to_string(),
+        ConfigField::SunshineRefresh => s.refresh.to_string(),
+        ConfigField::SunshineRefreshCap => s
+            .refresh_cap
+            .map_or_else(|| "(none)".to_string(), |v| v.to_string()),
+        ConfigField::SunshineScale => s.scale.to_string(),
+        ConfigField::SunshineAudioSink => s.audio_sink.clone(),
+        ConfigField::SunshineAudioChannels => format!("{:?}", s.audio_channels),
+        ConfigField::SunshineInputIsolation => s.input_isolation.to_string(),
+        ConfigField::SunshineInputMatch => {
+            if s.input_match.is_empty() {
+                "(auto: libvirtualhid-*)".to_string()
+            } else {
+                s.input_match.join(", ")
+            }
+        }
+        ConfigField::SunshineHideCursor => s.hide_cursor.to_string(),
+        ConfigField::SunshineSocketName => s.socket_name.clone(),
+        ConfigField::EnvTable => entry_count(&app.cfg.env),
+        ConfigField::WineDllOverrideTable => entry_count(&app.cfg.winedlloverride),
+    }
 }
 
 fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
@@ -1005,7 +1147,7 @@ const HELP_TEXT: &str = "\
 iprolaunch — TUI help
 
 Global:
-  1/2/3/4, Tab/Shift-Tab   switch screen (also clears an active Running/
+  1/2/3/4/5, Tab/Shift-Tab switch screen (also clears an active Running/
                            Library quick-search, locked or still typing)
   ?                        open this help as a popup from any tab (Esc closes it)
   Up/Down/PageUp/PageDown/Home/End   scroll (Help tab and the ? popup)
@@ -1081,12 +1223,10 @@ Library:
                                pattern) as `-b`, on the Sunshine app's own
                                launch command — both independent of this
                                game's normal desktop-launch gamescope
-                               setting, off by default. Picks up the same
-                               resolution-
-                               switch prep-cmd every LutrisToSunshine-
-                               managed app already gets, when that's
-                               detected and enabled — nothing to configure,
-                               it's skipped entirely otherwise.
+                               setting, off by default. Each game also gets
+                               prep commands that fit the Sunshine virtual
+                               desktop and audio to the connecting client
+                               (see the Sunshine tab).
                              - Cancel.
   f                        quick-search — filters by name or exe path as you
                            type (so e.g. a shared path segment tells apart
@@ -1199,6 +1339,31 @@ Config:
   \"Desktop integration\" table below it — one shared cursor, two blocks.
   Changes save to config.toml immediately.
 
+Sunshine:
+  Settings for the headless virtual desktop Sunshine streams from (same
+  keys as Config). Set it up once with \"setup sunshine service\" in the
+  table at the bottom, then \"restart sunshine\".
+  resolution_mode            match-client = fit each stream to the client;
+                             fixed = always width x height @ refresh
+  refresh_cap                upper bound on the client's requested refresh
+  audio_sink / channels      sink the game's audio is routed into and
+                             Sunshine captures (setup sets Sunshine's own
+                             audio_sink to it)
+  input_isolation            keep streamed mouse/keyboard off the host desktop
+                             (Hyprland, Sway, KDE)
+  input_match                exact device names to isolate, comma-separated
+
+Sunshine service (Sunshine tab, bottom table):
+  status                     whether the service is set up, and running
+  setup                      run Sunshine's systemd service inside the virtual
+                             desktop and point Sunshine's audio_sink at the
+                             stream sink, and update games already in
+                             Sunshine (same as `iprolaunch sunshine
+                             install-service`), backing up both configs first
+  restart                    restart Sunshine to apply changes
+  restore                    put back the service and Sunshine config from
+                             before setup
+
 Desktop integration (Config tab, bottom table):
   status / binary location  info only, not editable
   setup                      register iprolaunch as the default .exe/.bat/.cmd/.msi
@@ -1300,7 +1465,7 @@ fn draw_help_popup(frame: &mut Frame, app: &App) {
 /// whenever there's no real status message to display, so they're always
 /// visible without needing to check the Help tab/popup for them
 /// specifically.
-const GLOBAL_KEY_HINTS: &str = "q = quit   ? = help   1-4 / Tab / Shift-Tab = switch tabs";
+const GLOBAL_KEY_HINTS: &str = "q = quit   ? = help   1-5 / Tab / Shift-Tab = switch tabs";
 const GLOBAL_KEY_HINTS_GAMEPAD: &str = "Start = quit   Y = help   LB/RB = switch tabs";
 
 fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
@@ -2344,9 +2509,23 @@ mod tests {
         app.profile_editor = Some("game-1".to_string());
         // Tall enough to fit every field row without clipping — see
         // `config_tab_lists_every_field_label`'s identical reasoning.
-        let out = rendered(&mut app, 100, 44);
+        let out = rendered(&mut app, 100, 48);
         assert!(out.contains("Game#1"));
         for field in ProfileField::ALL {
+            assert!(
+                out.contains(field.label()),
+                "missing label: {}",
+                field.label()
+            );
+        }
+    }
+
+    #[test]
+    fn sunshine_tab_lists_every_field_label() {
+        let mut app = test_app();
+        app.tab = Tab::Sunshine;
+        let out = rendered(&mut app, 100, 36);
+        for field in ConfigField::SUNSHINE {
             assert!(
                 out.contains(field.label()),
                 "missing label: {}",
