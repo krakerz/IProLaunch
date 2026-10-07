@@ -13,6 +13,7 @@ mod sunshine;
 mod terminal;
 mod tui;
 mod updater;
+mod vdesktop;
 
 use std::fs;
 use std::io::Write;
@@ -117,6 +118,12 @@ enum Command {
         #[command(subcommand)]
         action: ContextMenuAction,
     },
+    /// Sunshine streaming: the headless virtual desktop Sunshine runs inside,
+    /// and the per-stream prep commands its app entries call.
+    Sunshine {
+        #[command(subcommand)]
+        action: SunshineAction,
+    },
     /// `iprolaunch <name-or-slug|exe-path> [args...]` — quick-launch a
     /// library entry by its display name or slug, no `run` prefix needed.
     /// If the query isn't a known name/slug but is a real file, it's
@@ -162,6 +169,24 @@ enum ContextMenuAction {
     Uninstall {
         de: Option<context_menu::DesktopEnv>,
     },
+}
+
+#[derive(Subcommand)]
+enum SunshineAction {
+    /// Start the headless virtual desktop, then Sunshine inside it (used as
+    /// Sunshine's systemd ExecStart — see `install-service`).
+    Service {
+        /// Sunshine binary to run.
+        #[arg(long, default_value = "sunshine")]
+        sunshine: String,
+    },
+    /// Per-stream setup/teardown, run by Sunshine as an app's prep-cmd.
+    Prep {
+        action: vdesktop::PrepAction,
+        slug: Option<String>,
+    },
+    /// Point Sunshine's systemd user service at `iprolaunch sunshine service`.
+    InstallService,
 }
 
 #[derive(Subcommand)]
@@ -513,6 +538,14 @@ fn main() -> Result<()> {
         Some(Command::ContextMenu {
             action: ContextMenuAction::Uninstall { de },
         }) => context_menu::uninstall(de),
+        Some(Command::Sunshine { action }) => match action {
+            SunshineAction::Service { sunshine } => vdesktop::run_service(&cfg, &sunshine),
+            SunshineAction::Prep { action, slug } => {
+                vdesktop::prep(&cfg, action, slug.as_deref());
+                Ok(())
+            }
+            SunshineAction::InstallService => vdesktop::install_service(&cfg),
+        },
         Some(Command::Quick(mut args)) => {
             if args.is_empty() {
                 anyhow::bail!("usage: iprolaunch <name-or-slug> [args...]");

@@ -446,6 +446,62 @@ pub struct Sunshine {
     /// gets `-b` or it doesn't; see `Config::effective_sunshine_borderless`.
     #[serde(default)]
     pub borderless: bool,
+    #[serde(default)]
+    pub resolution_mode: ResolutionMode,
+    /// Used in `fixed` mode, and as the fallback when the client's own
+    /// values are missing from the prep-cmd environment.
+    #[serde(default = "default_stream_width")]
+    pub width: u32,
+    #[serde(default = "default_stream_height")]
+    pub height: u32,
+    #[serde(default = "default_stream_refresh")]
+    pub refresh: u32,
+    /// Upper bound on whatever refresh the client asks for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_cap: Option<u32>,
+    #[serde(default = "default_stream_scale")]
+    pub scale: f64,
+    /// PipeWire/Pulse sink the game plays into; Sunshine's own `audio_sink`
+    /// must name the same sink to capture it.
+    #[serde(default = "default_stream_audio_sink")]
+    pub audio_sink: String,
+    #[serde(default)]
+    pub audio_channels: AudioChannels,
+    /// Disable Sunshine's virtual input devices on the host desktop for the
+    /// stream's duration, so streamed input only reaches the virtual desktop.
+    #[serde(default = "default_true")]
+    pub input_isolation: bool,
+    /// Exact host device names to isolate; empty = auto-detect Sunshine's
+    /// own (`libvirtualhid-*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_match: Vec<String>,
+    #[serde(default)]
+    pub hide_cursor: bool,
+    /// The virtual desktop's Sway IPC socket name, under `$XDG_RUNTIME_DIR`.
+    #[serde(default = "default_stream_socket")]
+    pub socket_name: String,
+}
+
+fn default_stream_width() -> u32 {
+    1920
+}
+fn default_stream_height() -> u32 {
+    1080
+}
+fn default_stream_refresh() -> u32 {
+    60
+}
+fn default_stream_scale() -> f64 {
+    1.0
+}
+fn default_stream_audio_sink() -> String {
+    "iprolaunch-stream".to_string()
+}
+fn default_stream_socket() -> String {
+    "iprolaunch-sunshine.sock".to_string()
+}
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Sunshine {
@@ -457,8 +513,60 @@ impl Default for Sunshine {
             auth_token: None,
             gamescope: GamescopeSetting::default(),
             borderless: false,
+            resolution_mode: ResolutionMode::default(),
+            width: default_stream_width(),
+            height: default_stream_height(),
+            refresh: default_stream_refresh(),
+            refresh_cap: None,
+            scale: default_stream_scale(),
+            audio_sink: default_stream_audio_sink(),
+            audio_channels: AudioChannels::default(),
+            input_isolation: true,
+            input_match: Vec::new(),
+            hide_cursor: false,
+            socket_name: default_stream_socket(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResolutionMode {
+    #[default]
+    MatchClient,
+    Fixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AudioChannels {
+    #[default]
+    #[serde(rename = "match-client")]
+    MatchClient,
+    #[serde(rename = "stereo")]
+    Stereo,
+    #[serde(rename = "5.1")]
+    Surround51,
+    #[serde(rename = "7.1")]
+    Surround71,
+}
+
+impl AudioChannels {
+    pub fn count(self) -> Option<u32> {
+        match self {
+            AudioChannels::MatchClient => None,
+            AudioChannels::Stereo => Some(2),
+            AudioChannels::Surround51 => Some(6),
+            AudioChannels::Surround71 => Some(8),
+        }
+    }
+}
+
+/// The display mode one stream's virtual desktop should use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamMode {
+    pub width: u32,
+    pub height: u32,
+    pub refresh: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -534,6 +642,37 @@ impl Config {
         profile
             .and_then(|p| p.defaults.sunshine_borderless)
             .unwrap_or(self.sunshine.borderless)
+    }
+
+    /// Resolves the virtual desktop's mode for one stream. `client` is the
+    /// (width, height, fps) Sunshine reported for the connecting client, if any.
+    pub fn effective_stream_mode(
+        &self,
+        profile: Option<&Profile>,
+        client: Option<(u32, u32, u32)>,
+    ) -> StreamMode {
+        let s = &self.sunshine;
+        let pd = profile.map(|p| &p.defaults);
+        let mode = pd
+            .and_then(|pd| pd.sunshine_resolution_mode)
+            .unwrap_or(s.resolution_mode);
+        let fixed = StreamMode {
+            width: pd.and_then(|pd| pd.sunshine_width).unwrap_or(s.width),
+            height: pd.and_then(|pd| pd.sunshine_height).unwrap_or(s.height),
+            refresh: pd.and_then(|pd| pd.sunshine_refresh).unwrap_or(s.refresh),
+        };
+        let mut out = match (mode, client) {
+            (ResolutionMode::MatchClient, Some((width, height, refresh))) => StreamMode {
+                width,
+                height,
+                refresh,
+            },
+            _ => fixed,
+        };
+        if let Some(cap) = s.refresh_cap {
+            out.refresh = out.refresh.min(cap);
+        }
+        out
     }
 
     /// Merges this global config with an optional profile override.
@@ -702,6 +841,14 @@ pub struct ProfileDefaults {
     /// `Config::effective_sunshine_borderless`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sunshine_borderless: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunshine_resolution_mode: Option<ResolutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunshine_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunshine_height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunshine_refresh: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1028,6 +1175,70 @@ mod tests {
 
         profile.defaults.sunshine_borderless = Some(true);
         assert!(cfg.effective_sunshine_borderless(Some(&profile)));
+    }
+
+    fn stream(width: u32, height: u32, refresh: u32) -> StreamMode {
+        StreamMode {
+            width,
+            height,
+            refresh,
+        }
+    }
+
+    #[test]
+    fn stream_mode_matches_the_client_and_falls_back_to_fixed() {
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.effective_stream_mode(None, Some((2560, 1600, 120))),
+            stream(2560, 1600, 120)
+        );
+        assert_eq!(
+            cfg.effective_stream_mode(None, None),
+            stream(1920, 1080, 60)
+        );
+    }
+
+    #[test]
+    fn stream_mode_fixed_ignores_the_client_and_refresh_cap_clamps() {
+        let mut cfg = Config::default();
+        cfg.sunshine.resolution_mode = ResolutionMode::Fixed;
+        cfg.sunshine.refresh_cap = Some(90);
+        cfg.sunshine.refresh = 144;
+        assert_eq!(
+            cfg.effective_stream_mode(None, Some((2560, 1600, 120))),
+            stream(1920, 1080, 90)
+        );
+    }
+
+    #[test]
+    fn profile_can_pin_a_fixed_stream_resolution() {
+        let cfg = Config::default();
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        profile.defaults.sunshine_resolution_mode = Some(ResolutionMode::Fixed);
+        profile.defaults.sunshine_width = Some(1280);
+        profile.defaults.sunshine_height = Some(720);
+        assert_eq!(
+            cfg.effective_stream_mode(Some(&profile), Some((3840, 2160, 60))),
+            stream(1280, 720, 60)
+        );
+    }
+
+    #[test]
+    fn sunshine_section_without_the_new_keys_still_parses() {
+        let cfg: Sunshine = toml::from_str("host = \"localhost\"\nport = 47990\n").unwrap();
+        assert_eq!(cfg.width, 1920);
+        assert!(cfg.input_isolation);
+        assert_eq!(cfg.audio_sink, "iprolaunch-stream");
     }
 
     #[test]

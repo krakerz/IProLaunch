@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::config::{
-    AutoOpenScope, Config, GamescopeFilter, GamescopeScaler, GamescopeSetting, LogMode, PrefixMode,
-    Profile, RecordMode, WindowsVersion, WineArch,
+    AudioChannels, AutoOpenScope, Config, GamescopeFilter, GamescopeScaler, GamescopeSetting,
+    LogMode, PrefixMode, Profile, RecordMode, ResolutionMode, WindowsVersion, WineArch,
 };
 use crate::proton::ProtonBuild;
 use crate::running::{self, RunningEntry};
@@ -13,17 +13,25 @@ pub enum Tab {
     Running,
     Library,
     Config,
+    Sunshine,
     Help,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Running, Tab::Library, Tab::Config, Tab::Help];
+    pub const ALL: [Tab; 5] = [
+        Tab::Running,
+        Tab::Library,
+        Tab::Config,
+        Tab::Sunshine,
+        Tab::Help,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Running => "Running",
             Tab::Library => "Library",
             Tab::Config => "Config",
+            Tab::Sunshine => "Sunshine",
             Tab::Help => "Help",
         }
     }
@@ -73,14 +81,45 @@ pub enum ConfigField {
     LogAutoOpen,
     LogAutoOpenScope,
     GamedbInterval,
-    SunshineGamescope,
-    SunshineBorderless,
     EnvTable,
     WineDllOverrideTable,
+    SunshineGamescope,
+    SunshineBorderless,
+    SunshineResolutionMode,
+    SunshineWidth,
+    SunshineHeight,
+    SunshineRefresh,
+    SunshineRefreshCap,
+    SunshineScale,
+    SunshineAudioSink,
+    SunshineAudioChannels,
+    SunshineInputIsolation,
+    SunshineInputMatch,
+    SunshineHideCursor,
+    SunshineSocketName,
 }
 
 impl ConfigField {
-    pub const ALL: [ConfigField; 29] = [
+    /// Rows of the Sunshine tab, in render order.
+    pub const SUNSHINE: [ConfigField; 14] = [
+        ConfigField::SunshineResolutionMode,
+        ConfigField::SunshineWidth,
+        ConfigField::SunshineHeight,
+        ConfigField::SunshineRefresh,
+        ConfigField::SunshineRefreshCap,
+        ConfigField::SunshineScale,
+        ConfigField::SunshineAudioSink,
+        ConfigField::SunshineAudioChannels,
+        ConfigField::SunshineInputIsolation,
+        ConfigField::SunshineInputMatch,
+        ConfigField::SunshineHideCursor,
+        ConfigField::SunshineSocketName,
+        ConfigField::SunshineGamescope,
+        ConfigField::SunshineBorderless,
+    ];
+
+    /// Rows of the Config tab, in render order.
+    pub const ALL: [ConfigField; 27] = [
         ConfigField::Proton,
         ConfigField::PrefixMode,
         ConfigField::PrefixPath,
@@ -106,8 +145,6 @@ impl ConfigField {
         ConfigField::LogAutoOpen,
         ConfigField::LogAutoOpenScope,
         ConfigField::GamedbInterval,
-        ConfigField::SunshineGamescope,
-        ConfigField::SunshineBorderless,
         ConfigField::EnvTable,
         ConfigField::WineDllOverrideTable,
     ];
@@ -139,8 +176,20 @@ impl ConfigField {
             ConfigField::LogAutoOpen => "logging.auto_open",
             ConfigField::LogAutoOpenScope => "logging.auto_open_scope",
             ConfigField::GamedbInterval => "gamedb.update_interval_days",
-            ConfigField::SunshineGamescope => "sunshine.gamescope",
-            ConfigField::SunshineBorderless => "sunshine.borderless",
+            ConfigField::SunshineGamescope => "gamescope",
+            ConfigField::SunshineBorderless => "borderless",
+            ConfigField::SunshineResolutionMode => "resolution_mode",
+            ConfigField::SunshineWidth => "width",
+            ConfigField::SunshineHeight => "height",
+            ConfigField::SunshineRefresh => "refresh",
+            ConfigField::SunshineRefreshCap => "refresh_cap (blank = none)",
+            ConfigField::SunshineScale => "scale",
+            ConfigField::SunshineAudioSink => "audio_sink",
+            ConfigField::SunshineAudioChannels => "audio_channels",
+            ConfigField::SunshineInputIsolation => "input_isolation",
+            ConfigField::SunshineInputMatch => "input_match (blank = auto)",
+            ConfigField::SunshineHideCursor => "hide_cursor",
+            ConfigField::SunshineSocketName => "socket_name",
             ConfigField::EnvTable => "env (global)",
             ConfigField::WineDllOverrideTable => "winedlloverride (global)",
         }
@@ -165,10 +214,23 @@ impl ConfigField {
             | ConfigField::GamescopeBorderless
             | ConfigField::GamescopeGrabCursor
             | ConfigField::GamescopeAdaptiveSync
-            | ConfigField::SunshineGamescope => FieldKind::Cycle,
-            ConfigField::LogAutoOpen | ConfigField::SunshineBorderless => FieldKind::Toggle,
+            | ConfigField::SunshineGamescope
+            | ConfigField::SunshineResolutionMode
+            | ConfigField::SunshineAudioChannels => FieldKind::Cycle,
+            ConfigField::LogAutoOpen
+            | ConfigField::SunshineBorderless
+            | ConfigField::SunshineInputIsolation
+            | ConfigField::SunshineHideCursor => FieldKind::Toggle,
             ConfigField::LogKeep | ConfigField::GamedbInterval => FieldKind::Number,
-            ConfigField::PrefixPath
+            ConfigField::SunshineWidth
+            | ConfigField::SunshineHeight
+            | ConfigField::SunshineRefresh
+            | ConfigField::SunshineRefreshCap
+            | ConfigField::SunshineScale
+            | ConfigField::SunshineAudioSink
+            | ConfigField::SunshineInputMatch
+            | ConfigField::SunshineSocketName
+            | ConfigField::PrefixPath
             | ConfigField::PrefixesRoot
             | ConfigField::LogPath
             | ConfigField::GamescopeOutputWidth
@@ -238,6 +300,35 @@ impl IntegrateField {
     }
 }
 
+/// Rows of the Sunshine tab's "Sunshine service" table, below its settings
+/// and sharing `App::sunshine_selected` with them (same layout as the Config
+/// tab's desktop-integration table).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SunshineServiceField {
+    Status,
+    Setup,
+    Restart,
+    Restore,
+}
+
+impl SunshineServiceField {
+    pub const ALL: [SunshineServiceField; 4] = [
+        SunshineServiceField::Status,
+        SunshineServiceField::Setup,
+        SunshineServiceField::Restart,
+        SunshineServiceField::Restore,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SunshineServiceField::Status => "status",
+            SunshineServiceField::Setup => "setup sunshine service",
+            SunshineServiceField::Restart => "restart sunshine",
+            SunshineServiceField::Restore => "restore original service",
+        }
+    }
+}
+
 /// Which of the three desktop-integration actions a `IntegrateField::Setup`/
 /// `Reapply`/`Uninstall` row runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,12 +376,16 @@ pub enum ProfileField {
     LogAutoOpenScope,
     SunshineGamescope,
     SunshineBorderless,
+    SunshineResolutionMode,
+    SunshineWidth,
+    SunshineHeight,
+    SunshineRefresh,
     EnvTable,
     WineDllOverrideTable,
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 30] = [
+    pub const ALL: [ProfileField; 34] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
@@ -319,6 +414,10 @@ impl ProfileField {
         ProfileField::LogAutoOpenScope,
         ProfileField::SunshineGamescope,
         ProfileField::SunshineBorderless,
+        ProfileField::SunshineResolutionMode,
+        ProfileField::SunshineWidth,
+        ProfileField::SunshineHeight,
+        ProfileField::SunshineRefresh,
         ProfileField::EnvTable,
         ProfileField::WineDllOverrideTable,
     ];
@@ -353,6 +452,10 @@ impl ProfileField {
             ProfileField::LogAutoOpenScope => "logging.auto_open_scope override",
             ProfileField::SunshineGamescope => "sunshine.gamescope override",
             ProfileField::SunshineBorderless => "sunshine.borderless override",
+            ProfileField::SunshineResolutionMode => "sunshine.resolution_mode override",
+            ProfileField::SunshineWidth => "sunshine.width override",
+            ProfileField::SunshineHeight => "sunshine.height override",
+            ProfileField::SunshineRefresh => "sunshine.refresh override",
             ProfileField::EnvTable => "env override",
             ProfileField::WineDllOverrideTable => "winedlloverride override",
         }
@@ -381,7 +484,8 @@ impl ProfileField {
             | ProfileField::GamescopeGrabCursor
             | ProfileField::GamescopeAdaptiveSync
             | ProfileField::SunshineGamescope
-            | ProfileField::SunshineBorderless => FieldKind::Cycle,
+            | ProfileField::SunshineBorderless
+            | ProfileField::SunshineResolutionMode => FieldKind::Cycle,
             ProfileField::TargetPath
             | ProfileField::Slug
             | ProfileField::Name
@@ -394,6 +498,9 @@ impl ProfileField {
             | ProfileField::GamescopeRefresh
             | ProfileField::GamescopeNestedWidth
             | ProfileField::GamescopeNestedHeight
+            | ProfileField::SunshineWidth
+            | ProfileField::SunshineHeight
+            | ProfileField::SunshineRefresh
             | ProfileField::LaunchWrapper => FieldKind::Text,
             ProfileField::EnvTable | ProfileField::WineDllOverrideTable => FieldKind::MapEditor,
         }
@@ -655,6 +762,8 @@ pub struct App {
     pub missing_exes: HashSet<String>,
 
     pub config_selected: usize,
+    pub sunshine_selected: usize,
+    pub sunshine_service_status: String,
 
     /// `Some(slug)` while the Library tab is showing that profile's editor
     /// instead of the plain list — set by `e`, cleared by Esc. Kept at the
@@ -717,6 +826,8 @@ impl App {
             steam_slugs: HashSet::new(),
             missing_exes: HashSet::new(),
             config_selected: 0,
+            sunshine_selected: 0,
+            sunshine_service_status: String::new(),
             profile_editor: None,
             profile_field_selected: 0,
             help_scroll: 0,
@@ -1076,6 +1187,31 @@ pub fn next_profile_gamescope_setting(m: Option<GamescopeSetting>) -> Option<Gam
 /// deliberately separate cycle (not shared with the one above) since the two
 /// settings are resolved independently (see
 /// `Config::effective_sunshine_gamescope`).
+pub fn next_resolution_mode(m: ResolutionMode) -> ResolutionMode {
+    match m {
+        ResolutionMode::MatchClient => ResolutionMode::Fixed,
+        ResolutionMode::Fixed => ResolutionMode::MatchClient,
+    }
+}
+
+pub fn next_audio_channels(c: AudioChannels) -> AudioChannels {
+    match c {
+        AudioChannels::MatchClient => AudioChannels::Stereo,
+        AudioChannels::Stereo => AudioChannels::Surround51,
+        AudioChannels::Surround51 => AudioChannels::Surround71,
+        AudioChannels::Surround71 => AudioChannels::MatchClient,
+    }
+}
+
+/// Profile override of `sunshine.resolution_mode`: inherit → match-client → fixed → inherit.
+pub fn next_profile_resolution_mode(m: Option<ResolutionMode>) -> Option<ResolutionMode> {
+    match m {
+        None => Some(ResolutionMode::MatchClient),
+        Some(ResolutionMode::MatchClient) => Some(ResolutionMode::Fixed),
+        Some(ResolutionMode::Fixed) => None,
+    }
+}
+
 pub fn next_sunshine_gamescope(m: GamescopeSetting) -> GamescopeSetting {
     match m {
         GamescopeSetting::None => GamescopeSetting::Fullscreen,

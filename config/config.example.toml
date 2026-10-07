@@ -21,3 +21,26 @@ update_interval_days = 7
 
 [winedlloverride]
 
+[sunshine]
+# Resolution mode: "match-client" (default) or "fixed"
+resolution_mode = "match-client"
+# Fixed resolution dimensions (used in fixed mode and as fallback)
+width = 1920
+height = 1080
+refresh = 60
+# Upper bound on client refresh (unset by default)
+# refresh_cap = 120
+# Display scaling factor
+scale = 1.0
+# PulseAudio/PipeWire sink name for Sunshine's audio
+audio_sink = "iprolaunch-stream"
+# Audio channels: "match-client" (default), "stereo", "5.1", "7.1"
+audio_channels = "match-client"
+# Keep streamed input devices off the host desktop
+input_isolation = true
+# Exact libvirtualhid-* device names to isolate (empty = auto-detect)
+input_match = []
+# Hide the cursor on the virtual desktop during streams
+hide_cursor = false
+# Socket name for Sunshine vdesktop communication
+socket_name = "iprolaunch-sunshine.sock"
