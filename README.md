@@ -238,7 +238,9 @@ To stream a game to a Sunshine client:
 
 Games will stream in a dedicated Sway desktop environment — streamed input
 devices are kept off the host desktop automatically on Hyprland, Sway, and
-KDE, so only the stream sees them.
+KDE, so only the stream sees them. The virtual-desktop approach is based on
+[LutrisToSunshine](https://github.com/Arbitrate3280/LutrisToSunshine) — thanks
+to its author.
 
 ---
 
