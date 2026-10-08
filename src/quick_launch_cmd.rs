@@ -61,6 +61,30 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
     bail!("no clipboard tool available (tried wl-copy, xclip)")
 }
 
+/// Reads the clipboard via `wl-paste` (Wayland) or `xclip` (X11), mirroring
+/// `copy_to_clipboard`'s tool choice.
+pub fn read_clipboard() -> Result<String> {
+    let tools: [(&str, &[&str], &str); 2] = [
+        ("wl-paste", &["--no-newline"], "WAYLAND_DISPLAY"),
+        ("xclip", &["-selection", "clipboard", "-o"], "DISPLAY"),
+    ];
+    for (program, args, env) in tools {
+        if std::env::var_os(env).is_none() {
+            continue;
+        }
+        if let Ok(out) = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            && out.status.success()
+        {
+            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+        }
+    }
+    bail!("no clipboard tool available (tried wl-paste, xclip)")
+}
+
 fn run_copy_tool(program: &str, args: &[&str], text: &str) -> Result<()> {
     let mut child = Command::new(program)
         .args(args)

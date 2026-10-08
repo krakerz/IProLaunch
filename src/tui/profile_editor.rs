@@ -123,11 +123,11 @@ fn cycle_field(app: &mut App, slug: &str, field: ProfileField) {
             }
             ProfileField::SunshineGamescope => {
                 profile.defaults.sunshine_gamescope =
-                    app::next_profile_sunshine_gamescope(profile.defaults.sunshine_gamescope);
+                    app::next_optional_bool(profile.defaults.sunshine_gamescope);
             }
-            ProfileField::SunshineBorderless => {
-                profile.defaults.sunshine_borderless =
-                    app::next_optional_bool(profile.defaults.sunshine_borderless);
+            ProfileField::SunshineResolutionMode => {
+                profile.defaults.sunshine_resolution_mode =
+                    app::next_profile_resolution_mode(profile.defaults.sunshine_resolution_mode);
             }
             _ => {}
         }
@@ -191,8 +191,16 @@ fn current_text_value(app: &App, slug: &str, field: ProfileField) -> String {
             .nested_height
             .map_or(String::new(), |v| v.to_string()),
         ProfileField::LaunchWrapper => profile.defaults.launch_wrapper.clone().unwrap_or_default(),
+        ProfileField::SunshineWidth => opt_u32_text(profile.defaults.sunshine_width),
+        ProfileField::SunshineHeight => opt_u32_text(profile.defaults.sunshine_height),
+        ProfileField::SunshineRefresh => opt_u32_text(profile.defaults.sunshine_refresh),
+        ProfileField::SteamAppId => opt_u32_text(profile.defaults.steam_appid),
         _ => String::new(),
     }
+}
+
+fn opt_u32_text(v: Option<u32>) -> String {
+    v.map_or(String::new(), |v| v.to_string())
 }
 
 /// Smallest `n >= 1` such that no *other* profile is already named
@@ -401,6 +409,10 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
             | ProfileField::GamescopeRefresh
             | ProfileField::GamescopeNestedWidth
             | ProfileField::GamescopeNestedHeight
+            | ProfileField::SunshineWidth
+            | ProfileField::SunshineHeight
+            | ProfileField::SunshineRefresh
+            | ProfileField::SteamAppId
     );
     if is_numeric_field && !trimmed.is_empty() && trimmed.parse::<u32>().is_err() {
         app.status = Some(format!(
@@ -472,6 +484,10 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         ProfileField::LaunchWrapper => {
             profile.defaults.launch_wrapper = (!trimmed.is_empty()).then(|| trimmed.clone());
         }
+        ProfileField::SunshineWidth => profile.defaults.sunshine_width = trimmed.parse().ok(),
+        ProfileField::SunshineHeight => profile.defaults.sunshine_height = trimmed.parse().ok(),
+        ProfileField::SunshineRefresh => profile.defaults.sunshine_refresh = trimmed.parse().ok(),
+        ProfileField::SteamAppId => profile.defaults.steam_appid = trimmed.parse().ok(),
         // `Slug` returns early above. The rest are never actually reached
         // via a text popup — they open a different mode
         // (`ProtonPicker`/`MapEditor`/`Cycle`) instead.
@@ -490,7 +506,7 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::GamescopeGrabCursor
         | ProfileField::GamescopeAdaptiveSync
         | ProfileField::SunshineGamescope
-        | ProfileField::SunshineBorderless
+        | ProfileField::SunshineResolutionMode
         | ProfileField::EnvTable
         | ProfileField::WineDllOverrideTable => {}
     }

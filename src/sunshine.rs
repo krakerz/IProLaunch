@@ -11,7 +11,7 @@
 //! `/api/*` endpoints accept plain HTTP Basic auth using the same username/
 //! password set up in its own web UI, checked fresh on every request — no
 //! separate login call or session cookie required. The `/api/login`-family
-//! endpoints that a hedge-based approach (LutrisToSunshine) tries in
+//! endpoints that a hedge-based approach (other Sunshine tools) tries in
 //! sequence exist for the *browser* UI's own cookie session instead; they're
 //! deliberately not used here (see project TODO/NOTES for the scoping
 //! discussion — Basic auth alone is what's implemented for now).
@@ -20,21 +20,9 @@
 //! local web UI is served over a self-signed certificate by default, with
 //! no CA a user could install/trust instead.
 //!
-//! When LutrisToSunshine's own virtual-display feature is set up and
-//! enabled on this machine, every app it manages gets a `prep-cmd` entry
-//! running its resolution-switch scripts on stream start/stop — confirmed
-//! for real by comparing a real Sunshine install's own `GET /api/apps`
-//! output: every LutrisToSunshine-managed entry carries that `prep-cmd`,
-//! while an app added by an earlier version of this integration (before
-//! this was noticed) didn't, and so never triggered the resolution switch
-//! like every other game in that setup already does. `lutristosunshine_
-//! resolution_prep_cmd` detects that setup (the same `display.json`
-//! eligibility gate this project's own TODO already settled on) and reuses
-//! its exact script paths — never reimplementing the resolution-switch
-//! logic itself, just shelling out to the same scripts LutrisToSunshine's
-//! own entries already point at.
-
-use std::path::PathBuf;
+//! Every app gets a `prep-cmd` pointing back at `iprolaunch sunshine prep
+//! do|undo <slug>` (see `vdesktop`), which fits the virtual desktop and the
+//! audio sink to the connecting client.
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -43,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use ureq::Agent;
 use ureq::tls::TlsConfig;
 
-use crate::config::Sunshine;
+use crate::config::{Config, Sunshine};
 
 fn base_url(cfg: &Sunshine) -> String {
     format!("https://{}:{}", cfg.host, cfg.port)
@@ -82,15 +70,39 @@ pub fn login(cfg: &Sunshine, username: &str, password: &str) -> Result<String> {
 /// output (`do` inside each `prep-cmd` array entry, not a top-level
 /// `cmd-do`/`cmd-undo` pair as an earlier, unverified guess might assume).
 #[derive(Debug, Serialize)]
-struct PrepCmd<'a> {
+struct PrepCmd {
     #[serde(rename = "do")]
-    do_cmd: &'a str,
-    undo: &'a str,
+    do_cmd: String,
+    undo: String,
+}
+
+/// The Sunshine app `cmd` for a profile: this binary, the profile's
+/// Sunshine gamescope flags (if on), then its slug.
+pub fn app_cmd(cfg: &Config, profile: &crate::config::Profile, slug: &str) -> Result<String> {
+    let exe = std::env::current_exe()?.canonicalize()?;
+    // Fullscreen gamescope with the game's window stretched to fill it, so
+    // a fixed-size windowed game isn't a small box on a large virtual desktop.
+    let flags: &[&str] = if cfg.effective_sunshine_gamescope(Some(profile)) {
+        &["-f", "-w"]
+    } else {
+        &[]
+    };
+    Ok(crate::quick_launch_cmd::command_for(&exe, flags, slug))
+}
+
+/// `iprolaunch sunshine prep do|undo <slug>` for this exact binary.
+fn prep_cmd_for(slug: &str) -> Result<PrepCmd> {
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let base = format!("\"{}\" sunshine prep", exe.display());
+    Ok(PrepCmd {
+        do_cmd: format!("{base} do {slug}"),
+        undo: format!("{base} undo {slug}"),
+    })
 }
 
 /// Sunshine's own `POST /api/apps` payload shape — confirmed field-for-field
 /// against a real Sunshine install's own `GET /api/apps` output (both a
-/// LutrisToSunshine-managed entry and this integration's own earlier,
+/// third-party-managed entry and this integration's own earlier,
 /// narrower payload), not left to guesswork: sending a narrower payload
 /// (missing `elevated`/`exclude-global-prep-cmd`/`output`) leaves those
 /// fields genuinely absent from the stored entry too, rather than
@@ -114,67 +126,8 @@ struct AddAppRequest<'a> {
     exclude_global_prep_cmd: bool,
     output: &'a str,
     #[serde(rename = "prep-cmd")]
-    prep_cmd: Vec<PrepCmd<'a>>,
+    prep_cmd: Vec<PrepCmd>,
     detached: Vec<()>,
-}
-
-/// The subset of LutrisToSunshine's own `display.json` this needs: whether
-/// its virtual-display feature is actually set up and enabled, and (if so)
-/// the exact absolute paths to its resolution-switch scripts — read
-/// straight from its own `paths` block rather than assumed/hardcoded, so a
-/// different LutrisToSunshine profile name or install layout still resolves
-/// correctly.
-#[derive(Debug, Deserialize)]
-struct LutrisToSunshineDisplayConfig {
-    enabled: bool,
-    paths: LutrisToSunshineDisplayPaths,
-}
-
-#[derive(Debug, Deserialize)]
-struct LutrisToSunshineDisplayPaths {
-    set_resolution_script: String,
-    reset_resolution_script: String,
-}
-
-/// The pure parsing/eligibility part of `lutristosunshine_resolution_prep_cmd`
-/// — given `display.json`'s raw contents, returns the `(do, undo)` script
-/// paths when the feature's enabled. Kept separate from the disk-touching
-/// parts (locating the file, checking the scripts actually exist) so this
-/// logic is unit-testable against a fixture instead of this machine's real
-/// file.
-fn resolution_scripts_from_display_json(raw: &str) -> Option<(String, String)> {
-    let parsed: LutrisToSunshineDisplayConfig = serde_json::from_str(raw).ok()?;
-    if !parsed.enabled {
-        return None;
-    }
-    Some((
-        parsed.paths.set_resolution_script,
-        parsed.paths.reset_resolution_script,
-    ))
-}
-
-/// Detects LutrisToSunshine's virtual-display setup (its `display.json`
-/// eligibility gate — see this module's own doc comment) and, when it's
-/// actually enabled and both scripts genuinely exist on disk, returns their
-/// paths as a `(do, undo)` pair to reuse as this app's own `prep-cmd`. Best
-/// effort: any missing piece (no LutrisToSunshine install, feature not
-/// enabled, a malformed `display.json`, a script that's been moved/deleted)
-/// just means `None` — no `prep-cmd` for this app, same as it would be
-/// without LutrisToSunshine at all, never an error that blocks adding the
-/// app itself.
-fn lutristosunshine_resolution_prep_cmd() -> Option<(String, String)> {
-    let home = directories::UserDirs::new()?.home_dir().to_path_buf();
-    let display_json = home
-        .join(".config")
-        .join("lutristosunshine")
-        .join("display")
-        .join("display.json");
-    let raw = std::fs::read_to_string(display_json).ok()?;
-    let (do_script, undo_script) = resolution_scripts_from_display_json(&raw)?;
-    if !PathBuf::from(&do_script).is_file() || !PathBuf::from(&undo_script).is_file() {
-        return None;
-    }
-    Some((do_script, undo_script))
 }
 
 /// Distinguishes an expired/invalid cached auth token (caller should clear
@@ -294,18 +247,15 @@ pub fn add_app(
     name: &str,
     cmd: &str,
     slug: &str,
+    image_path: &str,
 ) -> Result<bool, AddAppError> {
     let url = format!("{}/api/apps", base_url(cfg));
     let existing_index = find_existing_index(cfg, auth_token, slug);
-    let resolution_hook = lutristosunshine_resolution_prep_cmd();
-    let prep_cmd = match &resolution_hook {
-        Some((do_cmd, undo)) => vec![PrepCmd { do_cmd, undo }],
-        None => Vec::new(),
-    };
+    let prep_cmd = vec![prep_cmd_for(slug).map_err(AddAppError::Other)?];
     let payload = AddAppRequest {
         name,
         cmd,
-        image_path: "",
+        image_path,
         index: existing_index.unwrap_or(-1),
         auto_detach: true,
         wait_all: true,
@@ -329,6 +279,141 @@ pub fn add_app(
     }
 }
 
+/// The slug an iprolaunch-made app `cmd` launches (its last token), or `None`
+/// for any other app — same shape `matches_iprolaunch_slug` checks.
+fn iprolaunch_slug(cmd: &str) -> Option<&str> {
+    let slug = cmd.split_whitespace().last()?;
+    matches_iprolaunch_slug(cmd, slug).then_some(slug)
+}
+
+/// Slugs of every iprolaunch game already in Sunshine; empty on any failure.
+pub fn slugs_in_sunshine(cfg: &Sunshine, auth_token: &str) -> std::collections::HashSet<String> {
+    let url = format!("{}/api/apps", base_url(cfg));
+    let Ok(mut response) = agent().get(&url).header("Authorization", auth_token).call() else {
+        return Default::default();
+    };
+    let Ok(list) = response.body_mut().read_json::<AppsListResponse>() else {
+        return Default::default();
+    };
+    list.apps
+        .iter()
+        .filter_map(|a| iprolaunch_slug(&a.cmd).map(str::to_string))
+        .collect()
+}
+
+/// What `sync_apps` changed.
+#[derive(Debug, Default)]
+pub struct SyncReport {
+    pub updated: usize,
+    pub covers: usize,
+    /// `(game, reason)` for each cover that couldn't be fetched.
+    pub cover_errors: Vec<(String, String)>,
+}
+
+/// Brings every iprolaunch app already in Sunshine up to date: this binary's
+/// current prep commands, and (with a SteamGridDB key) a cover image. All
+/// other fields are kept. `refetch_covers` re-downloads cached covers.
+pub fn sync_apps(
+    cfg: &Config,
+    auth_token: &str,
+    refetch_covers: bool,
+) -> Result<SyncReport, AddAppError> {
+    let url = format!("{}/api/apps", base_url(&cfg.sunshine));
+    let response = agent().get(&url).header("Authorization", auth_token).call();
+    let mut body = match response {
+        Ok(r) => r,
+        Err(ureq::Error::StatusCode(401)) => return Err(AddAppError::AuthExpired),
+        Err(err) => return Err(AddAppError::Other(anyhow::Error::from(err))),
+    };
+    let list: serde_json::Value = body.body_mut().read_json().map_err(|e| {
+        AddAppError::Other(anyhow::Error::from(e).context("reading Sunshine's app list"))
+    })?;
+    let apps = list
+        .get("apps")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let key = cfg.steamgriddb.api_key.as_deref();
+
+    let mut report = SyncReport::default();
+    for (index, mut app) in apps.into_iter().enumerate() {
+        let Some(slug) = app
+            .get("cmd")
+            .and_then(serde_json::Value::as_str)
+            .and_then(iprolaunch_slug)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let mut changed = false;
+
+        let profile = crate::config::Profile::load(&slug);
+        if let Ok(profile) = &profile {
+            let cmd = app_cmd(cfg, profile, &slug).map_err(AddAppError::Other)?;
+            if app.get("cmd").and_then(serde_json::Value::as_str) != Some(cmd.as_str()) {
+                app["cmd"] = serde_json::json!(cmd);
+                changed = true;
+            }
+        }
+
+        let prep = prep_cmd_for(&slug).map_err(AddAppError::Other)?;
+        let prep = serde_json::to_value(vec![prep]).map_err(|e| AddAppError::Other(e.into()))?;
+        if app.get("prep-cmd") != Some(&prep) {
+            app["prep-cmd"] = prep;
+            changed = true;
+        }
+
+        let title = app
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&slug)
+            .to_string();
+        let cover = crate::config::Profile::load(&slug)
+            .and_then(|p| crate::covers::fetch_cover(key, &slug, &p, refetch_covers));
+        match cover {
+            Ok(path) => {
+                let path = serde_json::json!(path.display().to_string());
+                if app.get("image-path") != Some(&path) || refetch_covers {
+                    app["image-path"] = path;
+                    changed = true;
+                    report.covers += 1;
+                }
+            }
+            Err(err) => report.cover_errors.push((title, format!("{err:#}"))),
+        }
+
+        if !changed {
+            continue;
+        }
+        app["index"] = serde_json::json!(index);
+        match agent()
+            .post(&url)
+            .header("Authorization", auth_token)
+            .send_json(&app)
+        {
+            Ok(_) => report.updated += 1,
+            Err(ureq::Error::StatusCode(401)) => return Err(AddAppError::AuthExpired),
+            Err(err) => {
+                return Err(AddAppError::Other(
+                    anyhow::Error::from(err).context(format!("updating \"{slug}\" in Sunshine")),
+                ));
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Prints a `SyncReport` for the CLI / suspended-TUI actions.
+pub fn print_sync_report(report: &SyncReport) {
+    println!(
+        "Updated {} game(s) in Sunshine ({} cover(s) set).",
+        report.updated, report.covers
+    );
+    for (game, reason) in &report.cover_errors {
+        println!("  no cover for \"{game}\": {reason}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,28 +428,25 @@ mod tests {
 
     #[test]
     fn base_url_joins_host_and_port() {
-        let cfg = Sunshine {
-            host: "localhost".to_string(),
-            port: 47990,
-            username: None,
-            auth_token: None,
-            gamescope: crate::config::GamescopeSetting::None,
-            borderless: false,
-        };
+        let cfg = Sunshine::default();
         assert_eq!(base_url(&cfg), "https://localhost:47990");
     }
 
     #[test]
     fn prep_cmd_serializes_do_as_the_bare_key_not_do_cmd() {
         let entry = PrepCmd {
-            do_cmd: "/path/set-resolution.sh",
-            undo: "/path/reset-resolution.sh",
+            do_cmd: "/path/do".to_string(),
+            undo: "/path/undo".to_string(),
         };
         let json = serde_json::to_string(&entry).unwrap();
-        assert_eq!(
-            json,
-            r#"{"do":"/path/set-resolution.sh","undo":"/path/reset-resolution.sh"}"#
-        );
+        assert_eq!(json, r#"{"do":"/path/do","undo":"/path/undo"}"#);
+    }
+
+    #[test]
+    fn prep_cmd_calls_back_into_iprolaunch_with_the_slug() {
+        let entry = prep_cmd_for("kendo").unwrap();
+        assert!(entry.do_cmd.ends_with("\" sunshine prep do kendo"));
+        assert!(entry.undo.ends_with("\" sunshine prep undo kendo"));
     }
 
     #[test]
@@ -385,8 +467,8 @@ mod tests {
             exclude_global_prep_cmd: false,
             output: "",
             prep_cmd: vec![PrepCmd {
-                do_cmd: "/path/set-resolution.sh",
-                undo: "/path/reset-resolution.sh",
+                do_cmd: "/path/do".to_string(),
+                undo: "/path/undo".to_string(),
             }],
             detached: Vec::new(),
         };
@@ -407,45 +489,6 @@ mod tests {
         ] {
             assert!(json.contains(key), "missing {key} in {json}");
         }
-    }
-
-    /// Real shape fetched from an actual Sunshine install's own
-    /// `display.json` on 2026-09-17 (paths/profile name changed to generic
-    /// placeholders, every other key verbatim), trimmed to the fields this
-    /// module actually reads.
-    const REAL_SHAPED_DISPLAY_JSON: &str = r#"{
-        "enabled": true,
-        "profile": "default",
-        "paths": {
-            "set_resolution_script": "/home/user/.config/lutristosunshine/bin/lutristosunshine-set-resolution.sh",
-            "reset_resolution_script": "/home/user/.config/lutristosunshine/bin/lutristosunshine-reset-resolution.sh",
-            "bin_root": "/home/user/.config/lutristosunshine/bin"
-        }
-    }"#;
-
-    #[test]
-    fn resolution_scripts_from_display_json_returns_the_do_undo_pair_when_enabled() {
-        assert_eq!(
-            resolution_scripts_from_display_json(REAL_SHAPED_DISPLAY_JSON),
-            Some((
-                "/home/user/.config/lutristosunshine/bin/lutristosunshine-set-resolution.sh"
-                    .to_string(),
-                "/home/user/.config/lutristosunshine/bin/lutristosunshine-reset-resolution.sh"
-                    .to_string(),
-            ))
-        );
-    }
-
-    #[test]
-    fn resolution_scripts_from_display_json_is_none_when_disabled() {
-        let disabled = REAL_SHAPED_DISPLAY_JSON.replacen("true", "false", 1);
-        assert_eq!(resolution_scripts_from_display_json(&disabled), None);
-    }
-
-    #[test]
-    fn resolution_scripts_from_display_json_is_none_for_malformed_json() {
-        assert_eq!(resolution_scripts_from_display_json("not json"), None);
-        assert_eq!(resolution_scripts_from_display_json(""), None);
     }
 
     fn existing_app(cmd: &str) -> ExistingApp {
@@ -499,6 +542,42 @@ mod tests {
             "\"/home/user/iprolaunch\"",
             "kendo"
         ));
+    }
+
+    fn bare_profile() -> crate::config::Profile {
+        crate::config::Profile {
+            name: "Game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: Default::default(),
+            logging: Default::default(),
+            env: Default::default(),
+            winedlloverride: Default::default(),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn app_cmd_defaults_to_stretched_fullscreen_gamescope_and_profile_can_turn_it_off() {
+        let cfg = Config::default();
+        let mut profile = bare_profile();
+        let cmd = app_cmd(&cfg, &profile, "game").unwrap();
+        assert!(cmd.ends_with("\" -f -w game"), "{cmd}");
+
+        profile.defaults.sunshine_gamescope = Some(false);
+        let cmd = app_cmd(&cfg, &profile, "game").unwrap();
+        assert!(cmd.ends_with("\" game"), "{cmd}");
+    }
+
+    #[test]
+    fn iprolaunch_slug_only_for_iprolaunch_apps() {
+        assert_eq!(
+            iprolaunch_slug("\"/opt/iprolaunch\" -f kendo"),
+            Some("kendo")
+        );
+        assert_eq!(iprolaunch_slug("/usr/bin/steam steam://rungameid/1"), None);
+        assert_eq!(iprolaunch_slug(""), None);
     }
 
     #[test]

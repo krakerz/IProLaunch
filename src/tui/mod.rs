@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -46,7 +47,7 @@ pub fn run(cfg: Config) -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -55,7 +56,7 @@ pub fn run(cfg: Config) -> Result<()> {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
         default_hook(info);
     }));
 
@@ -63,14 +64,24 @@ pub fn run(cfg: Config) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app, &mut gamepad);
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
 }
 
 fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -> Result<()> {
+    let mut last_tab = app.tab;
     loop {
+        // systemctl is too slow to query every frame; refresh on entering the tab.
+        if app.tab == app::Tab::Sunshine && last_tab != app::Tab::Sunshine {
+            app.sunshine_service_status = crate::vdesktop::service_status();
+        }
+        last_tab = app.tab;
         terminal.draw(|f| ui::draw(f, app))?;
 
         let mut handled = false;
@@ -80,13 +91,28 @@ fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -
         // nothing new, and polling slower starts batching two repeat steps
         // into one redraw (a visible double-row jump instead of a smooth
         // one-row-per-frame scroll).
-        if event::poll(Duration::from_millis(30))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            app.input_kind = InputKind::Keyboard;
-            on_key(app, key.code, terminal);
-            handled = true;
+        if event::poll(Duration::from_millis(30))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.input_kind = InputKind::Keyboard;
+                    let ctrl_v = key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('v' | 'V'));
+                    if ctrl_v && is_text_entry(app) {
+                        match crate::quick_launch_cmd::read_clipboard() {
+                            Ok(text) => paste(app, &text, terminal),
+                            Err(err) => app.status = Some(format!("Couldn't paste: {err:#}")),
+                        }
+                    } else {
+                        on_key(app, key.code, terminal);
+                    }
+                    handled = true;
+                }
+                Event::Paste(text) if is_text_entry(app) => {
+                    paste(app, &text, terminal);
+                    handled = true;
+                }
+                _ => {}
+            }
         }
         // Checked every tick regardless of whether the keyboard poll above
         // timed out or returned an unrelated event (resize, etc.) — gilrs
@@ -102,6 +128,32 @@ fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -
 
         if app.should_quit {
             return Ok(());
+        }
+    }
+}
+
+/// Whether keystrokes are currently going into a free-text field.
+fn is_text_entry(app: &App) -> bool {
+    matches!(
+        app.mode,
+        Mode::TextInput { .. } | Mode::MapEntryInput { .. }
+    ) || (matches!(app.mode, Mode::Normal)
+        && ((app.tab == app::Tab::Running && app.running_filter_editing)
+            || (app.tab == app::Tab::Library && app.library_filter_editing)))
+}
+
+/// Types pasted text into the active field. Line breaks become spaces since
+/// every field is single-line (Enter would otherwise submit mid-paste).
+fn paste(app: &mut App, text: &str, terminal: &mut Term) {
+    let text = text.trim_end_matches(['\r', '\n']);
+    for c in text.chars() {
+        let c = if c == '\n' || c == '\r' || c == '\t' {
+            ' '
+        } else {
+            c
+        };
+        if !c.is_control() {
+            on_key(app, KeyCode::Char(c), terminal);
         }
     }
 }
@@ -155,6 +207,10 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         }
         KeyCode::Char('4') => {
             app.clear_filters();
+            app.tab = app::Tab::Sunshine;
+        }
+        KeyCode::Char('5') => {
+            app.clear_filters();
             app.tab = app::Tab::Help;
         }
         KeyCode::Char('?') => app.mode = Mode::Help,
@@ -163,7 +219,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         _ => match app.tab {
             app::Tab::Running => running::on_key(app, code, terminal),
             app::Tab::Library => library::on_key(app, code, terminal),
-            app::Tab::Config => config::on_key(app, code, terminal),
+            app::Tab::Config | app::Tab::Sunshine => config::on_key(app, code, terminal),
             app::Tab::Help => help_scroll_key(app, code),
         },
     }
@@ -340,14 +396,22 @@ fn handle_proton_picker(app: &mut App, code: KeyCode) {
 /// buffer the user can't see.
 pub fn suspend(terminal: &mut Term) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
 
 pub fn resume(terminal: &mut Term) -> Result<()> {
     enable_raw_mode()?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableBracketedPaste
+    )?;
     terminal.hide_cursor()?;
     terminal.clear()?;
     Ok(())
@@ -422,6 +486,19 @@ pub fn wait_for_return() {
 mod tests {
     use super::*;
     use app::TextInputPurpose;
+
+    #[test]
+    fn paste_only_targets_free_text_fields() {
+        assert!(is_text_entry(&text_input_app("", 0)));
+
+        let mut app = App::new(crate::config::Config::default());
+        assert!(!is_text_entry(&app));
+        app.tab = app::Tab::Library;
+        app.library_filter_editing = true;
+        assert!(is_text_entry(&app));
+        app.tab = app::Tab::Running;
+        assert!(!is_text_entry(&app));
+    }
 
     fn text_input_app(buffer: &str, cursor: usize) -> App {
         let mut app = App::new(crate::config::Config::default());

@@ -65,15 +65,17 @@ entry.
   quick-searches Running/Library by name.
 - Library `p` runs `winetricks` against the exact prefix a real launch of
   that game would use (confirms first).
+- Built-in headless Sway virtual desktop for [Sunshine](https://github.com/LizardByte/Sunshine) game streaming — runs Sunshine in an isolated virtual desktop, keeps streamed input devices off the host, and dynamically adjusts resolution/refresh/audio to match the connecting client (with fixed-mode and per-game overrides via the new Sunshine tab in the TUI). Cover artwork for Sunshine games, with optional SteamGridDB support and per-game Steam app ID overrides, both configurable via the Sunshine tab and profile editor.
 - Library `s` opens a Share/Add-to popup: add a game to Steam as a
   non-Steam-game shortcut, live, via Steam's own importer — no
-  `shortcuts.vdf` editing, no restart required — or add it to a locally
-  running [Sunshine](https://github.com/LizardByte/Sunshine) game-streaming
-  server via its own REST API (asked for your Sunshine username/password
-  once, then cached). Re-adding a game updates its existing entry instead of
-  duplicating it, and `sunshine.gamescope` (global + per-profile override)
-  independently controls fullscreen/maximize for the streamed launch (press
-  `?` in the TUI for the full behavior).
+  `shortcuts.vdf` editing, no restart required — or add it to Sunshine via
+  its REST API (asked for your Sunshine username/password once, then cached).
+  Re-adding a game updates its existing entry instead of duplicating it.
+  Sunshine games run in fullscreen gamescope with their window stretched to
+  fill the stream by default (switchable globally in the Sunshine tab, or per
+  game in the profile editor); resolution follows each client.
+- Library rows show status markers: `S` for games in Steam, `!` for games
+  with missing exe, `SU` for games added to Sunshine (reads "SUS" if in both).
 - Gamepad navigation — a real controller works alongside the keyboard with
   zero setup (see the Help screen's "Gamepad" section for the full button
   map); every legend switches to the matching captions automatically.
@@ -119,6 +121,10 @@ degrades gracefully (usually a clear error) if missing:
   Already on SteamOS/a Deck; otherwise a distro package. Only reliable from
   a session that isn't already gamescope itself — see the FAQ for why it
   fails from inside Steam Game Mode.
+- **Sunshine virtual desktop** (`iprolaunch sunshine service`) — **`sway`** and
+  **`swaymsg`**, **`pactl`** (or PipeWire/PulseAudio) for audio routing; on
+  Hyprland: **`hyprctl`**; on KDE: **`busctl`**. Enables streaming a Windows
+  game to a Sunshine client without needing a second physical desktop.
 - **`winetricks`** — Library's `p` key.
 
 ## Building from source
@@ -217,6 +223,35 @@ iprolaunch` first). Two things to also set up, both one-time:
   see the TUI's Help screen's "Gamepad" section for the full button map.
   The default "Desktop" layout emulates a keyboard/mouse instead of a real
   joystick, which the TUI can't read directly.
+
+## Streaming with Sunshine
+
+To stream a game to a Sunshine client:
+
+1. In the TUI's Sunshine tab, use **setup sunshine service** in the "Sunshine
+   service" table (or run `iprolaunch sunshine install-service`). This points
+   Sunshine's systemd user service at IProLaunch's built-in virtual desktop and
+   sets Sunshine's `audio_sink` to the stream sink, backing up both first
+   (**restore original service** puts them back), and updates games you've
+   already added to Sunshine. Then use **restart sunshine** — that's it.
+2. Add games to Sunshine using the Library's `s` (Share/Add-to) popup.
+3. Tune stream resolution, refresh, and audio channels in the TUI's Sunshine
+   tab (global defaults), or per-game in the profile editor (resolution_mode,
+   width, height, refresh overrides).
+4. Game covers are looked up in order: the game's Steam app ID override
+   (profile editor), SteamGridDB (only with an API key — free from
+   steamgriddb.com → Preferences → API, set in the Sunshine tab), then the
+   Steam store by exact name. Covers are cached locally and only fetched once;
+   use "update games in sunshine" for games added earlier, or "refetch covers"
+   to re-download them.
+
+Games will stream in a dedicated Sway desktop environment — streamed input
+devices are kept off the host desktop automatically on Hyprland, Sway, and
+KDE, so only the stream sees them. The host PC's own audio output remains active during streams. The virtual-desktop approach is based on
+[LutrisToSunshine](https://github.com/Arbitrate3280/LutrisToSunshine) — thanks
+to its author.
+
+---
 
 Global config lives at `~/.config/iprolaunch/config.toml` (created with
 defaults on first run — see `config/config.example.toml`). Per-game
