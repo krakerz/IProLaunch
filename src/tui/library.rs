@@ -492,27 +492,29 @@ fn add_to_sunshine(app: &mut App, slug: &str, name: &str) {
         app.status = Some("not logged in to Sunshine yet".to_string());
         return;
     };
-    let Ok(exe) = std::env::current_exe() else {
+    let Ok(cmd) = crate::sunshine::app_cmd(&app.cfg, &profile, slug) else {
         app.status = Some("couldn't resolve iprolaunch's own binary path".to_string());
         return;
     };
-    let sunshine_gamescope = app.cfg.effective_sunshine_gamescope(Some(&profile));
-    let mut extra_flags: Vec<&str> = crate::launch::gamescope_setting_cli_flag(sunshine_gamescope)
-        .into_iter()
-        .collect();
-    if app.cfg.effective_sunshine_borderless(Some(&profile)) {
-        extra_flags.push("-b");
-    }
-    let cmd = crate::quick_launch_cmd::command_for(&exe, &extra_flags, slug);
+    let key = app.cfg.steamgriddb.api_key.as_deref();
+    let (image_path, cover_note) = match crate::covers::fetch_cover(key, slug, &profile, false) {
+        Ok(path) => (path.display().to_string(), String::new()),
+        Err(err) => (String::new(), format!(" (no cover: {err:#})")),
+    };
     match crate::sunshine::add_app(
         &app.cfg.sunshine,
         &token,
         profile.display_title(),
         &cmd,
         slug,
+        &image_path,
     ) {
-        Ok(true) => app.status = Some(format!("Updated \"{name}\" in Sunshine.")),
-        Ok(false) => app.status = Some(format!("Sent \"{name}\" to Sunshine.")),
+        Ok(updated) => {
+            app.sunshine_slugs.insert(slug.to_string());
+            let verb = if updated { "Updated" } else { "Sent" };
+            let target = if updated { "in" } else { "to" };
+            app.status = Some(format!("{verb} \"{name}\" {target} Sunshine.{cover_note}"));
+        }
         Err(err) => {
             if matches!(err, crate::sunshine::AddAppError::AuthExpired) {
                 app.cfg.sunshine.auth_token = None;

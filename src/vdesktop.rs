@@ -22,7 +22,16 @@ use crate::config::{Config, Profile, StreamMode, Sunshine};
 /// Sunshine's virtual devices: inputtino/libvirtualhid (vendor 0x1209) and
 /// its passthrough devices (vendor 0xbeef). Sway identifiers are `vendor:product:name`.
 const SUNSHINE_VENDOR_PREFIXES: [&str; 2] = ["4617:", "48879:"];
-const HOST_SWAYSOCK_ENV: &str = "IPROLAUNCH_HOST_SWAYSOCK";
+/// Sunshine's own virtual input devices, as Hyprland names them. Disabled up
+/// front so they're never live on the host, even before the first poll.
+const SUNSHINE_DEVICE_NAMES: [&str; 6] = [
+    "libvirtualhid-mouse",
+    "libvirtualhid-mouse-(absolute)",
+    "libvirtualhid-keyboard",
+    "libvirtualhid-keyboard-1",
+    "libvirtualhid-pen-tablet",
+    "libvirtualhid-touchscreen",
+];
 const WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
 fn runtime_dir() -> PathBuf {
@@ -63,17 +72,30 @@ fn is_sunshine_device(identifier: &str, name: &str, match_names: &[String]) -> b
         || lower.contains("passthrough")
 }
 
+/// Nothing on the virtual desktop gets a border or title bar. Sway floats
+/// many game windows (fixed-size, dialog-type), and floating windows keep a
+/// title bar unless `default_floating_border` says otherwise.
+const NO_DECORATIONS: [&str; 3] = [
+    "default_border none",
+    "default_floating_border none",
+    "for_window [all] border none",
+];
+
 pub fn sway_config(cfg: &Sunshine) -> String {
     let mut out = format!(
         "output * mode {}x{}@{}Hz scale {}\n\
          swaybg_command /usr/bin/true\n\
-         default_border none\n\
          input * events disabled\n",
         cfg.width, cfg.height, cfg.refresh, cfg.scale
     );
-    if cfg.hide_cursor {
-        out.push_str("seat * hide_cursor 1\n");
+    for rule in NO_DECORATIONS {
+        out.push_str(rule);
+        out.push('\n');
     }
+    out.push_str(&format!(
+        "seat * hide_cursor {}\n",
+        cfg.cursor.hide_timeout_ms()
+    ));
     out
 }
 
@@ -178,7 +200,6 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         .with_context(|| format!("writing {}", config_path.display()))?;
     let _ = fs::remove_file(swaysock(s));
 
-    let host_swaysock = std::env::var_os("SWAYSOCK").map(PathBuf::from);
     let before = wayland_sockets();
     let mut sway = spawn_sway(s, &config_path)?;
     let display = match wait_for_display(s, &before, &mut sway) {
@@ -199,9 +220,6 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         .env("PULSE_PROP", format!("{STREAM_PROP}=game"))
         .env("PIPEWIRE_PROPS", format!("{{ {STREAM_PROP} = game }}"))
         .env_remove("DISPLAY");
-    if let Some(host) = &host_swaysock {
-        sunshine.env(HOST_SWAYSOCK_ENV, host);
-    }
     let mut sunshine = match sunshine.spawn() {
         Ok(c) => c,
         Err(err) => {
@@ -210,15 +228,9 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         }
     };
 
-    let host = HostDesktop::detect(host_swaysock);
-    if s.input_isolation && matches!(host, HostDesktop::Unknown) {
-        eprintln!(
-            "iprolaunch: couldn't tell which desktop this is (Hyprland/Sway/KDE) — \
-             streamed input may also reach the host desktop"
-        );
-    }
     let mut watcher = InputWatcher::default();
     let (audio_events, mut subscriber) = subscribe_audio_events();
+    let mut host_audio = HostAudioGuard::default();
     let result = loop {
         if let Some(status) = sunshine.try_wait()? {
             let _ = sway.kill();
@@ -235,10 +247,13 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         }
         watcher.enable_in_virtual_desktop(s);
         if s.input_isolation {
-            watcher.isolate_from_host(&host, &s.input_match);
+            watcher.isolate_from_host(&swaysock(s), &s.input_match);
         }
         if let Err(err) = route_stream_audio(sunshine.id(), &s.audio_sink) {
             eprintln!("iprolaunch: audio routing: {err:#}");
+        }
+        if s.keep_host_audio {
+            host_audio.keep_default(&s.audio_sink);
         }
         // Wake early when an audio stream appears, so a game that reopens its
         // output (e.g. on pause) is moved before it's audible on the host.
@@ -250,6 +265,46 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         let _ = child.wait();
     }
     result
+}
+
+/// Sunshine makes its own virtual sink the system default during a stream,
+/// which would pull everything playing on the host into it. Game audio is
+/// routed by `route_stream_audio` regardless, so the host default is put back.
+#[derive(Default)]
+struct HostAudioGuard {
+    host_default: Option<String>,
+}
+
+fn is_stream_sink(name: &str, stream_sink: &str) -> bool {
+    name == stream_sink || name.starts_with("sink-sunshine")
+}
+
+impl HostAudioGuard {
+    fn keep_default(&mut self, stream_sink: &str) {
+        let Some(current) = Command::new("pactl")
+            .arg("get-default-sink")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        else {
+            return;
+        };
+        if !is_stream_sink(&current, stream_sink) {
+            self.host_default = Some(current);
+            return;
+        }
+        if let Some(host) = &self.host_default {
+            let ok = Command::new("pactl")
+                .args(["set-default-sink", host])
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                // That sink is gone (unplugged); let the system pick again.
+                self.host_default = None;
+            }
+        }
+    }
 }
 
 /// Pulse/PipeWire stream property marking audio from games Sunshine launched.
@@ -271,10 +326,10 @@ fn subscribe_audio_events() -> (std::sync::mpsc::Receiver<()>, Option<Child>) {
     if let Some(stdout) = child.stdout.take() {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if line.contains("sink-input")
-                    && (line.contains("'new'") || line.contains("'change'"))
-                    && tx.send(()).is_err()
-                {
+                let relevant = (line.contains("sink-input")
+                    && (line.contains("'new'") || line.contains("'change'")))
+                    || (line.contains("'change'") && line.contains("server"));
+                if relevant && tx.send(()).is_err() {
                     break;
                 }
             }
@@ -374,35 +429,108 @@ fn route_stream_audio(sunshine_pid: u32, sink_name: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostDesktop {
-    Hyprland,
+    /// A live Hyprland instance's signature.
+    Hyprland(String),
     Sway(PathBuf),
     Kde,
     Unknown,
 }
 
+fn socket_alive(path: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+/// The running Hyprland instance (newest one with a live control socket).
+fn live_hyprland_instance() -> Option<String> {
+    fs::read_dir(runtime_dir().join("hypr"))
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| socket_alive(&e.path().join(".socket.sock")))
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+        .and_then(|e| e.file_name().into_string().ok())
+}
+
+/// A host Sway's IPC socket (`sway-ipc.*.sock`), never our own headless one.
+fn live_host_sway(own: &Path) -> Option<PathBuf> {
+    fs::read_dir(runtime_dir())
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p != own)
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("sway-ipc.") && n.ends_with(".sock"))
+        })
+        .find(|p| socket_alive(p))
+}
+
 impl HostDesktop {
-    fn detect(host_swaysock: Option<PathBuf>) -> Self {
-        if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
-            return HostDesktop::Hyprland;
+    /// Probes what's actually running right now. The service's environment
+    /// can't be trusted: systemd's user env keeps whatever the last desktop
+    /// session exported (e.g. KDE vars while Hyprland is running).
+    fn detect(own_swaysock: &Path) -> Self {
+        if let Some(sig) = live_hyprland_instance() {
+            return HostDesktop::Hyprland(sig);
         }
-        if let Some(sock) = host_swaysock.filter(|p| p.exists()) {
+        if let Some(sock) = live_host_sway(own_swaysock) {
             return HostDesktop::Sway(sock);
         }
-        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-        if std::env::var_os("KDE_SESSION_VERSION").is_some() || desktop.contains("KDE") {
+        let kwin = busctl_get(
+            "/org/kde/KWin/InputDevice",
+            "org.kde.KWin.InputDeviceManager",
+            "devicesSysNames",
+        );
+        if kwin.is_ok() {
             return HostDesktop::Kde;
         }
         HostDesktop::Unknown
     }
 }
 
+/// Forwards a tick whenever Hyprland reloads its config, which drops rules
+/// added at runtime with `hyprctl eval`. Ends when that instance goes away.
+fn watch_hyprland_reloads(signature: &str, tx: std::sync::mpsc::Sender<()>) {
+    use std::io::{BufRead, BufReader};
+    let path = runtime_dir()
+        .join("hypr")
+        .join(signature)
+        .join(".socket2.sock");
+    let Ok(stream) = std::os::unix::net::UnixStream::connect(path) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            if line.starts_with("configreloaded") && tx.send(()).is_err() {
+                break;
+            }
+        }
+    });
+}
+
 /// Remembers what's already been switched so each device is touched once
 /// while it exists, not every poll.
-#[derive(Default)]
 struct InputWatcher {
     enabled: HashSet<String>,
+    host: HostDesktop,
     host_disabled: HashSet<String>,
+    reloads_tx: std::sync::mpsc::Sender<()>,
+    reloads: std::sync::mpsc::Receiver<()>,
+}
+
+impl Default for InputWatcher {
+    fn default() -> Self {
+        let (reloads_tx, reloads) = std::sync::mpsc::channel();
+        Self {
+            enabled: HashSet::new(),
+            host: HostDesktop::Unknown,
+            host_disabled: HashSet::new(),
+            reloads_tx,
+            reloads,
+        }
+    }
 }
 
 impl InputWatcher {
@@ -427,9 +555,28 @@ impl InputWatcher {
         }
     }
 
-    fn isolate_from_host(&mut self, host: &HostDesktop, match_names: &[String]) {
-        let result = match host {
-            HostDesktop::Hyprland => self.isolate_hyprland(match_names),
+    fn isolate_from_host(&mut self, own_swaysock: &Path, match_names: &[String]) {
+        let host = HostDesktop::detect(own_swaysock);
+        if host != self.host {
+            if host == HostDesktop::Unknown {
+                eprintln!(
+                    "iprolaunch: no Hyprland, Sway or KDE session found — streamed input \
+                     may also reach the host desktop"
+                );
+            } else {
+                eprintln!("iprolaunch: isolating streamed input from {host:?}");
+            }
+            if let HostDesktop::Hyprland(sig) = &host {
+                watch_hyprland_reloads(sig, self.reloads_tx.clone());
+            }
+            self.host = host.clone();
+            self.host_disabled.clear();
+        }
+        if self.reloads.try_iter().count() > 0 {
+            self.host_disabled.clear();
+        }
+        let result = match &host {
+            HostDesktop::Hyprland(sig) => self.isolate_hyprland(sig, match_names),
             HostDesktop::Sway(sock) => self.isolate_sway(sock, match_names),
             HostDesktop::Kde => self.isolate_kde(match_names),
             HostDesktop::Unknown => Ok(()),
@@ -439,27 +586,37 @@ impl InputWatcher {
         }
     }
 
-    /// The Hyprland rule outlives the device, so each name only needs it once
-    /// per service run.
-    fn isolate_hyprland(&mut self, match_names: &[String]) -> Result<()> {
-        let out = Command::new("hyprctl")
+    /// Hyprland keeps a device rule even for a device that doesn't exist yet,
+    /// so Sunshine's known devices are disabled up front (re-done after a
+    /// config reload); anything else matching is caught when it appears.
+    fn isolate_hyprland(&mut self, sig: &str, match_names: &[String]) -> Result<()> {
+        let mut names: Vec<String> = if match_names.is_empty() {
+            SUNSHINE_DEVICE_NAMES
+                .iter()
+                .map(|n| n.to_string())
+                .collect()
+        } else {
+            match_names.to_vec()
+        };
+        let out = hyprctl(sig)
             .args(["devices", "-j"])
             .output()
             .context("running hyprctl")?;
         let json: Value = serde_json::from_slice(&out.stdout).context("parsing hyprctl devices")?;
-        let names: Vec<String> = ["mice", "keyboards", "tablets", "touch"]
-            .iter()
-            .filter_map(|k| json.get(*k).and_then(Value::as_array))
-            .flatten()
-            .filter_map(|d| d.get("name").and_then(Value::as_str))
-            .filter(|n| is_sunshine_device("", n, match_names))
-            .map(str::to_string)
-            .collect();
+        names.extend(
+            ["mice", "keyboards", "tablets", "touch"]
+                .iter()
+                .filter_map(|k| json.get(*k).and_then(Value::as_array))
+                .flatten()
+                .filter_map(|d| d.get("name").and_then(Value::as_str))
+                .filter(|n| is_sunshine_device("", n, match_names))
+                .map(str::to_string),
+        );
         for name in names {
             if self.host_disabled.contains(&name) {
                 continue;
             }
-            hyprland_disable(&name)?;
+            hyprland_disable(sig, &name)?;
             self.host_disabled.insert(name);
         }
         Ok(())
@@ -518,23 +675,33 @@ impl InputWatcher {
     }
 }
 
+/// `hyprctl` pinned to one instance, since the inherited signature may be stale.
+fn hyprctl(signature: &str) -> Command {
+    let mut cmd = Command::new("hyprctl");
+    cmd.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
+    cmd
+}
+
 /// Hyprland 0.56+ is Lua-configured (`keyword` is rejected there); older
 /// builds only have `keyword`.
-fn hyprland_disable(name: &str) -> Result<()> {
+fn hyprland_disable(sig: &str, name: &str) -> Result<()> {
     let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
     let lua = format!("hl.device({{ name = \"{escaped}\", enabled = false }})");
-    if hyprctl_ok(&["eval", &lua]) {
+    if hyprctl_ok(sig, &["eval", &lua]) {
         return Ok(());
     }
-    if hyprctl_ok(&["keyword", &format!("device[{name}]:enabled"), "false"]) {
+    if hyprctl_ok(
+        sig,
+        &["keyword", &format!("device[{name}]:enabled"), "false"],
+    ) {
         return Ok(());
     }
     bail!("hyprctl couldn't disable `{name}`")
 }
 
 /// hyprctl exits 0 even on a rejected command, so judge by its reply text.
-fn hyprctl_ok(args: &[&str]) -> bool {
-    Command::new("hyprctl").args(args).output().is_ok_and(|o| {
+fn hyprctl_ok(sig: &str, args: &[&str]) -> bool {
+    hyprctl(sig).args(args).output().is_ok_and(|o| {
         let text = String::from_utf8_lossy(&o.stdout).to_ascii_lowercase();
         o.status.success()
             && !["error", "can't", "invalid", "unknown"]
@@ -611,6 +778,27 @@ fn set_output_mode(cfg: &Sunshine, mode: StreamMode) -> Result<()> {
     )
 }
 
+/// Applies `cursor` at stream start, so it takes effect without restarting
+/// Sunshine. Sway's hide timer only runs after pointer activity, which never
+/// happens with a controller — parking the cursor in the corner counts as
+/// activity, so the timer starts.
+fn apply_cursor(cfg: &Sunshine, mode: StreamMode) -> Result<()> {
+    let sock = swaysock(cfg);
+    let timeout = cfg.cursor.hide_timeout_ms();
+    swaymsg(&sock, &format!("seat * hide_cursor {timeout}"))?;
+    if timeout > 0 {
+        swaymsg(
+            &sock,
+            &format!(
+                "seat * cursor set {} {}",
+                mode.width.saturating_sub(1),
+                mode.height.saturating_sub(1)
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 fn sink_module_file() -> PathBuf {
     state_dir().join("sink-module-id")
 }
@@ -664,6 +852,10 @@ pub fn prep(cfg: &Config, action: PrepAction, slug: Option<&str>) {
         PrepAction::Do => {
             let mode = cfg.effective_stream_mode(profile.as_ref(), client_mode_from_env());
             report("resizing the virtual desktop", set_output_mode(s, mode));
+            report("applying the cursor setting", apply_cursor(s, mode));
+            for rule in NO_DECORATIONS {
+                report("removing window decorations", swaymsg(&swaysock(s), rule));
+            }
             let client_audio = std::env::var("SUNSHINE_CLIENT_AUDIO_CONFIGURATION").ok();
             let channels = channel_count(s, client_audio.as_deref());
             report("creating the audio sink", load_sink(s, channels));
@@ -842,9 +1034,8 @@ pub fn install_service(cfg: &Config) -> Result<()> {
 
     println!();
     match cfg.sunshine.auth_token.as_deref() {
-        Some(token) => match crate::sunshine::refresh_prep_cmds(&cfg.sunshine, token) {
-            Ok(0) => println!("Games already in Sunshine are up to date."),
-            Ok(n) => println!("Updated {n} game(s) already in Sunshine to the new prep commands."),
+        Some(token) => match crate::sunshine::sync_apps(cfg, token, false) {
+            Ok(report) => crate::sunshine::print_sync_report(&report),
             Err(err) => println!("Couldn't update games already in Sunshine: {err}"),
         },
         None => println!(
@@ -936,6 +1127,13 @@ mod tests {
     }
 
     #[test]
+    fn known_device_names_are_all_detected_as_sunshine() {
+        for name in SUNSHINE_DEVICE_NAMES {
+            assert!(is_sunshine_device("", name, &[]), "{name}");
+        }
+    }
+
+    #[test]
     fn input_match_replaces_auto_detection() {
         let names = vec!["my-virtual-mouse".to_string()];
         assert!(is_sunshine_device("", "my-virtual-mouse", &names));
@@ -955,13 +1153,30 @@ mod tests {
     #[test]
     fn sway_config_disables_all_input_and_sets_mode() {
         let cfg = Sunshine {
-            hide_cursor: true,
+            cursor: crate::config::CursorMode::Hidden,
             ..Default::default()
         };
         let text = sway_config(&cfg);
+        assert!(sway_config(&Sunshine::default()).contains("seat * hide_cursor 3000"));
         assert!(text.contains("output * mode 1920x1080@60Hz scale 1"));
         assert!(text.contains("input * events disabled"));
+        assert!(text.contains("default_floating_border none"));
+        assert!(text.contains("for_window [all] border none"));
         assert!(text.contains("seat * hide_cursor 1"));
+    }
+
+    #[test]
+    fn stream_sinks_are_ours_and_sunshines() {
+        assert!(is_stream_sink("iprolaunch-stream", "iprolaunch-stream"));
+        assert!(is_stream_sink("sink-sunshine-stereo", "iprolaunch-stream"));
+        assert!(is_stream_sink(
+            "sink-sunshine-surround71",
+            "iprolaunch-stream"
+        ));
+        assert!(!is_stream_sink(
+            "alsa_output.pci-0000_58_00.6.analog-stereo",
+            "iprolaunch-stream"
+        ));
     }
 
     #[test]

@@ -65,14 +65,17 @@ entry.
   quick-searches Running/Library by name.
 - Library `p` runs `winetricks` against the exact prefix a real launch of
   that game would use (confirms first).
-- Built-in headless Sway virtual desktop for [Sunshine](https://github.com/LizardByte/Sunshine) game streaming — runs Sunshine in an isolated virtual desktop, keeps streamed input devices off the host, and dynamically adjusts resolution/refresh/audio to match the connecting client (with fixed-mode and per-game overrides via the new Sunshine tab in the TUI).
+- Built-in headless Sway virtual desktop for [Sunshine](https://github.com/LizardByte/Sunshine) game streaming — runs Sunshine in an isolated virtual desktop, keeps streamed input devices off the host, and dynamically adjusts resolution/refresh/audio to match the connecting client (with fixed-mode and per-game overrides via the new Sunshine tab in the TUI). Cover artwork for Sunshine games, with optional SteamGridDB support and per-game Steam app ID overrides, both configurable via the Sunshine tab and profile editor.
 - Library `s` opens a Share/Add-to popup: add a game to Steam as a
   non-Steam-game shortcut, live, via Steam's own importer — no
   `shortcuts.vdf` editing, no restart required — or add it to Sunshine via
   its REST API (asked for your Sunshine username/password once, then cached).
   Re-adding a game updates its existing entry instead of duplicating it.
-  Sunshine app config (gamescope/borderless, resolution per-client) is now
-  managed in the TUI's Sunshine tab instead of globally.
+  Sunshine games run in fullscreen gamescope with their window stretched to
+  fill the stream by default (switchable globally in the Sunshine tab, or per
+  game in the profile editor); resolution follows each client.
+- Library rows show status markers: `S` for games in Steam, `!` for games
+  with missing exe, `SU` for games added to Sunshine (reads "SUS" if in both).
 - Gamepad navigation — a real controller works alongside the keyboard with
   zero setup (see the Help screen's "Gamepad" section for the full button
   map); every legend switches to the matching captions automatically.
@@ -235,10 +238,16 @@ To stream a game to a Sunshine client:
 3. Tune stream resolution, refresh, and audio channels in the TUI's Sunshine
    tab (global defaults), or per-game in the profile editor (resolution_mode,
    width, height, refresh overrides).
+4. Game covers are looked up in order: the game's Steam app ID override
+   (profile editor), SteamGridDB (only with an API key — free from
+   steamgriddb.com → Preferences → API, set in the Sunshine tab), then the
+   Steam store by exact name. Covers are cached locally and only fetched once;
+   use "update games in sunshine" for games added earlier, or "refetch covers"
+   to re-download them.
 
 Games will stream in a dedicated Sway desktop environment — streamed input
 devices are kept off the host desktop automatically on Hyprland, Sway, and
-KDE, so only the stream sees them. The virtual-desktop approach is based on
+KDE, so only the stream sees them. The host PC's own audio output remains active during streams. The virtual-desktop approach is based on
 [LutrisToSunshine](https://github.com/Arbitrate3280/LutrisToSunshine) — thanks
 to its author.
 

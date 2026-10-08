@@ -427,25 +427,14 @@ pub struct Sunshine {
     /// written after a real successful login, never guessed/pre-filled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
-    /// Global default for the gamescope wrapping baked into a game's own
-    /// Sunshine app `cmd` — deliberately independent of `Defaults::gamescope`
-    /// (which drives a normal `iprolaunch <slug>` launch): a streamed
-    /// session commonly wants to fill the frame even when a direct desktop
-    /// launch of the same game doesn't. Defaults to `None` (no behavior
-    /// change for an app added before this existed) rather than defaulting
-    /// to `Fullscreen`, so this is opt-in.
-    #[serde(default)]
-    pub gamescope: GamescopeSetting,
-    /// Same idea as `gamescope` just above, for `-b`/`--borderless` —
-    /// deliberately independent of `Defaults::gamescope_settings.borderless`
-    /// (a normal desktop launch's own borderless toggle) for the identical
-    /// reason: a streamed session's framing needs often don't match a direct
-    /// desktop launch's. Unlike `gamescope_settings.borderless`, this has a
-    /// real global default (`false`) rather than `Option<bool>` — there's no
-    /// third "unset" state needed here, since Sunshine's own `cmd` either
-    /// gets `-b` or it doesn't; see `Config::effective_sunshine_borderless`.
-    #[serde(default)]
-    pub borderless: bool,
+    /// Run Sunshine games in gamescope, fullscreen with the game's window
+    /// stretched to fill it (`-f -w`). Independent of `Defaults::gamescope`,
+    /// which is for normal desktop launches.
+    #[serde(
+        default = "default_true",
+        deserialize_with = "sunshine_gamescope_compat"
+    )]
+    pub gamescope: bool,
     #[serde(default)]
     pub resolution_mode: ResolutionMode,
     /// Used in `fixed` mode, and as the fallback when the client's own
@@ -476,10 +465,42 @@ pub struct Sunshine {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_match: Vec<String>,
     #[serde(default)]
-    pub hide_cursor: bool,
+    pub cursor: CursorMode,
+    /// Keep the host's own default audio output while streaming, instead of
+    /// letting Sunshine switch the whole PC to its stream sink.
+    #[serde(default = "default_true")]
+    pub keep_host_audio: bool,
     /// The virtual desktop's Sway IPC socket name, under `$XDG_RUNTIME_DIR`.
     #[serde(default = "default_stream_socket")]
     pub socket_name: String,
+}
+
+/// `sunshine.gamescope` was `"none" | "fullscreen" | "maximize"` before it
+/// became a bool; old values still load (`none` = off, the rest = on).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SunshineGamescopeValue {
+    Bool(bool),
+    Legacy(GamescopeSetting),
+}
+
+impl From<SunshineGamescopeValue> for bool {
+    fn from(v: SunshineGamescopeValue) -> bool {
+        match v {
+            SunshineGamescopeValue::Bool(b) => b,
+            SunshineGamescopeValue::Legacy(s) => s != GamescopeSetting::None,
+        }
+    }
+}
+
+fn sunshine_gamescope_compat<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    SunshineGamescopeValue::deserialize(d).map(Into::into)
+}
+
+fn optional_sunshine_gamescope_compat<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<bool>, D::Error> {
+    Option::<SunshineGamescopeValue>::deserialize(d).map(|v| v.map(Into::into))
 }
 
 fn default_stream_width() -> u32 {
@@ -511,8 +532,7 @@ impl Default for Sunshine {
             port: 47990,
             username: None,
             auth_token: None,
-            gamescope: GamescopeSetting::default(),
-            borderless: false,
+            gamescope: true,
             resolution_mode: ResolutionMode::default(),
             width: default_stream_width(),
             height: default_stream_height(),
@@ -523,8 +543,31 @@ impl Default for Sunshine {
             audio_channels: AudioChannels::default(),
             input_isolation: true,
             input_match: Vec::new(),
-            hide_cursor: false,
+            cursor: CursorMode::default(),
+            keep_host_audio: true,
             socket_name: default_stream_socket(),
+        }
+    }
+}
+
+/// The virtual desktop's mouse cursor in the stream. `auto` hides it after a
+/// few seconds without mouse movement, e.g. while playing with a controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CursorMode {
+    #[default]
+    Auto,
+    Hidden,
+    Visible,
+}
+
+impl CursorMode {
+    /// Sway's `seat * hide_cursor` idle timeout in ms (0 = never hide).
+    pub fn hide_timeout_ms(self) -> u32 {
+        match self {
+            CursorMode::Auto => 3000,
+            CursorMode::Hidden => 1,
+            CursorMode::Visible => 0,
         }
     }
 }
@@ -569,6 +612,14 @@ pub struct StreamMode {
     pub refresh: u32,
 }
 
+/// SteamGridDB (cover art for Sunshine apps). Free key from
+/// steamgriddb.com → Preferences → API.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SteamGridDb {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     pub defaults: Defaults,
@@ -577,6 +628,8 @@ pub struct Config {
     pub gamedb: GameDb,
     #[serde(default)]
     pub sunshine: Sunshine,
+    #[serde(default)]
+    pub steamgriddb: SteamGridDb,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// One line per DLL: `dllname = "n,b"` (Wine's own mode syntax — `n`
@@ -622,26 +675,12 @@ impl Config {
         Ok(project_dirs()?.config_dir().join("logs"))
     }
 
-    /// Resolves the gamescope wrapping to bake into a game's own Sunshine
-    /// app entry: this profile's own `sunshine_gamescope` override if set,
-    /// else the global `sunshine.gamescope` default. Deliberately separate
-    /// from `effective()`/`Effective::gamescope` (which drives an actual
-    /// `iprolaunch <slug>` launch) — a streamed session often wants
-    /// different framing than that same game's normal desktop launch, so
-    /// the two are resolved independently rather than sharing one setting.
-    pub fn effective_sunshine_gamescope(&self, profile: Option<&Profile>) -> GamescopeSetting {
+    /// Whether a game's Sunshine app runs in gamescope: the profile's own
+    /// `sunshine_gamescope` override if set, else the global setting.
+    pub fn effective_sunshine_gamescope(&self, profile: Option<&Profile>) -> bool {
         profile
             .and_then(|p| p.defaults.sunshine_gamescope)
             .unwrap_or(self.sunshine.gamescope)
-    }
-
-    /// Same idea as `effective_sunshine_gamescope`, for `-b`/`--borderless`:
-    /// this profile's own `sunshine_borderless` override if set, else the
-    /// global `sunshine.borderless` default.
-    pub fn effective_sunshine_borderless(&self, profile: Option<&Profile>) -> bool {
-        profile
-            .and_then(|p| p.defaults.sunshine_borderless)
-            .unwrap_or(self.sunshine.borderless)
     }
 
     /// Resolves the virtual desktop's mode for one stream. `client` is the
@@ -829,18 +868,13 @@ pub struct ProfileDefaults {
     pub gamescope_settings: GamescopeSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_wrapper: Option<String>,
-    /// This profile's own override of `sunshine.gamescope` — independent of
-    /// the `gamescope` override just above (that one's for a normal
-    /// `iprolaunch <slug>` launch), since a streamed session of this game
-    /// often wants different framing than a direct desktop launch of it.
-    /// See `Config::effective_sunshine_gamescope`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sunshine_gamescope: Option<GamescopeSetting>,
-    /// This profile's own override of `sunshine.borderless` — same
-    /// independence reasoning as `sunshine_gamescope` just above. See
-    /// `Config::effective_sunshine_borderless`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sunshine_borderless: Option<bool>,
+    /// This profile's own override of `sunshine.gamescope`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_sunshine_gamescope_compat"
+    )]
+    pub sunshine_gamescope: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sunshine_resolution_mode: Option<ResolutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -849,6 +883,9 @@ pub struct ProfileDefaults {
     pub sunshine_height: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sunshine_refresh: Option<u32>,
+    /// Steam app ID to take official cover art from, skipping the name lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steam_appid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1150,16 +1187,8 @@ mod tests {
     }
 
     #[test]
-    fn effective_sunshine_borderless_falls_back_to_the_global_default() {
-        let mut cfg = Config::default();
-        cfg.sunshine.borderless = true;
-        assert!(cfg.effective_sunshine_borderless(None));
-    }
-
-    #[test]
-    fn profile_sunshine_borderless_override_wins_when_set() {
-        let mut cfg = Config::default();
-        cfg.sunshine.borderless = false;
+    fn sunshine_gamescope_profile_override_wins() {
+        let cfg = Config::default();
         let mut profile = Profile {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
@@ -1171,10 +1200,23 @@ mod tests {
             winedlloverride: BTreeMap::new(),
             args: Vec::new(),
         };
-        assert!(!cfg.effective_sunshine_borderless(Some(&profile)));
+        assert!(cfg.effective_sunshine_gamescope(Some(&profile)));
+        profile.defaults.sunshine_gamescope = Some(false);
+        assert!(!cfg.effective_sunshine_gamescope(Some(&profile)));
+    }
 
-        profile.defaults.sunshine_borderless = Some(true);
-        assert!(cfg.effective_sunshine_borderless(Some(&profile)));
+    #[test]
+    fn legacy_sunshine_gamescope_values_still_load() {
+        let on: Sunshine =
+            toml::from_str("host = \"h\"\nport = 1\ngamescope = \"maximize\"\nborderless = false")
+                .unwrap();
+        assert!(on.gamescope);
+        let off: Sunshine = toml::from_str("host = \"h\"\nport = 1\ngamescope = \"none\"").unwrap();
+        assert!(!off.gamescope);
+        let new: Sunshine = toml::from_str("host = \"h\"\nport = 1\ngamescope = false").unwrap();
+        assert!(!new.gamescope);
+        let p: ProfileDefaults = toml::from_str("sunshine_gamescope = \"fullscreen\"").unwrap();
+        assert_eq!(p.sunshine_gamescope, Some(true));
     }
 
     fn stream(width: u32, height: u32, refresh: u32) -> StreamMode {
@@ -1239,6 +1281,7 @@ mod tests {
         assert_eq!(cfg.width, 1920);
         assert!(cfg.input_isolation);
         assert_eq!(cfg.audio_sink, "iprolaunch-stream");
+        assert!(cfg.gamescope);
     }
 
     #[test]

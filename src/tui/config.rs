@@ -65,9 +65,9 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
             let s = &mut app.cfg.sunshine;
             match field {
                 ConfigField::LogAutoOpen => app.cfg.logging.auto_open = !app.cfg.logging.auto_open,
-                ConfigField::SunshineBorderless => s.borderless = !s.borderless,
+                ConfigField::SunshineGamescope => s.gamescope = !s.gamescope,
                 ConfigField::SunshineInputIsolation => s.input_isolation = !s.input_isolation,
-                ConfigField::SunshineHideCursor => s.hide_cursor = !s.hide_cursor,
+                ConfigField::SunshineKeepHostAudio => s.keep_host_audio = !s.keep_host_audio,
                 _ => {}
             }
             save_config(app);
@@ -112,8 +112,16 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
 
 /// Same suspend/print/wait/resume shape as `run_integrate_action`.
 fn run_sunshine_service_action(app: &mut App, terminal: &mut Term, field: SunshineServiceField) {
+    if matches!(
+        field,
+        SunshineServiceField::UpdateGames | SunshineServiceField::RefetchCovers
+    ) {
+        return sync_sunshine_games(app, terminal, field == SunshineServiceField::RefetchCovers);
+    }
     let action: fn(&crate::config::Config) -> anyhow::Result<()> = match field {
-        SunshineServiceField::Status => return,
+        SunshineServiceField::Status
+        | SunshineServiceField::UpdateGames
+        | SunshineServiceField::RefetchCovers => return,
         SunshineServiceField::Setup => crate::vdesktop::install_service,
         SunshineServiceField::Restart => |_| crate::vdesktop::restart_service(),
         SunshineServiceField::Restore => |_| crate::vdesktop::restore_service(),
@@ -141,6 +149,52 @@ fn run_sunshine_service_action(app: &mut App, terminal: &mut Term, field: Sunshi
             "Original Sunshine service restored — restart it to apply.".to_string()
         }
         _ => "Sunshine restarted.".to_string(),
+    });
+}
+
+/// Re-syncs every iprolaunch game in Sunshine (prep commands + covers),
+/// printing progress like the other service actions.
+fn sync_sunshine_games(app: &mut App, terminal: &mut Term, refetch_covers: bool) {
+    let Some(token) = app.cfg.sunshine.auth_token.clone() else {
+        app.status = Some(
+            "Not logged in to Sunshine yet — add a game from the Library once to log in."
+                .to_string(),
+        );
+        return;
+    };
+    if suspend(terminal).is_err() {
+        app.status = Some("Failed to suspend the TUI.".to_string());
+        return;
+    }
+    println!("Updating games in Sunshine...");
+    let result = crate::sunshine::sync_apps(&app.cfg, &token, refetch_covers);
+    match &result {
+        Ok(report) => crate::sunshine::print_sync_report(report),
+        Err(err) => println!("Error: {err}"),
+    }
+    wait_for_return();
+    if resume(terminal).is_err() {
+        app.status = Some("Failed to restore the TUI.".to_string());
+        return;
+    }
+    app.status = Some(match result {
+        Ok(report) => format!(
+            "Updated {} game(s) in Sunshine, {} cover(s) set{}.",
+            report.updated,
+            report.covers,
+            if report.cover_errors.is_empty() {
+                String::new()
+            } else {
+                format!(", {} without a cover", report.cover_errors.len())
+            }
+        ),
+        Err(err) => {
+            if matches!(err, crate::sunshine::AddAppError::AuthExpired) {
+                app.cfg.sunshine.auth_token = None;
+                let _ = app.cfg.save();
+            }
+            format!("Couldn't update Sunshine: {err}")
+        }
     });
 }
 
@@ -349,12 +403,12 @@ fn cycle_field(app: &mut App, field: ConfigField) {
                     .to_string(),
             );
         }
-        ConfigField::SunshineGamescope => {
-            app.cfg.sunshine.gamescope = app::next_sunshine_gamescope(app.cfg.sunshine.gamescope);
-        }
         ConfigField::SunshineResolutionMode => {
             app.cfg.sunshine.resolution_mode =
                 app::next_resolution_mode(app.cfg.sunshine.resolution_mode);
+        }
+        ConfigField::SunshineCursor => {
+            app.cfg.sunshine.cursor = app::next_cursor_mode(app.cfg.sunshine.cursor);
         }
         ConfigField::SunshineAudioChannels => {
             app.cfg.sunshine.audio_channels =
@@ -397,6 +451,7 @@ fn current_text_value(app: &App, field: ConfigField) -> String {
         ConfigField::SunshineAudioSink => app.cfg.sunshine.audio_sink.clone(),
         ConfigField::SunshineInputMatch => app.cfg.sunshine.input_match.join(", "),
         ConfigField::SunshineSocketName => app.cfg.sunshine.socket_name.clone(),
+        ConfigField::SteamGridDbApiKey => app.cfg.steamgriddb.api_key.clone().unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -459,6 +514,10 @@ fn apply_sunshine_text(app: &mut App, field: ConfigField, trimmed: &str) -> Resu
 /// silently discarded.
 pub fn apply_text_field(app: &mut App, field: ConfigField, value: String) {
     let trimmed = value.trim().to_string();
+    if field == ConfigField::SteamGridDbApiKey {
+        app.cfg.steamgriddb.api_key = (!trimmed.is_empty()).then_some(trimmed);
+        return save_config(app);
+    }
     if ConfigField::SUNSHINE.contains(&field) {
         match apply_sunshine_text(app, field, &trimmed) {
             Ok(()) => save_config(app),

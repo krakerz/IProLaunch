@@ -8,13 +8,22 @@
 - Sunshine tab in the TUI for the streaming virtual desktop's settings.
 - Built-in headless Sway virtual desktop for Sunshine streams (`iprolaunch sunshine service`).
 - Stream resolution, refresh and audio channels follow the connecting client, with fixed-mode and per-game overrides.
-- Streamed mouse/keyboard are kept off the host desktop on Hyprland, Sway and KDE.
+- Streamed mouse/keyboard are kept off the host desktop on Hyprland, Sway and KDE, with no manual compositor config needed.
 - Game audio is routed into the stream automatically, including after the game pauses or reopens its audio.
 - `iprolaunch sunshine install-service` sets Sunshine's systemd service up to use it.
 - Sunshine tab has a service section to set up, restart or restore Sunshine's service and audio sink setting.
+- Host PC keeps its own audio output while a stream runs (`keep_host_audio`).
+- Sunshine tab can update every game already in Sunshine (launch command, prep commands, covers) and refetch their covers.
+- Games in the Sunshine virtual desktop never get window borders or title bars.
+- Ctrl+V and terminal paste work in every text field and quick-search.
+- Covers fall back to Steam's official artwork when SteamGridDB has no match, and work without a SteamGridDB key.
+- Per-game Steam app ID override for covers in the profile editor.
+- Library shows "SU" for games added to Sunshine.
+- Stream cursor hides automatically while you play with a controller (`cursor = "auto"`).
 
 ### Changed
-- Sunshine's gamescope/borderless settings moved from the Config tab to the Sunshine tab.
+- Sunshine's gamescope setting is now a single on/off switch (fullscreen with the game stretched to fill), on by default; the separate Sunshine borderless setting is gone.
+- Sunshine's gamescope setting moved from the Config tab to the Sunshine tab.
 - Games added to Sunshine now use IProLaunch's own prep commands, and setup updates games already added.
 
 ## [1.40.0] — 2026-09-24

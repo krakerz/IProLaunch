@@ -1,5 +1,6 @@
 mod config;
 mod context_menu;
+mod covers;
 mod gamedb;
 mod integrate;
 mod launch;

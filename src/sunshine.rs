@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use ureq::Agent;
 use ureq::tls::TlsConfig;
 
-use crate::config::Sunshine;
+use crate::config::{Config, Sunshine};
 
 fn base_url(cfg: &Sunshine) -> String {
     format!("https://{}:{}", cfg.host, cfg.port)
@@ -74,6 +74,20 @@ struct PrepCmd {
     #[serde(rename = "do")]
     do_cmd: String,
     undo: String,
+}
+
+/// The Sunshine app `cmd` for a profile: this binary, the profile's
+/// Sunshine gamescope flags (if on), then its slug.
+pub fn app_cmd(cfg: &Config, profile: &crate::config::Profile, slug: &str) -> Result<String> {
+    let exe = std::env::current_exe()?.canonicalize()?;
+    // Fullscreen gamescope with the game's window stretched to fill it, so
+    // a fixed-size windowed game isn't a small box on a large virtual desktop.
+    let flags: &[&str] = if cfg.effective_sunshine_gamescope(Some(profile)) {
+        &["-f", "-w"]
+    } else {
+        &[]
+    };
+    Ok(crate::quick_launch_cmd::command_for(&exe, flags, slug))
 }
 
 /// `iprolaunch sunshine prep do|undo <slug>` for this exact binary.
@@ -233,6 +247,7 @@ pub fn add_app(
     name: &str,
     cmd: &str,
     slug: &str,
+    image_path: &str,
 ) -> Result<bool, AddAppError> {
     let url = format!("{}/api/apps", base_url(cfg));
     let existing_index = find_existing_index(cfg, auth_token, slug);
@@ -240,7 +255,7 @@ pub fn add_app(
     let payload = AddAppRequest {
         name,
         cmd,
-        image_path: "",
+        image_path,
         index: existing_index.unwrap_or(-1),
         auto_detach: true,
         wait_all: true,
@@ -271,10 +286,39 @@ fn iprolaunch_slug(cmd: &str) -> Option<&str> {
     matches_iprolaunch_slug(cmd, slug).then_some(slug)
 }
 
-/// Points every iprolaunch app already in Sunshine at this binary's current
-/// prep commands, keeping all their other fields. Returns how many changed.
-pub fn refresh_prep_cmds(cfg: &Sunshine, auth_token: &str) -> Result<usize, AddAppError> {
+/// Slugs of every iprolaunch game already in Sunshine; empty on any failure.
+pub fn slugs_in_sunshine(cfg: &Sunshine, auth_token: &str) -> std::collections::HashSet<String> {
     let url = format!("{}/api/apps", base_url(cfg));
+    let Ok(mut response) = agent().get(&url).header("Authorization", auth_token).call() else {
+        return Default::default();
+    };
+    let Ok(list) = response.body_mut().read_json::<AppsListResponse>() else {
+        return Default::default();
+    };
+    list.apps
+        .iter()
+        .filter_map(|a| iprolaunch_slug(&a.cmd).map(str::to_string))
+        .collect()
+}
+
+/// What `sync_apps` changed.
+#[derive(Debug, Default)]
+pub struct SyncReport {
+    pub updated: usize,
+    pub covers: usize,
+    /// `(game, reason)` for each cover that couldn't be fetched.
+    pub cover_errors: Vec<(String, String)>,
+}
+
+/// Brings every iprolaunch app already in Sunshine up to date: this binary's
+/// current prep commands, and (with a SteamGridDB key) a cover image. All
+/// other fields are kept. `refetch_covers` re-downloads cached covers.
+pub fn sync_apps(
+    cfg: &Config,
+    auth_token: &str,
+    refetch_covers: bool,
+) -> Result<SyncReport, AddAppError> {
+    let url = format!("{}/api/apps", base_url(&cfg.sunshine));
     let response = agent().get(&url).header("Authorization", auth_token).call();
     let mut body = match response {
         Ok(r) => r,
@@ -289,8 +333,9 @@ pub fn refresh_prep_cmds(cfg: &Sunshine, auth_token: &str) -> Result<usize, AddA
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let key = cfg.steamgriddb.api_key.as_deref();
 
-    let mut updated = 0;
+    let mut report = SyncReport::default();
     for (index, mut app) in apps.into_iter().enumerate() {
         let Some(slug) = app
             .get("cmd")
@@ -300,19 +345,53 @@ pub fn refresh_prep_cmds(cfg: &Sunshine, auth_token: &str) -> Result<usize, AddA
         else {
             continue;
         };
+        let mut changed = false;
+
+        let profile = crate::config::Profile::load(&slug);
+        if let Ok(profile) = &profile {
+            let cmd = app_cmd(cfg, profile, &slug).map_err(AddAppError::Other)?;
+            if app.get("cmd").and_then(serde_json::Value::as_str) != Some(cmd.as_str()) {
+                app["cmd"] = serde_json::json!(cmd);
+                changed = true;
+            }
+        }
+
         let prep = prep_cmd_for(&slug).map_err(AddAppError::Other)?;
         let prep = serde_json::to_value(vec![prep]).map_err(|e| AddAppError::Other(e.into()))?;
-        if app.get("prep-cmd") == Some(&prep) {
+        if app.get("prep-cmd") != Some(&prep) {
+            app["prep-cmd"] = prep;
+            changed = true;
+        }
+
+        let title = app
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&slug)
+            .to_string();
+        let cover = crate::config::Profile::load(&slug)
+            .and_then(|p| crate::covers::fetch_cover(key, &slug, &p, refetch_covers));
+        match cover {
+            Ok(path) => {
+                let path = serde_json::json!(path.display().to_string());
+                if app.get("image-path") != Some(&path) || refetch_covers {
+                    app["image-path"] = path;
+                    changed = true;
+                    report.covers += 1;
+                }
+            }
+            Err(err) => report.cover_errors.push((title, format!("{err:#}"))),
+        }
+
+        if !changed {
             continue;
         }
-        app["prep-cmd"] = prep;
         app["index"] = serde_json::json!(index);
         match agent()
             .post(&url)
             .header("Authorization", auth_token)
             .send_json(&app)
         {
-            Ok(_) => updated += 1,
+            Ok(_) => report.updated += 1,
             Err(ureq::Error::StatusCode(401)) => return Err(AddAppError::AuthExpired),
             Err(err) => {
                 return Err(AddAppError::Other(
@@ -321,7 +400,18 @@ pub fn refresh_prep_cmds(cfg: &Sunshine, auth_token: &str) -> Result<usize, AddA
             }
         }
     }
-    Ok(updated)
+    Ok(report)
+}
+
+/// Prints a `SyncReport` for the CLI / suspended-TUI actions.
+pub fn print_sync_report(report: &SyncReport) {
+    println!(
+        "Updated {} game(s) in Sunshine ({} cover(s) set).",
+        report.updated, report.covers
+    );
+    for (game, reason) in &report.cover_errors {
+        println!("  no cover for \"{game}\": {reason}");
+    }
 }
 
 #[cfg(test)]
@@ -452,6 +542,32 @@ mod tests {
             "\"/home/user/iprolaunch\"",
             "kendo"
         ));
+    }
+
+    fn bare_profile() -> crate::config::Profile {
+        crate::config::Profile {
+            name: "Game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            last_launched: None,
+            defaults: Default::default(),
+            logging: Default::default(),
+            env: Default::default(),
+            winedlloverride: Default::default(),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn app_cmd_defaults_to_stretched_fullscreen_gamescope_and_profile_can_turn_it_off() {
+        let cfg = Config::default();
+        let mut profile = bare_profile();
+        let cmd = app_cmd(&cfg, &profile, "game").unwrap();
+        assert!(cmd.ends_with("\" -f -w game"), "{cmd}");
+
+        profile.defaults.sunshine_gamescope = Some(false);
+        let cmd = app_cmd(&cfg, &profile, "game").unwrap();
+        assert!(cmd.ends_with("\" game"), "{cmd}");
     }
 
     #[test]
