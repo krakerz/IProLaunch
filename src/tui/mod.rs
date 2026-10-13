@@ -192,9 +192,12 @@ fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -
         // Checked every tick regardless of whether the keyboard poll above
         // timed out or returned an unrelated event (resize, etc.) — gilrs
         // queues its own events independently of crossterm's.
-        for code in gamepad.poll() {
+        for input in gamepad.poll() {
             app.input_kind = InputKind::Gamepad;
-            on_key(app, code, terminal);
+            match input {
+                gamepad::PadInput::Key(code) => on_key(app, code, terminal),
+                gamepad::PadInput::Zoom(step) => gui::zoom(step),
+            }
             handled = true;
         }
         if !handled && matches!(app.tab, app::Tab::Running) {

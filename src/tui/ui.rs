@@ -1440,7 +1440,8 @@ Gamepad (Steam Deck Game Mode, or any plain controller):
                            that part (the Sunshine option's username/
                            password prompt still needs a keyboard, same as
                            every other text-input field)
-  Select                   quick-search
+  Select                   quick-search (on release)
+  Select + LT / RT         zoom out / in (Game Mode window, `-gm`)
   Start                    quit
   Every title/status bar shows the matching set of captions once a gamepad
   button is used, and switches back the moment a real key is pressed.
@@ -1500,11 +1501,19 @@ fn draw_help_popup(frame: &mut Frame, app: &App) {
 /// specifically.
 const GLOBAL_KEY_HINTS: &str = "q = quit   ? = help   1-5 / Tab / Shift-Tab = switch tabs";
 const GLOBAL_KEY_HINTS_GAMEPAD: &str = "Start = quit   Y = help   LB/RB = switch tabs";
+/// Appended in the Game Mode window, where text zoom exists.
+const ZOOM_KEY_HINT: &str = "   Ctrl+- / Ctrl+= = zoom";
+const ZOOM_KEY_HINT_GAMEPAD: &str = "   View+LT / View+RT = zoom";
 
 fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let hints = match app.input_kind {
-        InputKind::Keyboard => GLOBAL_KEY_HINTS,
-        InputKind::Gamepad => GLOBAL_KEY_HINTS_GAMEPAD,
+    let (hints, zoom) = match app.input_kind {
+        InputKind::Keyboard => (GLOBAL_KEY_HINTS, ZOOM_KEY_HINT),
+        InputKind::Gamepad => (GLOBAL_KEY_HINTS_GAMEPAD, ZOOM_KEY_HINT_GAMEPAD),
+    };
+    let hints = if super::gui::active() {
+        format!("{hints}{zoom}")
+    } else {
+        hints.to_string()
     };
     let text = match &app.status {
         Some(s) => Span::styled(s.clone(), Style::default().fg(Color::Yellow)),

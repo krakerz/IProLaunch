@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.43.0] — 2026-10-13
+
+### Added
+- Game Mode window text zoom with Ctrl+- / Ctrl+= or View + LT / RT, remembered between launches.
+
 ## [1.42.0] — 2026-10-13
 
 ### Added
