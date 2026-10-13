@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod gamepad;
+mod gui;
 mod library;
 mod profile_editor;
 mod running;
@@ -18,13 +19,91 @@ use crossterm::terminal::{
 };
 use gilrs::{EventType as GilrsEventType, Gilrs};
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
+use ratatui::buffer::Cell;
+use ratatui::layout::{Position, Size};
 
 use crate::config::Config;
 use app::{App, InputKind, Mode, TextInputPurpose};
 use gamepad::GamepadSource;
 
-pub type Term = Terminal<CrosstermBackend<Stdout>>;
+pub type Term = Terminal<AppBackend>;
+
+pub use gui::parse_size as parse_gamemode_size;
+
+/// The terminal, or the Game Mode window (see `gui`).
+pub enum AppBackend {
+    Terminal(CrosstermBackend<Stdout>),
+    Window(gui::GuiBackend),
+}
+
+macro_rules! each_backend {
+    ($self:ident, $b:ident => $e:expr) => {
+        match $self {
+            AppBackend::Terminal($b) => $e,
+            AppBackend::Window($b) => $e,
+        }
+    };
+}
+
+impl Backend for AppBackend {
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        each_backend!(self, b => b.draw(content))
+    }
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        each_backend!(self, b => b.hide_cursor())
+    }
+    fn show_cursor(&mut self) -> io::Result<()> {
+        each_backend!(self, b => b.show_cursor())
+    }
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        each_backend!(self, b => b.get_cursor_position())
+    }
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        each_backend!(self, b => b.set_cursor_position(position))
+    }
+    fn clear(&mut self) -> io::Result<()> {
+        each_backend!(self, b => b.clear())
+    }
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        each_backend!(self, b => b.clear_region(clear_type))
+    }
+    fn size(&self) -> io::Result<Size> {
+        each_backend!(self, b => b.size())
+    }
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        each_backend!(self, b => b.window_size())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        each_backend!(self, b => Backend::flush(b))
+    }
+}
+
+/// `iprolaunch --gamemode [WxH]`: the TUI in its own window for Steam Game
+/// Mode, no terminal needed.
+pub fn run_gamemode(cfg: Config, size: Option<(u32, u32)>) -> Result<()> {
+    gui::run(size, move || {
+        let mut app = App::new(cfg);
+        let mut terminal = Terminal::new(AppBackend::Window(gui::GuiBackend::new()))?;
+        let mut gamepad = GamepadSource::new();
+        event_loop(&mut terminal, &mut app, &mut gamepad)
+    })
+}
+
+/// Next input event from the terminal or the Game Mode window.
+fn next_event(timeout: Duration) -> io::Result<Option<Event>> {
+    if let Some(link) = gui::link() {
+        return Ok(link.next_event(timeout));
+    }
+    if event::poll(timeout)? {
+        Ok(Some(event::read()?))
+    } else {
+        Ok(None)
+    }
+}
 
 pub fn run(cfg: Config) -> Result<()> {
     // Bare `iprolaunch` with no controlling terminal (confirmed for real:
@@ -38,8 +117,8 @@ pub fn run(cfg: Config) -> Result<()> {
     if !io::stdout().is_terminal() {
         bail!(
             "no terminal available to run the TUI in (this happens when launched without a \
-             console, e.g. a Steam Game Mode/gamescope shortcut) — point it at \
-             `iprolaunch <name-or-slug>` instead"
+             console, e.g. a Steam Game Mode/gamescope shortcut) — use `iprolaunch -gm` \
+             for the TUI in its own window, or `iprolaunch <name-or-slug>` for one game"
         );
     }
 
@@ -48,7 +127,7 @@ pub fn run(cfg: Config) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
-    let backend = CrosstermBackend::new(stdout);
+    let backend = AppBackend::Terminal(CrosstermBackend::new(stdout));
     let mut terminal = Terminal::new(backend)?;
 
     // Restore the terminal even on panic, so a bug doesn't leave the user's
@@ -64,11 +143,7 @@ pub fn run(cfg: Config) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app, &mut gamepad);
 
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableBracketedPaste,
-        LeaveAlternateScreen
-    )?;
+    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result
@@ -91,8 +166,8 @@ fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -
         // nothing new, and polling slower starts batching two repeat steps
         // into one redraw (a visible double-row jump instead of a smooth
         // one-row-per-frame scroll).
-        if event::poll(Duration::from_millis(30))? {
-            match event::read()? {
+        if let Some(event) = next_event(Duration::from_millis(30))? {
+            match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     app.input_kind = InputKind::Keyboard;
                     let ctrl_v = key.modifiers.contains(KeyModifiers::CONTROL)
@@ -395,23 +470,24 @@ fn handle_proton_picker(app: &mut App, code: KeyCode) {
 /// (e.g. `umu-run`'s launch messages) prints normally instead of into a
 /// buffer the user can't see.
 pub fn suspend(terminal: &mut Term) -> Result<()> {
+    if let Some(link) = gui::link() {
+        link.suspend();
+        return Ok(());
+    }
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableBracketedPaste,
-        LeaveAlternateScreen
-    )?;
+    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
 }
 
 pub fn resume(terminal: &mut Term) -> Result<()> {
+    if let Some(link) = gui::link() {
+        link.resume();
+        terminal.clear()?;
+        return Ok(());
+    }
     enable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        EnterAlternateScreen,
-        EnableBracketedPaste
-    )?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
     terminal.hide_cursor()?;
     terminal.clear()?;
     Ok(())
@@ -446,7 +522,8 @@ pub fn wait_for_return() {
     print!("\nPress Enter (or B on a gamepad) to return to iprolaunch. ");
     io::stdout().flush().ok();
 
-    if enable_raw_mode().is_err() {
+    let window = gui::link().is_some();
+    if !window && enable_raw_mode().is_err() {
         let mut discard = String::new();
         io::stdin().read_line(&mut discard).ok();
         println!();
@@ -455,8 +532,7 @@ pub fn wait_for_return() {
 
     let mut gilrs = Gilrs::new().ok();
     loop {
-        if matches!(event::poll(Duration::from_millis(50)), Ok(true))
-            && let Ok(Event::Key(key)) = event::read()
+        if let Ok(Some(Event::Key(key))) = next_event(Duration::from_millis(50))
             && key.kind == KeyEventKind::Press
             && key.code == KeyCode::Enter
         {
@@ -478,7 +554,9 @@ pub fn wait_for_return() {
         }
     }
 
-    disable_raw_mode().ok();
+    if !window {
+        disable_raw_mode().ok();
+    }
     println!();
 }
 

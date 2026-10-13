@@ -987,6 +987,31 @@ pub fn restart_service() -> Result<()> {
     Ok(())
 }
 
+/// After a self-update: the service still runs the old binary, so restart it
+/// when it's ours and running. Ends an active stream, hence the notice.
+pub fn restart_after_update() {
+    let Some(unit) = find_sunshine_unit() else {
+        return;
+    };
+    let ours = override_path(unit)
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .is_some_and(|s| s.contains("Written by iprolaunch"));
+    let active = Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", unit])
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ours || !active {
+        return;
+    }
+    println!(
+        "Restarting the Sunshine service so it runs the new version (ends any active stream)..."
+    );
+    if let Err(e) = restart_service() {
+        println!("Couldn't restart the Sunshine service: {e:#}. Restart it from the Sunshine tab.");
+    }
+}
+
 /// Points Sunshine's systemd user service at `iprolaunch sunshine service`,
 /// backing up any existing override first (see `restore_service`).
 pub fn install_service(cfg: &Config) -> Result<()> {

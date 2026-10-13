@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.42.0] — 2026-10-13
+
+### Added
+- `iprolaunch --gamemode [WIDTHxHEIGHT]` (`-gm`) opens the TUI in its own window, so Steam Game Mode no longer needs a terminal emulator.
+- Self-update restarts the Sunshine service when IProLaunch runs it, so it picks up the new version.
+
 ## [1.41.0] — 2026-10-07
 
 ### Added
