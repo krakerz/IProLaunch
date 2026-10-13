@@ -13,7 +13,7 @@
 use std::io::{self, Read, Write};
 use std::os::fd::FromRawFd;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -38,6 +38,9 @@ pub struct Link {
     log: Mutex<Log>,
     suspended: AtomicBool,
     quit: AtomicBool,
+    /// Zoom steps requested by the gamepad (worker side), applied by the
+    /// window on its next frame.
+    zoom_steps: AtomicI32,
     events: Mutex<Receiver<Event>>,
     ctx: egui::Context,
 }
@@ -208,6 +211,19 @@ impl Backend for GuiBackend {
     }
 }
 
+/// Whether the TUI is running in the Game Mode window.
+pub fn active() -> bool {
+    link().is_some()
+}
+
+/// Gamepad zoom (View + LT/RT); does nothing in a terminal.
+pub fn zoom(step: i8) {
+    if let Some(link) = link() {
+        link.zoom_steps.fetch_add(step.into(), Ordering::SeqCst);
+        link.ctx.request_repaint();
+    }
+}
+
 /// Parses `--gamemode`'s optional `WIDTHxHEIGHT`.
 pub fn parse_size(s: &str) -> Result<(u32, u32)> {
     let (w, h) = s
@@ -248,6 +264,7 @@ pub fn run(
         log: Mutex::new(Log::default()),
         suspended: AtomicBool::new(false),
         quit: AtomicBool::new(false),
+        zoom_steps: AtomicI32::new(0),
         events: Mutex::new(rx),
         ctx: ctx.clone(),
     });
@@ -285,7 +302,8 @@ pub fn run(
             Ok(Box::new(Window {
                 link,
                 events: tx,
-                zoom: 1.0,
+                zoom: load_zoom(),
+                saved_zoom: load_zoom(),
             }))
         }),
     );
@@ -368,6 +386,31 @@ struct Window {
     link: Arc<Link>,
     events: Sender<Event>,
     zoom: f32,
+    saved_zoom: f32,
+}
+
+/// Zoom is remembered across launches, in the data dir next to the library.
+fn zoom_file() -> Option<std::path::PathBuf> {
+    crate::config::project_dirs()
+        .ok()
+        .map(|d| d.data_dir().join("gamemode-zoom"))
+}
+
+fn load_zoom() -> f32 {
+    zoom_file()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .filter(|z| (0.3..=4.0).contains(z))
+        .unwrap_or(1.0)
+}
+
+fn save_zoom(zoom: f32) {
+    if let Some(path) = zoom_file() {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).ok();
+        }
+        std::fs::write(path, format!("{zoom}\n")).ok();
+    }
 }
 
 impl Window {
@@ -486,6 +529,14 @@ impl eframe::App for Window {
             return;
         }
         self.forward_input(&ctx);
+        let steps = self.link.zoom_steps.swap(0, Ordering::SeqCst);
+        if steps != 0 {
+            self.zoom = (self.zoom * 1.1f32.powi(steps)).clamp(0.3, 4.0);
+        }
+        if self.zoom != self.saved_zoom {
+            save_zoom(self.zoom);
+            self.saved_zoom = self.zoom;
+        }
 
         let full = ctx.content_rect();
         let painter = ui.painter().clone();

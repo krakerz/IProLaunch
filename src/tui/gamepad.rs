@@ -43,6 +43,19 @@ pub struct GamepadSource {
     /// defaults: after 500ms, then every 30ms) — see `poll`'s own doc
     /// comment for why this only actually reaches D-pad buttons.
     repeat: Repeat,
+    /// View/Select is held: LT/RT zoom instead of their own actions.
+    view_held: bool,
+    /// A trigger was used during this hold, so releasing View doesn't
+    /// also open quick-search.
+    view_chorded: bool,
+}
+
+/// What a gamepad press turns into.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PadInput {
+    Key(KeyCode),
+    /// View + LT (-1) / RT (+1): Game Mode window text zoom.
+    Zoom(i8),
 }
 
 impl GamepadSource {
@@ -56,6 +69,8 @@ impl GamepadSource {
             gilrs: Gilrs::new().ok(),
             last_init_attempt: Instant::now(),
             repeat: Repeat::new(),
+            view_held: false,
+            view_chorded: false,
         }
     }
 
@@ -88,7 +103,10 @@ impl GamepadSource {
     /// exactly the reported symptom, where quitting and reopening
     /// iprolaunch again (a fresh `Gilrs::new()`, retried a bit later by
     /// hand) sometimes fixed it. This does the same retry automatically.
-    pub fn poll(&mut self) -> Vec<KeyCode> {
+    ///
+    /// View/Select acts on release: alone it's quick-search as before; held
+    /// with LT/RT it zooms instead (see `PadInput::Zoom`).
+    pub fn poll(&mut self) -> Vec<PadInput> {
         if should_retry_init(self.has_gamepad(), self.last_init_attempt.elapsed()) {
             self.last_init_attempt = Instant::now();
             if let Ok(fresh) = Gilrs::new() {
@@ -106,12 +124,37 @@ impl GamepadSource {
             // per-button press timestamps — see its own module docs.
             gilrs.update(&event);
             let button = match event.event {
+                EventType::ButtonPressed(Button::Select, _) => {
+                    self.view_held = true;
+                    self.view_chorded = false;
+                    None
+                }
+                EventType::ButtonReleased(Button::Select, _) => {
+                    let alone = self.view_held && !self.view_chorded;
+                    self.view_held = false;
+                    if alone {
+                        codes.extend(translate(Button::Select).map(PadInput::Key));
+                    }
+                    None
+                }
+                EventType::ButtonPressed(
+                    trigger @ (Button::LeftTrigger2 | Button::RightTrigger2),
+                    _,
+                ) if self.view_held => {
+                    self.view_chorded = true;
+                    codes.push(PadInput::Zoom(if trigger == Button::LeftTrigger2 {
+                        -1
+                    } else {
+                        1
+                    }));
+                    None
+                }
                 EventType::ButtonPressed(button, _) => Some(button),
                 EventType::ButtonRepeated(button, _) if is_repeatable(button) => Some(button),
                 _ => None,
             };
             if let Some(code) = button.and_then(translate) {
-                codes.push(code);
+                codes.push(PadInput::Key(code));
             }
         }
         codes

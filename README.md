@@ -205,9 +205,12 @@ Target:         /home/deck/.local/bin/iprolaunch
 Launch Options: -gm 1920x1200
 ```
 
-- **Size**: set it to the screen's resolution (1280x800 on a Steam Deck) so
-  gamescope shows it sharp. Without one it opens fullscreen. Ctrl+= / Ctrl+- /
-  Ctrl+0 zoom the text.
+- **Size**: set it to the screen's resolution (1280x800 on a Steam Deck).
+  Without one it opens fullscreen. In Game Mode, also set the shortcut's
+  Properties → Game Resolution to Native; otherwise gamescope renders it at
+  a lower resolution and upscales it, so text looks huge and soft.
+- **Zoom**: Ctrl+- / Ctrl+= (Ctrl+0 resets), or hold View and press LT / RT
+  on a gamepad. The zoom level is remembered.
 - **Controller**: set the shortcut's Controller Layout to "Gamepad"; the
   button map is in the TUI's Help tab.
 - While a game or winetricks runs, the window shows its output; press Enter
