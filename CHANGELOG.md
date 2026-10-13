@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.43.1] — 2026-10-13
+
+### Fixed
+- Gamepad presses no longer register twice on Steam Deck in Game Mode: controllers Steam already re-exposes through its virtual gamepad are now skipped, like SDL games do.
+
 ## [1.43.0] — 2026-10-13
 
 ### Added

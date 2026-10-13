@@ -25,11 +25,12 @@
 //! gamepad is visible — see its own doc comment for the real, reported
 //! Steam Deck Game Mode race this works around.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
 use gilrs::ev::filter::Repeat;
-use gilrs::{Button, EventType, Filter, Gilrs};
+use gilrs::{Button, EventType, Filter, GamepadId, Gilrs};
 
 /// How often `poll` retries `Gilrs::new()` while no gamepad is currently
 /// visible — see `should_retry_init`'s doc comment for why this exists.
@@ -48,6 +49,9 @@ pub struct GamepadSource {
     /// A trigger was used during this hold, so releasing View doesn't
     /// also open quick-search.
     view_chorded: bool,
+    /// Physical pads Steam has wrapped in its virtual gamepad — see
+    /// `ignored_devices_from_env`.
+    ignored_devices: HashSet<(u16, u16)>,
 }
 
 /// What a gamepad press turns into.
@@ -71,6 +75,7 @@ impl GamepadSource {
             repeat: Repeat::new(),
             view_held: false,
             view_chorded: false,
+            ignored_devices: ignored_devices_from_env(),
         }
     }
 
@@ -123,6 +128,9 @@ impl GamepadSource {
             // `Repeat` needs each event fed back through `update` to track
             // per-button press timestamps — see its own module docs.
             gilrs.update(&event);
+            if is_ignored(gilrs, &self.ignored_devices, event.id) {
+                continue;
+            }
             let button = match event.event {
                 EventType::ButtonPressed(Button::Select, _) => {
                     self.view_held = true;
@@ -186,6 +194,51 @@ fn should_retry_init(has_gamepad: bool, since_last_attempt: Duration) -> bool {
     !has_gamepad && since_last_attempt >= RETRY_INTERVAL
 }
 
+/// Steam Input re-exposes a physical pad (e.g. the Deck's built-in
+/// controls) as a "Steam Virtual Gamepad" while the physical one stays
+/// visible to evdev, so gilrs sees every press twice. Steam lists the
+/// physical ids in `SDL_GAMECONTROLLER_IGNORE_DEVICES` for SDL games to
+/// skip; this honors the same list (`0xVID/0xPID,...`).
+fn ignored_devices_from_env() -> HashSet<(u16, u16)> {
+    std::env::var("SDL_GAMECONTROLLER_IGNORE_DEVICES")
+        .map(|v| parse_device_list(&v))
+        .unwrap_or_default()
+}
+
+fn parse_device_list(list: &str) -> HashSet<(u16, u16)> {
+    let hex = |s: &str| {
+        let s = s.trim();
+        let s = s
+            .strip_prefix("0x")
+            .or_else(|| s.strip_prefix("0X"))
+            .unwrap_or(s);
+        u16::from_str_radix(s, 16).ok()
+    };
+    list.split(',')
+        .filter_map(|pair| {
+            let (vid, pid) = pair.split_once('/')?;
+            Some((hex(vid)?, hex(pid)?))
+        })
+        .collect()
+}
+
+fn is_listed(gilrs: &Gilrs, ignored: &HashSet<(u16, u16)>, id: GamepadId) -> bool {
+    let pad = gilrs.gamepad(id);
+    match (pad.vendor_id(), pad.product_id()) {
+        (Some(vid), Some(pid)) => ignored.contains(&(vid, pid)),
+        _ => false,
+    }
+}
+
+/// Only when some other pad is still usable — if Steam listed a pad but no
+/// virtual one showed up, dropping it would leave no input at all.
+fn is_ignored(gilrs: &Gilrs, ignored: &HashSet<(u16, u16)>, id: GamepadId) -> bool {
+    is_listed(gilrs, ignored, id)
+        && gilrs
+            .gamepads()
+            .any(|(other, _)| !is_listed(gilrs, ignored, other))
+}
+
 /// The actual button map. Chosen to cover navigation plus the single most
 /// common action per tab (kill/delete, refresh, search, help, tab-switch,
 /// quit, edit profile) without needing a different mapping per tab —
@@ -241,6 +294,21 @@ pub(super) fn translate(button: Button) -> Option<KeyCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steam_ignore_list_parses_like_sdl() {
+        let list = parse_device_list("0x28de/0x1205,0x28DE/0x11E0,0x3537/0x103e,0x28de/0x1205,");
+        assert!(list.contains(&(0x28de, 0x1205)));
+        assert!(list.contains(&(0x28de, 0x11e0)));
+        assert!(!list.contains(&(0x28de, 0x11ff)));
+        assert_eq!(list.len(), 3);
+    }
+
+    #[test]
+    fn malformed_ignore_entries_are_skipped() {
+        let list = parse_device_list("garbage,0x28de,/0x1,0xzz/0x1, 0x045e/0x028e ");
+        assert_eq!(list, HashSet::from([(0x045e, 0x028e)]));
+    }
 
     #[test]
     fn dpad_maps_to_arrow_keys() {
