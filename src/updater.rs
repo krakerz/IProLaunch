@@ -208,6 +208,7 @@ pub fn apply_update(asset_url: &str) -> Result<()> {
 
     fs::remove_dir_all(&staging_dir).ok();
     result?;
+    crate::vdesktop::restart_after_update();
     println!("Updated. Restart iprolaunch to run the new version.");
     Ok(())
 }

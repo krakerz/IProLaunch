@@ -161,6 +161,9 @@ iprolaunch library list
 # Search the library by name or exe path (case-insensitive substring)
 iprolaunch library search elden
 
+# The TUI in its own window instead of a terminal (Steam Game Mode)
+iprolaunch -gm 1920x1200
+
 # Quick-launch by name or slug (what a Steam shortcut should point at)
 iprolaunch "eldenring#1"
 
@@ -194,35 +197,23 @@ iprolaunch context-menu uninstall
 
 ## Running the full TUI from a Steam shortcut (Game Mode)
 
-`iprolaunch <name-or-slug>` (see the FAQ below) is the simplest way to put
-one specific game on a Steam Deck/Game Mode shortcut, but it only launches
-that one game — no browsing the library, no config editing. To get the
-*whole* TUI usable from Game Mode instead, point the shortcut at a terminal
-emulator that wraps `iprolaunch`, e.g. [Alacritty](https://alacritty.org/):
+Add iprolaunch itself as a non-Steam game with `-gm` (`--gamemode`) to get
+the whole TUI in its own window, no terminal needed:
 
 ```
-Target:         /usr/bin/alacritty
-Launch Options: -e /home/deck/.local/bin/iprolaunch
+Target:         /home/deck/.local/bin/iprolaunch
+Launch Options: -gm 1920x1200
 ```
 
-(swap the path for wherever the binary actually lives — check with `which
-iprolaunch` first). Two things to also set up, both one-time:
+- **Size**: set it to the screen's resolution (1280x800 on a Steam Deck) so
+  gamescope shows it sharp. Without one it opens fullscreen. Ctrl+= / Ctrl+- /
+  Ctrl+0 zoom the text.
+- **Controller**: set the shortcut's Controller Layout to "Gamepad"; the
+  button map is in the TUI's Help tab.
+- While a game or winetricks runs, the window shows its output; press Enter
+  (or B) to go back.
 
-- **Disable the Steam Overlay for this shortcut** (right-click it →
-  Properties → General → uncheck "Enable the Steam Overlay while
-  in-game"). Steam injects its overlay (`LD_PRELOAD`) into every shortcut
-  it launches, Steam or non-Steam — a plain terminal emulator isn't what
-  that's meant for, and it can crash the shortcut near-instantly with an
-  error like `LD_PRELOAD: wrong ELF class`, with no visible message (the
-  window just flashes and closes). If you ever hit that on a different
-  terminal/setup, add Alacritty's `--hold` flag temporarily (`Launch
-  Options: --hold -e ...`) — it keeps the window open after the child exits
-  instead of always closing it, so you can actually read the error.
-- **Set the shortcut's Controller Layout to "Gamepad"** (its own Properties
-  → Controller Layout) if you want to navigate the TUI with a controller —
-  see the TUI's Help screen's "Gamepad" section for the full button map.
-  The default "Desktop" layout emulates a keyboard/mouse instead of a real
-  joystick, which the TUI can't read directly.
+For a single game, point the shortcut at `iprolaunch <name-or-slug>` instead.
 
 ## Streaming with Sunshine
 
@@ -343,11 +334,9 @@ Whitespace-split only (no shell-quoting support, same as `args`); a leading
 `$PATH`.
 
 **Can I still add a game to Steam as a non-Steam game?** Yes — point the
-shortcut at `iprolaunch <name-or-slug>` instead of the exe directly. Bare
-`iprolaunch` opens the TUI, which needs a real terminal, so it won't work
-as a Game Mode/gamescope shortcut's Target on its own — either use the
-slug form for a single game, or see "Running the full TUI from a Steam
-shortcut" above to wrap it in a terminal emulator instead.
+shortcut at `iprolaunch <name-or-slug>` instead of the exe directly. For the whole
+TUI instead, use `iprolaunch -gm` (see "Running the full TUI from a Steam
+shortcut" above).
 
 **Can I make `.exe` files run through iprolaunch when executed directly
 (not double-clicked), e.g. via `binfmt_misc`?** Yes — `iprolaunch <path>`

@@ -62,6 +62,13 @@ struct Cli {
     /// than one at once.
     #[arg(short = 'b', long, global = true)]
     borderless: bool,
+
+    /// Open the TUI in its own window instead of a terminal, for Steam Game
+    /// Mode (add `iprolaunch -gm 1920x1200` as a non-Steam game). Takes an
+    /// optional WIDTHxHEIGHT window size, best set to the screen's own
+    /// resolution; without one it opens fullscreen. `-gm` works as a short form.
+    #[arg(long, value_name = "WIDTHxHEIGHT", num_args = 0..=1, default_missing_value = "")]
+    gamemode: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -414,7 +421,10 @@ fn record_bin_path() {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // clap's short flags are one letter; accept `-gm` as `--gamemode`.
+    let cli = Cli::parse_from(
+        std::env::args_os().map(|a| if a == "-gm" { "--gamemode".into() } else { a }),
+    );
     record_bin_path();
     let cfg = Config::load_or_init()?;
     let gamescope = GamescopeMode {
@@ -554,7 +564,11 @@ fn main() -> Result<()> {
             let query = args.remove(0);
             quick_launch(&cfg, &query, args, gamescope)
         }
-        None => tui::run(cfg),
+        None => match cli.gamemode.as_deref() {
+            Some("") => tui::run_gamemode(cfg, None),
+            Some(size) => tui::run_gamemode(cfg, Some(tui::parse_gamemode_size(size)?)),
+            None => tui::run(cfg),
+        },
     }
 }
 

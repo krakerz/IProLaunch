@@ -714,7 +714,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::CrosstermBackend;
         Terminal::with_options(
-            CrosstermBackend::new(std::io::stdout()),
+            super::super::AppBackend::Terminal(CrosstermBackend::new(std::io::stdout())),
             ratatui::TerminalOptions {
                 viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 10, 10)),
             },
