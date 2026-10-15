@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.43.2] — 2026-10-15
+
+### Fixed
+- Exes with generic names like `Launcher.exe` no longer get matched to an unrelated game and its Proton fixes.
+
 ## [1.43.1] — 2026-10-13
 
 ### Fixed

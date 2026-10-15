@@ -276,7 +276,7 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
             .unwrap_or("")
             .to_string()
     });
-    let gameid = gamedb::lookup_gameid(&gameid_query);
+    let gameid = gamedb::lookup_gameid(&gameid_query, &target);
     match &gameid {
         Some(id) => eprintln!("iprolaunch: matched GAMEID {id} for \"{gameid_query}\""),
         None => eprintln!("iprolaunch: no umu-database match for \"{gameid_query}\""),
