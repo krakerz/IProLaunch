@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -314,6 +314,7 @@ impl GamescopeSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Defaults {
     pub proton: String,
     pub prefix_mode: PrefixMode,
@@ -367,6 +368,7 @@ impl Default for Defaults {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Logging {
     pub mode: LogMode,
     /// Blank => `<config dir>/logs`. Only consulted when `mode == Single`.
@@ -393,6 +395,7 @@ impl Default for Logging {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GameDb {
     /// Days between automatic re-downloads of the umu-database CSV.
     pub update_interval_days: u32,
@@ -414,6 +417,7 @@ impl Default for GameDb {
 /// streamed session often wants different framing than that same game's
 /// normal desktop launch (see `Config::effective_sunshine_gamescope`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Sunshine {
     pub host: String,
     pub port: u16,
@@ -622,7 +626,9 @@ pub struct SteamGridDb {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
     pub defaults: Defaults,
+    #[serde(default)]
     pub logging: Logging,
     #[serde(default)]
     pub gamedb: GameDb,
@@ -664,7 +670,7 @@ impl Config {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         let raw = toml::to_string_pretty(self)?;
-        fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))
+        write_atomic(&path, raw.as_bytes())
     }
 
     /// Resolves the log directory, applying the single-mode path override.
@@ -1005,8 +1011,7 @@ impl Profile {
         let dir = Self::profiles_dir()?.join(slug);
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let raw = toml::to_string_pretty(self)?;
-        let path = dir.join("profile.toml");
-        fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))
+        write_atomic(&dir.join("profile.toml"), raw.as_bytes())
     }
 
     /// Lists `(slug, Profile)` for every profile on disk, skipping unreadable entries.
@@ -1030,9 +1035,44 @@ impl Profile {
     }
 }
 
+/// Writes via a sibling temp file + rename, so a crash mid-write never leaves
+/// a truncated file behind (an empty `config.toml` fails every command).
+/// Follows a symlinked target (dotfile setups) and keeps its permissions.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = target.with_file_name(format!(".{name}.tmp"));
+    let res = (|| -> std::io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, bytes)?;
+        if let Ok(meta) = fs::metadata(&target) {
+            f.set_permissions(meta.permissions())?;
+        }
+        f.sync_all()?;
+        fs::rename(&tmp, &target)
+    })();
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res.with_context(|| format!("writing {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn example_config_and_partial_configs_load() {
+        let example: Config = toml::from_str(include_str!("../config/config.example.toml"))
+            .expect("config/config.example.toml must load");
+        assert_eq!(example.sunshine.port, 47990);
+        let partial: Config =
+            toml::from_str("[defaults]\nproton = \"system\"\n[sunshine]\nwidth = 1280\n").unwrap();
+        assert_eq!(partial.defaults.prefix_mode, PrefixMode::Single);
+        assert_eq!(partial.logging.keep, 3);
+        assert_eq!(partial.sunshine.host, "localhost");
+        assert_eq!(partial.sunshine.width, 1280);
+    }
 
     #[test]
     fn name_base_splits_on_the_last_hash() {

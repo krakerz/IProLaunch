@@ -8,7 +8,8 @@ mod running;
 mod ui;
 
 use std::io::{self, IsTerminal, Stdout, Write};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -88,6 +89,10 @@ pub fn run_gamemode(cfg: Config, size: Option<(u32, u32)>) -> Result<()> {
     gui::run(size, move || {
         let mut app = App::new(cfg);
         let mut terminal = Terminal::new(AppBackend::Window(gui::GuiBackend::new()))?;
+        // Sizes the backend's buffer: if the window published its real size
+        // before `Terminal::new`, autoresize never fires and every cell
+        // would be dropped into the initial 0x0 buffer (a blank window).
+        terminal.clear()?;
         let mut gamepad = GamepadSource::new();
         event_loop(&mut terminal, &mut app, &mut gamepad)
     })
@@ -124,33 +129,56 @@ pub fn run(cfg: Config) -> Result<()> {
 
     let mut app = App::new(cfg);
 
+    // Restore the terminal even on panic, so a bug doesn't leave the user's
+    // shell stuck in raw mode / the alternate screen.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_hook(info);
+    }));
+
     enable_raw_mode()?;
+    // From here on every exit path (including a failed setup step) restores.
+    let _restore = RestoreOnDrop;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = AppBackend::Terminal(CrosstermBackend::new(stdout));
     let mut terminal = Terminal::new(backend)?;
 
-    // Restore the terminal even on panic, so a bug doesn't leave the user's
-    // shell stuck in raw mode / the alternate screen.
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
-        default_hook(info);
-    }));
-
     let mut gamepad = GamepadSource::new();
-    let result = event_loop(&mut terminal, &mut app, &mut gamepad);
-
-    disable_raw_mode()?;
-    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    result
+    event_loop(&mut terminal, &mut app, &mut gamepad)
 }
+
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        io::stdout(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+}
+
+struct RestoreOnDrop;
+
+impl Drop for RestoreOnDrop {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
+}
+
+/// Bumped by every `suspend`, so the event loop can tell an input it just
+/// handled ran something external (a launch) and stop applying the rest of
+/// an input batch collected before it.
+static SUSPENDS: AtomicU64 = AtomicU64::new(0);
+
+/// How often the Running tab rescans `/proc` while idle — a full environ
+/// scan per entry is far too heavy for every 30ms tick (battery on a Deck).
+const RUNNING_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -> Result<()> {
     let mut last_tab = app.tab;
+    let mut last_running_refresh = Instant::now();
     loop {
         // systemctl is too slow to query every frame; refresh on entering the tab.
         if app.tab == app::Tab::Sunshine && last_tab != app::Tab::Sunshine {
@@ -192,16 +220,27 @@ fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -
         // Checked every tick regardless of whether the keyboard poll above
         // timed out or returned an unrelated event (resize, etc.) — gilrs
         // queues its own events independently of crossterm's.
+        let suspends = SUSPENDS.load(Ordering::SeqCst);
         for input in gamepad.poll() {
+            if SUSPENDS.load(Ordering::SeqCst) != suspends {
+                break;
+            }
             app.input_kind = InputKind::Gamepad;
             match input {
+                // Buttons map to letter shortcuts (Select = `f`, Start = `q`,
+                // ...); in a text field they'd type those letters instead.
+                gamepad::PadInput::Key(KeyCode::Char(_)) if is_text_entry(app) => {}
                 gamepad::PadInput::Key(code) => on_key(app, code, terminal),
                 gamepad::PadInput::Zoom(step) => gui::zoom(step),
             }
             handled = true;
         }
-        if !handled && matches!(app.tab, app::Tab::Running) {
+        if !handled
+            && matches!(app.tab, app::Tab::Running)
+            && last_running_refresh.elapsed() >= RUNNING_REFRESH_INTERVAL
+        {
             app.refresh_running();
+            last_running_refresh = Instant::now();
         }
 
         if app.should_quit {
@@ -396,7 +435,7 @@ fn handle_text_input(app: &mut App, code: KeyCode, terminal: &mut Term) {
     match purpose {
         TextInputPurpose::AddLibraryPath => {
             let label = buffer.clone();
-            library::launch_path(app, terminal, &buffer, &label);
+            library::launch_path(app, terminal, &buffer, &label, None);
         }
         TextInputPurpose::ConfigField(field) => config::apply_text_field(app, field, buffer),
         TextInputPurpose::ProfileTitle(slug) => library::apply_profile_title(app, &slug, buffer),
@@ -472,18 +511,29 @@ fn handle_proton_picker(app: &mut App, code: KeyCode) {
 /// Leaves the alternate screen and raw mode so a subprocess's own stdout
 /// (e.g. `umu-run`'s launch messages) prints normally instead of into a
 /// buffer the user can't see.
+///
+/// On failure the TUI is put back as it was, since callers bail out
+/// without calling `resume`.
 pub fn suspend(terminal: &mut Term) -> Result<()> {
+    SUSPENDS.fetch_add(1, Ordering::SeqCst);
     if let Some(link) = gui::link() {
         link.suspend();
         return Ok(());
     }
-    disable_raw_mode()?;
-    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    Ok(())
+    let result = (|| -> Result<()> {
+        disable_raw_mode()?;
+        execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = resume(terminal);
+    }
+    result
 }
 
 pub fn resume(terminal: &mut Term) -> Result<()> {
+    gamepad::discard_pending();
     if let Some(link) = gui::link() {
         link.resume();
         terminal.clear()?;

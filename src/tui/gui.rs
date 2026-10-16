@@ -43,9 +43,15 @@ pub struct Link {
     zoom_steps: AtomicI32,
     events: Mutex<Receiver<Event>>,
     ctx: egui::Context,
+    /// Why the TUI worker stopped, if it failed or panicked — reported on the
+    /// real stderr once the window has closed.
+    failure: Mutex<Option<String>>,
 }
 
 static LINK: OnceLock<Arc<Link>> = OnceLock::new();
+
+/// Our stdout/stderr before `capture_output` redirected them into the pipe.
+static ORIGINAL_FDS: OnceLock<(i32, i32)> = OnceLock::new();
 
 /// The Game Mode window's link, when running in it.
 pub fn link() -> Option<&'static Link> {
@@ -87,6 +93,9 @@ struct Log {
     current: String,
     /// Inside an escape sequence: 1 = after ESC, 2 = CSI, 3 = OSC.
     escape: u8,
+    /// A `\r` was seen: clear the line on the next character unless it's the
+    /// `\n` of a CRLF (Wine console output), which would otherwise blank it.
+    pending_cr: bool,
 }
 
 impl Log {
@@ -107,12 +116,23 @@ impl Log {
                 (3, '\x07') => self.escape = 0,
                 (3, '\x1b') => self.escape = 1,
                 (3, _) => {}
-                (_, '\n') => self.lines.push(std::mem::take(&mut self.current)),
+                (_, '\n') => {
+                    self.pending_cr = false;
+                    self.lines.push(std::mem::take(&mut self.current));
+                }
                 // Progress bars redraw their line with a bare \r.
-                (_, '\r') => self.current.clear(),
-                (_, '\t') => self.current.push_str("    "),
-                (_, c) if c.is_control() => {}
-                (_, c) => self.current.push(c),
+                (_, '\r') => self.pending_cr = true,
+                (_, c) if c.is_control() && c != '\t' => {}
+                (_, c) => {
+                    if std::mem::take(&mut self.pending_cr) {
+                        self.current.clear();
+                    }
+                    if c == '\t' {
+                        self.current.push_str("    ");
+                    } else {
+                        self.current.push(c);
+                    }
+                }
             }
         }
         if self.lines.len() > LOG_LINES {
@@ -120,12 +140,61 @@ impl Log {
         }
     }
 
-    fn tail(&self, rows: usize) -> Vec<&str> {
-        let mut all: Vec<&str> = self.lines.iter().map(String::as_str).collect();
-        all.push(&self.current);
-        let start = all.len().saturating_sub(rows);
-        all.split_off(start)
+    /// The last `rows` screen rows, long lines wrapped at `cols` columns so
+    /// an error message isn't cut off at the window edge.
+    fn tail(&self, rows: usize, cols: usize) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let all = self.lines.iter().chain(std::iter::once(&self.current));
+        for line in all.rev() {
+            if out.len() >= rows {
+                break;
+            }
+            for row in wrap(line, cols).into_iter().rev() {
+                out.push(row);
+            }
+        }
+        out.truncate(rows);
+        out.reverse();
+        out
     }
+}
+
+/// Splits `line` into rows of at most `cols` display columns.
+fn wrap(line: &str, cols: usize) -> Vec<String> {
+    let cols = cols.max(2);
+    let mut rows = vec![String::new()];
+    let mut width = 0;
+    for c in line.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if width + w > cols {
+            rows.push(String::new());
+            width = 0;
+        }
+        rows.last_mut().expect("never empty").push(c);
+        width += w;
+    }
+    rows
+}
+
+/// Where a trailing, still-incomplete UTF-8 sequence starts in `bytes` (so
+/// a CJK character split across two pipe reads isn't decoded as U+FFFD), or
+/// `bytes.len()` if it ends on a character boundary.
+fn complete_utf8_len(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    for back in 1..=len.min(3) {
+        let b = bytes[len - back];
+        if b & 0xC0 == 0x80 {
+            continue; // continuation byte: keep looking for the lead byte
+        }
+        let needed = match b {
+            0xF0.. => 4,
+            0xE0.. => 3,
+            0xC0.. => 2,
+            _ => 1,
+        };
+        return if back < needed { len - back } else { len };
+    }
+    len
 }
 
 /// ratatui backend that publishes each finished frame to the window.
@@ -203,10 +272,15 @@ impl Backend for GuiBackend {
         })
     }
 
+    /// Only repaints on a real change — ratatui flushes every 30ms tick, and
+    /// an unconditional repaint kept the window redrawing while idle.
     fn flush(&mut self) -> io::Result<()> {
         let link = Self::link();
-        link.screen.lock().unwrap().clone_from(&self.buf);
-        link.ctx.request_repaint();
+        let mut screen = link.screen.lock().unwrap();
+        if *screen != self.buf {
+            screen.clone_from(&self.buf);
+            link.ctx.request_repaint();
+        }
         Ok(())
     }
 }
@@ -267,6 +341,7 @@ pub fn run(
         zoom_steps: AtomicI32::new(0),
         events: Mutex::new(rx),
         ctx: ctx.clone(),
+        failure: Mutex::new(None),
     });
     LINK.set(link.clone()).ok();
     capture_output(link.clone())?;
@@ -284,6 +359,7 @@ pub fn run(
     };
 
     let worker_link = link.clone();
+    let outer_link = link.clone();
     let mut tui = Some(tui);
     let result = eframe::run_native_ext(
         "iprolaunch",
@@ -291,11 +367,22 @@ pub fn run(
         Some(ctx),
         Box::new(move |cc| {
             cc.egui_ctx.set_fonts(fonts());
+            // Ctrl +/-/0 are handled in `forward_input`; egui's own keyboard
+            // zoom would apply on top of that.
+            cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             let tui = tui.take().expect("app created once");
             std::thread::spawn(move || {
-                if let Err(err) = tui() {
-                    eprintln!("iprolaunch: {err:#}");
-                }
+                // Caught so a panic still closes the window instead of
+                // leaving it frozen on the last frame.
+                let failure = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(tui)) {
+                    Ok(Ok(())) => None,
+                    Ok(Err(err)) => Some(format!("{err:#}")),
+                    Err(payload) => Some(panic_message(payload.as_ref())),
+                };
+                *worker_link
+                    .failure
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = failure;
                 worker_link.quit.store(true, Ordering::SeqCst);
                 worker_link.ctx.request_repaint();
             });
@@ -309,9 +396,44 @@ pub fn run(
     );
     // The worker may still be blocked on a game; leaving now is the intent.
     io::stdout().flush().ok();
-    match result {
-        Ok(()) => std::process::exit(0),
-        Err(err) => bail!("couldn't open the Game Mode window: {err}"),
+    // Errors below must reach the real stderr: the pipe's copy thread
+    // wouldn't get to run before the process exits.
+    restore_output();
+    if let Err(err) = result {
+        bail!("couldn't open the Game Mode window: {err}");
+    }
+    let failure = outer_link
+        .failure
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    match failure {
+        Some(msg) => bail!("{msg}"),
+        None => std::process::exit(0),
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string());
+    format!("the Game Mode window's TUI crashed: {text}")
+}
+
+/// Points stdout/stderr back at what they were before `capture_output`.
+fn restore_output() {
+    if let Some(&(out, err)) = ORIGINAL_FDS.get() {
+        // SAFETY: dup2 onto the standard fds, from fds we saved and own.
+        unsafe {
+            if out >= 0 {
+                libc::dup2(out, 1);
+            }
+            if err >= 0 {
+                libc::dup2(err, 2);
+            }
+        }
     }
 }
 
@@ -326,6 +448,7 @@ fn capture_output(link: Arc<Link>) -> Result<()> {
             bail!("pipe: {}", io::Error::last_os_error());
         }
         let saved = libc::dup(2);
+        ORIGINAL_FDS.set((libc::dup(1), libc::dup(2))).ok();
         let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY);
         if null >= 0 {
             libc::dup2(null, 0);
@@ -342,6 +465,7 @@ fn capture_output(link: Arc<Link>) -> Result<()> {
         (original_stderr >= 0).then(|| unsafe { std::fs::File::from_raw_fd(original_stderr) });
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             let n = match reader.read(&mut chunk) {
                 Ok(0) | Err(_) => return,
@@ -350,10 +474,13 @@ fn capture_output(link: Arc<Link>) -> Result<()> {
             if let Some(copy) = copy.as_mut() {
                 copy.write_all(&chunk[..n]).ok();
             }
+            pending.extend_from_slice(&chunk[..n]);
+            let complete = complete_utf8_len(&pending);
             link.log
                 .lock()
                 .unwrap()
-                .push_str(&String::from_utf8_lossy(&chunk[..n]));
+                .push_str(&String::from_utf8_lossy(&pending[..complete]));
+            pending.drain(..complete);
             link.ctx.request_repaint();
         }
     });
@@ -571,8 +698,11 @@ impl eframe::App for Window {
 
         if self.link.suspended.load(Ordering::SeqCst) {
             let log = self.link.log.lock().unwrap();
-            for (y, line) in log.tail(rows as usize).into_iter().enumerate() {
-                let text: String = line.chars().take(cols as usize).collect();
+            for (y, text) in log
+                .tail(rows as usize, cols as usize)
+                .into_iter()
+                .enumerate()
+            {
                 painter.text(
                     cell_rect(0, y as u16, 1).min,
                     egui::Align2::LEFT_TOP,
@@ -711,7 +841,33 @@ mod tests {
     fn log_strips_escapes_and_handles_carriage_returns() {
         let mut log = Log::default();
         log.push_str("\x1b[1;32mok\x1b[0m\nprogress 10%\rprogress 90%\n\x1b]0;title\x07done");
-        assert_eq!(log.tail(10), vec!["ok", "progress 90%", "done"]);
+        assert_eq!(log.tail(10, 80), vec!["ok", "progress 90%", "done"]);
+    }
+
+    #[test]
+    fn crlf_lines_keep_their_text() {
+        let mut log = Log::default();
+        log.push_str("wine line one\r\nline two\r");
+        log.push_str("\nend");
+        assert_eq!(log.tail(10, 80), vec!["wine line one", "line two", "end"]);
+    }
+
+    #[test]
+    fn long_lines_wrap_and_tail_counts_screen_rows() {
+        let mut log = Log::default();
+        log.push_str("first\nabcdefghij");
+        assert_eq!(log.tail(3, 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("日本語", 4), vec!["日本", "語"]);
+    }
+
+    #[test]
+    fn incomplete_trailing_utf8_is_held_back() {
+        let bytes = "a日".as_bytes();
+        assert_eq!(complete_utf8_len(bytes), bytes.len());
+        assert_eq!(complete_utf8_len(&bytes[..2]), 1);
+        assert_eq!(complete_utf8_len(&bytes[..3]), 1);
+        assert_eq!(complete_utf8_len(b"abc"), 3);
+        assert_eq!(complete_utf8_len(b""), 0);
     }
 
     #[test]

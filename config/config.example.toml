@@ -22,6 +22,9 @@ update_interval_days = 7
 [winedlloverride]
 
 [sunshine]
+# Sunshine web UI / REST API address
+host = "localhost"
+port = 47990
 # Run Sunshine games in fullscreen gamescope with the game's window stretched to fill it (a profile can turn this off)
 gamescope = true
 # Resolution mode: "match-client" (default) or "fixed"

@@ -37,9 +37,12 @@ fn base_url(cfg: &Sunshine) -> String {
     format!("https://{}:{}", cfg.host, cfg.port)
 }
 
+/// With a timeout: an unreachable `sunshine.host` would otherwise freeze the
+/// TUI (status refresh at startup, add-to-Sunshine) for minutes.
 fn agent() -> Agent {
     Agent::config_builder()
         .tls_config(TlsConfig::builder().disable_verification(true).build())
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()
         .new_agent()
 }
@@ -79,7 +82,7 @@ struct PrepCmd {
 /// The Sunshine app `cmd` for a profile: this binary, the profile's
 /// Sunshine gamescope flags (if on), then its slug.
 pub fn app_cmd(cfg: &Config, profile: &crate::config::Profile, slug: &str) -> Result<String> {
-    let exe = std::env::current_exe()?.canonicalize()?;
+    let exe = crate::updater::own_exe()?.canonicalize()?;
     // Fullscreen gamescope with the game's window stretched to fill it, so
     // a fixed-size windowed game isn't a small box on a large virtual desktop.
     let flags: &[&str] = if cfg.effective_sunshine_gamescope(Some(profile)) {
@@ -92,7 +95,7 @@ pub fn app_cmd(cfg: &Config, profile: &crate::config::Profile, slug: &str) -> Re
 
 /// `iprolaunch sunshine prep do|undo <slug>` for this exact binary.
 fn prep_cmd_for(slug: &str) -> Result<PrepCmd> {
-    let exe = std::env::current_exe()?.canonicalize()?;
+    let exe = crate::updater::own_exe()?.canonicalize()?;
     let base = format!("\"{}\" sunshine prep", exe.display());
     Ok(PrepCmd {
         do_cmd: format!("{base} do {slug}"),
@@ -183,15 +186,26 @@ struct AppsListResponse {
 /// the *last* whitespace token — always the slug, since any gamescope flags
 /// `command_for` bakes in always come before it — must equal `slug` exactly.
 fn matches_iprolaunch_slug(cmd: &str, slug: &str) -> bool {
-    let mut parts = cmd.split_whitespace();
-    let Some(first) = parts.next() else {
+    let Some((program, rest)) = split_program(cmd) else {
         return false;
     };
-    let is_iprolaunch = std::path::Path::new(first.trim_matches('"'))
+    let is_iprolaunch = std::path::Path::new(program)
         .file_stem()
         .and_then(|s| s.to_str())
         == Some("iprolaunch");
-    is_iprolaunch && parts.last() == Some(slug)
+    is_iprolaunch && rest.split_whitespace().last() == Some(slug)
+}
+
+/// `(program, rest)` of a command line whose program may be `"quoted"` —
+/// `command_for` quotes it, and the path can contain spaces.
+fn split_program(cmd: &str) -> Option<(&str, &str)> {
+    let cmd = cmd.trim_start();
+    if let Some(quoted) = cmd.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        return Some((&quoted[..end], &quoted[end + 1..]));
+    }
+    let end = cmd.find(char::is_whitespace).unwrap_or(cmd.len());
+    (end > 0).then(|| (&cmd[..end], &cmd[end..]))
 }
 
 /// Pure lookup: the array position of the first entry in `apps` that's
@@ -203,34 +217,75 @@ fn matches_iprolaunch_slug(cmd: &str, slug: &str) -> bool {
 /// unchanged, rather than appending a second copy) — so this position is
 /// exactly what `add_app` needs to update in place instead of duplicating.
 /// Kept separate from the network call for testability.
-fn find_existing_index_in_apps(apps: &[ExistingApp], slug: &str) -> Option<i32> {
-    apps.iter()
-        .position(|a| matches_iprolaunch_slug(&a.cmd, slug))
-        .map(|i| i as i32)
+fn find_existing_index_in_apps(apps: &[serde_json::Value], slug: &str) -> Option<usize> {
+    apps.iter().position(|a| {
+        a.get("cmd")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|c| matches_iprolaunch_slug(c, slug))
+    })
 }
 
-/// Looks up whether `slug` already has an app entry, returning its array
-/// index if so. Best-effort: any failure here (network error, auth expired,
-/// malformed response) just means `None` — `add_app` then falls back to
-/// appending a new entry (`index: -1`) exactly like it always did, rather
-/// than blocking the whole add over a lookup that couldn't complete. A
-/// genuinely expired token still surfaces correctly to the caller regardless,
-/// since the real `POST` right after this would hit the same 401.
-fn find_existing_index(cfg: &Sunshine, auth_token: &str, slug: &str) -> Option<i32> {
+/// Sunshine's raw app list. A failed lookup aborts the caller — appending
+/// after a transient GET error would leave a duplicate entry behind.
+fn fetch_apps(cfg: &Sunshine, auth_token: &str) -> Result<Vec<serde_json::Value>, AddAppError> {
     let url = format!("{}/api/apps", base_url(cfg));
-    let response: AppsListResponse = agent()
-        .get(&url)
-        .header("Authorization", auth_token)
-        .call()
-        .ok()?
-        .body_mut()
-        .read_json()
-        .ok()?;
-    find_existing_index_in_apps(&response.apps, slug)
+    let mut response = match agent().get(&url).header("Authorization", auth_token).call() {
+        Ok(r) => r,
+        Err(ureq::Error::StatusCode(401)) => return Err(AddAppError::AuthExpired),
+        Err(err) => {
+            return Err(AddAppError::Other(
+                anyhow::Error::from(err).context(format!("reading Sunshine's app list at {url}")),
+            ));
+        }
+    };
+    let list: serde_json::Value = response.body_mut().read_json().map_err(|e| {
+        AddAppError::Other(anyhow::Error::from(e).context("reading Sunshine's app list"))
+    })?;
+    Ok(list
+        .get("apps")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Whether a `prep-cmd` entry is one iprolaunch wrote (current
+/// `sunshine prep`, or the lutristosunshine display scripts older versions
+/// reused) — everything else is the user's own and is kept.
+fn is_our_prep_entry(entry: &serde_json::Value) -> bool {
+    entry
+        .get("do")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|d| d.contains(" sunshine prep ") || d.contains("lutristosunshine"))
+}
+
+/// `ours` first, then the user's own entries from `existing`, in order.
+fn merge_prep_cmds(
+    existing: Option<&serde_json::Value>,
+    ours: serde_json::Value,
+) -> serde_json::Value {
+    let mut out = vec![ours];
+    out.extend(
+        existing
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|e| !is_our_prep_entry(e))
+            .cloned(),
+    );
+    serde_json::Value::Array(out)
+}
+
+/// Whether iprolaunch may replace an entry's `image-path`: only when it's
+/// unset or one of our own cached covers, never an image the user chose.
+fn may_set_image(app: &serde_json::Value, covers_dir: Option<&std::path::Path>) -> bool {
+    match app.get("image-path").and_then(serde_json::Value::as_str) {
+        None | Some("") => true,
+        Some(path) => covers_dir.is_some_and(|dir| std::path::Path::new(path).starts_with(dir)),
+    }
 }
 
 /// Registers `name`/`cmd` as a Sunshine app for `slug`, or updates it in
-/// place if `slug` already has an entry (see `find_existing_index`) — so
+/// place if `slug` already has an entry (see `find_existing_index_in_apps`) — so
 /// re-adding the same profile a second time (a changed title, a rebuilt/
 /// reinstalled iprolaunch binary at a new path, a changed `sunshine.gamescope`
 /// baking in a different flag, or just re-running the popup) refreshes the
@@ -250,21 +305,40 @@ pub fn add_app(
     image_path: &str,
 ) -> Result<bool, AddAppError> {
     let url = format!("{}/api/apps", base_url(cfg));
-    let existing_index = find_existing_index(cfg, auth_token, slug);
-    let prep_cmd = vec![prep_cmd_for(slug).map_err(AddAppError::Other)?];
-    let payload = AddAppRequest {
-        name,
-        cmd,
-        image_path,
-        index: existing_index.unwrap_or(-1),
-        auto_detach: true,
-        wait_all: true,
-        exit_timeout: 5,
-        elevated: false,
-        exclude_global_prep_cmd: false,
-        output: "",
-        prep_cmd,
-        detached: Vec::new(),
+    let apps = fetch_apps(cfg, auth_token)?;
+    let existing_index = find_existing_index_in_apps(&apps, slug);
+    let prep = prep_cmd_for(slug).map_err(AddAppError::Other)?;
+    let payload = match existing_index {
+        // Update in place: only our own fields change, so whatever the user
+        // customised in Sunshine's UI (timeouts, extra prep-cmds, image) stays.
+        Some(index) => {
+            let mut app = apps[index].clone();
+            app["name"] = serde_json::json!(name);
+            app["cmd"] = serde_json::json!(cmd);
+            let ours = serde_json::to_value(prep).map_err(|e| AddAppError::Other(e.into()))?;
+            app["prep-cmd"] = merge_prep_cmds(app.get("prep-cmd"), ours);
+            let covers = crate::covers::covers_dir().ok();
+            if !image_path.is_empty() && may_set_image(&app, covers.as_deref()) {
+                app["image-path"] = serde_json::json!(image_path);
+            }
+            app["index"] = serde_json::json!(index);
+            app
+        }
+        None => serde_json::to_value(AddAppRequest {
+            name,
+            cmd,
+            image_path,
+            index: -1,
+            auto_detach: true,
+            wait_all: true,
+            exit_timeout: 5,
+            elevated: false,
+            exclude_global_prep_cmd: false,
+            output: "",
+            prep_cmd: vec![prep],
+            detached: Vec::new(),
+        })
+        .map_err(|e| AddAppError::Other(e.into()))?,
     };
     match agent()
         .post(&url)
@@ -312,28 +386,17 @@ pub struct SyncReport {
 
 /// Brings every iprolaunch app already in Sunshine up to date: this binary's
 /// current prep commands, and (with a SteamGridDB key) a cover image. All
-/// other fields are kept. `refetch_covers` re-downloads cached covers.
+/// other fields are kept, including the user's own prep-cmds and any image
+/// they set themselves. `refetch_covers` re-downloads cached covers.
 pub fn sync_apps(
     cfg: &Config,
     auth_token: &str,
     refetch_covers: bool,
 ) -> Result<SyncReport, AddAppError> {
     let url = format!("{}/api/apps", base_url(&cfg.sunshine));
-    let response = agent().get(&url).header("Authorization", auth_token).call();
-    let mut body = match response {
-        Ok(r) => r,
-        Err(ureq::Error::StatusCode(401)) => return Err(AddAppError::AuthExpired),
-        Err(err) => return Err(AddAppError::Other(anyhow::Error::from(err))),
-    };
-    let list: serde_json::Value = body.body_mut().read_json().map_err(|e| {
-        AddAppError::Other(anyhow::Error::from(e).context("reading Sunshine's app list"))
-    })?;
-    let apps = list
-        .get("apps")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let apps = fetch_apps(&cfg.sunshine, auth_token)?;
     let key = cfg.steamgriddb.api_key.as_deref();
+    let covers_dir = crate::covers::covers_dir().ok();
 
     let mut report = SyncReport::default();
     for (index, mut app) in apps.into_iter().enumerate() {
@@ -357,7 +420,8 @@ pub fn sync_apps(
         }
 
         let prep = prep_cmd_for(&slug).map_err(AddAppError::Other)?;
-        let prep = serde_json::to_value(vec![prep]).map_err(|e| AddAppError::Other(e.into()))?;
+        let prep = serde_json::to_value(prep).map_err(|e| AddAppError::Other(e.into()))?;
+        let prep = merge_prep_cmds(app.get("prep-cmd"), prep);
         if app.get("prep-cmd") != Some(&prep) {
             app["prep-cmd"] = prep;
             changed = true;
@@ -368,18 +432,20 @@ pub fn sync_apps(
             .and_then(serde_json::Value::as_str)
             .unwrap_or(&slug)
             .to_string();
-        let cover = crate::config::Profile::load(&slug)
-            .and_then(|p| crate::covers::fetch_cover(key, &slug, &p, refetch_covers));
-        match cover {
-            Ok(path) => {
-                let path = serde_json::json!(path.display().to_string());
-                if app.get("image-path") != Some(&path) || refetch_covers {
-                    app["image-path"] = path;
-                    changed = true;
-                    report.covers += 1;
+        if may_set_image(&app, covers_dir.as_deref()) {
+            let cover = crate::config::Profile::load(&slug)
+                .and_then(|p| crate::covers::fetch_cover(key, &slug, &p, refetch_covers));
+            match cover {
+                Ok(path) => {
+                    let path = serde_json::json!(path.display().to_string());
+                    if app.get("image-path") != Some(&path) || refetch_covers {
+                        app["image-path"] = path;
+                        changed = true;
+                        report.covers += 1;
+                    }
                 }
+                Err(err) => report.cover_errors.push((title, format!("{err:#}"))),
             }
-            Err(err) => report.cover_errors.push((title, format!("{err:#}"))),
         }
 
         if !changed {
@@ -491,10 +557,8 @@ mod tests {
         }
     }
 
-    fn existing_app(cmd: &str) -> ExistingApp {
-        ExistingApp {
-            cmd: cmd.to_string(),
-        }
+    fn existing_app(cmd: &str) -> serde_json::Value {
+        serde_json::json!({ "cmd": cmd })
     }
 
     #[test]
@@ -599,5 +663,55 @@ mod tests {
     #[test]
     fn find_existing_index_in_apps_is_none_for_an_empty_list() {
         assert_eq!(find_existing_index_in_apps(&[], "anything"), None);
+    }
+
+    #[test]
+    fn matches_a_quoted_binary_path_containing_spaces() {
+        let cmd = "\"/home/u/My Apps/iprolaunch\" -f kendo";
+        assert!(matches_iprolaunch_slug(cmd, "kendo"));
+        assert_eq!(iprolaunch_slug(cmd), Some("kendo"));
+        assert!(!matches_iprolaunch_slug(
+            "\"/home/u/My Apps/iprolaunch\"",
+            "Apps/iprolaunch\""
+        ));
+        assert!(matches_iprolaunch_slug("/opt/iprolaunch kendo", "kendo"));
+    }
+
+    #[test]
+    fn merge_prep_cmds_replaces_ours_and_keeps_the_users_own() {
+        let existing = serde_json::json!([
+            {"do": "\"/old/iprolaunch\" sunshine prep do game", "undo": "x"},
+            {"do": "/home/u/.config/lutristosunshine/display/set.sh", "undo": "y"},
+            {"do": "/usr/bin/my-own-script", "undo": ""},
+        ]);
+        let ours =
+            serde_json::json!({"do": "\"/new/iprolaunch\" sunshine prep do game", "undo": "z"});
+        let merged = merge_prep_cmds(Some(&existing), ours.clone());
+        assert_eq!(
+            merged,
+            serde_json::json!([ours, {"do": "/usr/bin/my-own-script", "undo": ""}])
+        );
+        assert_eq!(
+            merge_prep_cmds(None, ours.clone()),
+            serde_json::json!([ours])
+        );
+    }
+
+    #[test]
+    fn may_set_image_only_when_unset_or_our_own_cover() {
+        let dir = std::path::Path::new("/home/u/.local/share/iprolaunch/covers");
+        assert!(may_set_image(&serde_json::json!({}), Some(dir)));
+        assert!(may_set_image(
+            &serde_json::json!({"image-path": ""}),
+            Some(dir)
+        ));
+        assert!(may_set_image(
+            &serde_json::json!({"image-path": "/home/u/.local/share/iprolaunch/covers/game.png"}),
+            Some(dir)
+        ));
+        assert!(!may_set_image(
+            &serde_json::json!({"image-path": "/home/u/Pictures/mine.png"}),
+            Some(dir)
+        ));
     }
 }

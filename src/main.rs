@@ -316,9 +316,9 @@ fn quick_launch(
     gamescope: GamescopeMode,
 ) -> Result<()> {
     let (env, args) = split_leading_env(extra_args);
-    let target_path = match resolve_profile(query) {
-        Ok((_, profile)) => PathBuf::from(profile.target_path),
-        Err(_) if Path::new(query).is_file() => PathBuf::from(query),
+    let (target_path, slug) = match resolve_profile(query) {
+        Ok((slug, profile)) => (PathBuf::from(profile.target_path), Some(slug)),
+        Err(_) if Path::new(query).is_file() => (PathBuf::from(query), None),
         Err(err) => return Err(err),
     };
 
@@ -329,6 +329,7 @@ fn quick_launch(
             env,
             args,
             gamescope,
+            slug,
             ..Default::default()
         },
     )
@@ -407,7 +408,7 @@ fn config_init(mut cfg: Config) -> Result<()> {
 /// the moment it's next invoked after being moved/reinstalled. Never fails
 /// the actual command over this; it's pure bookkeeping.
 fn record_bin_path() {
-    let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else {
+    let Some(exe) = updater::own_exe().ok().and_then(|p| p.canonicalize().ok()) else {
         return;
     };
     let Ok(dirs) = config::project_dirs() else {
@@ -421,10 +422,19 @@ fn record_bin_path() {
 }
 
 fn main() -> Result<()> {
-    // clap's short flags are one letter; accept `-gm` as `--gamemode`.
-    let cli = Cli::parse_from(
-        std::env::args_os().map(|a| if a == "-gm" { "--gamemode".into() } else { a }),
-    );
+    // clap's short flags are one letter; accept `-gm` as `--gamemode` — but
+    // only among the leading flags, never in a game's own forwarded args.
+    let mut in_flags = true;
+    let cli = Cli::parse_from(std::env::args_os().enumerate().map(|(i, a)| {
+        if i > 0 && in_flags && !a.to_string_lossy().starts_with('-') {
+            in_flags = false;
+        }
+        if in_flags && a == "-gm" {
+            "--gamemode".into()
+        } else {
+            a
+        }
+    }));
     record_bin_path();
     let cfg = Config::load_or_init()?;
     let gamescope = GamescopeMode {
@@ -445,18 +455,32 @@ fn main() -> Result<()> {
             &target,
             RunOptions {
                 proton,
-                prefix,
+                // Wine rejects a relative WINEPREFIX; `--prefix=~/x` skips shell expansion.
+                prefix: prefix.map(|p| {
+                    let p = config::expand_home(&p.to_string_lossy());
+                    std::path::absolute(&p).unwrap_or(p)
+                }),
                 env,
                 args,
                 gamescope,
                 from_tui: false,
+                slug: None,
+                no_log_window: false,
             },
         ),
         Some(Command::Add { target }) => add_profile(&target),
         Some(Command::Config {
             action: ConfigAction::Show,
         }) => {
-            println!("{}", toml::to_string_pretty(&cfg)?);
+            // Masked so pasting this into a bug report doesn't leak credentials.
+            let mut shown = cfg.clone();
+            if shown.sunshine.auth_token.is_some() {
+                shown.sunshine.auth_token = Some("<hidden>".into());
+            }
+            if shown.steamgriddb.api_key.is_some() {
+                shown.steamgriddb.api_key = Some("<hidden>".into());
+            }
+            println!("{}", toml::to_string_pretty(&shown)?);
             Ok(())
         }
         Some(Command::Config {

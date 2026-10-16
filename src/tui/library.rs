@@ -598,12 +598,12 @@ fn delete_profile(app: &mut App, slug: &str, name: &str) {
 }
 
 fn launch_selected(app: &mut App, terminal: &mut Term) {
-    let Some((_, profile)) = selected_slug_and_profile(app) else {
+    let Some((slug, profile)) = selected_slug_and_profile(app) else {
         return;
     };
     let target = profile.target_path;
     let name = profile.name;
-    launch_path(app, terminal, &target, &name);
+    launch_path(app, terminal, &target, &name, Some(slug));
 }
 
 /// Suspends the TUI (leaves the alternate screen so `umu-run`'s own output
@@ -612,8 +612,19 @@ fn launch_selected(app: &mut App, terminal: &mut Term) {
 /// launching an existing library entry and for `a` (add-by-path), since
 /// adding a game *is* just running it once (`launch::run` auto-creates the
 /// profile — same as the CLI's `run` subcommand).
-pub fn launch_path(app: &mut App, terminal: &mut Term, target: &str, label: &str) {
-    let is_new = !app.profiles.iter().any(|(_, p)| p.target_path == target);
+pub fn launch_path(
+    app: &mut App,
+    terminal: &mut Term,
+    target: &str,
+    label: &str,
+    slug: Option<String>,
+) {
+    // Profiles store the canonical path, so compare in that form (a typed
+    // relative/symlinked/`~/` path would otherwise never match).
+    let canonical = launch::canonical_target(target)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| target.trim().to_string());
+    let is_new = !app.profiles.iter().any(|(_, p)| p.target_path == canonical);
 
     if suspend(terminal).is_err() {
         app.status = Some("Failed to suspend the TUI for launch.".to_string());
@@ -626,6 +637,8 @@ pub fn launch_path(app: &mut App, terminal: &mut Term, target: &str, label: &str
         Path::new(target),
         RunOptions {
             from_tui: true,
+            slug,
+            no_log_window: super::gui::active(),
             ..Default::default()
         },
     );
@@ -653,7 +666,10 @@ pub fn launch_path(app: &mut App, terminal: &mut Term, target: &str, label: &str
     // what a fresh add is missing (weak exe-stem-only GAMEID matching until
     // one's set).
     if is_new
-        && let Some((slug, profile)) = app.profiles.iter().find(|(_, p)| p.target_path == target)
+        && let Some((slug, profile)) = app
+            .profiles
+            .iter()
+            .find(|(_, p)| p.target_path == canonical)
         && profile.title.is_none()
     {
         app.mode = Mode::TextInput {

@@ -11,7 +11,9 @@ iprolaunch context-menu uninstall [de]
 ```
 
 Each file below is a template — `{bin}` is replaced with this exact running
-binary's path, `{mimetypes}` (KDE only) with the same mimetype list
+binary's path, already quoted for that file's format (Exec= quoting for KDE,
+shell quoting for GNOME, shell quoting + XML escaping for XFCE),
+`{mimetypes}` (KDE only) with the same mimetype list
 `integrate.rs` uses for `.exe`/`.bat`/`.cmd`/`.msi`.
 
 - `kde/iprolaunch-add.desktop` — a KIO service menu (Dolphin's right-click
@@ -22,14 +24,18 @@ binary's path, `{mimetypes}` (KDE only) with the same mimetype list
 - `gnome/Add to IProLaunch Library` — a "Nautilus Scripts" shell script
   (the filename *is* the menu label). Installed to Nautilus's, Nemo's, and
   Caja's own scripts folders — all three file managers support this same
-  drop-a-script-in-a-folder convention (Nemo even understands Nautilus's own
-  env var), so one script covers GNOME, Cinnamon, and MATE.
+  drop-a-script-in-a-folder convention (each sets its own
+  `*_SCRIPT_SELECTED_FILE_PATHS` variable, and the script checks all three),
+  so one script covers GNOME, Cinnamon, and MATE.
 - `xfce/uca-action.xml` — a single `<action>` block merged into Thunar's
   `~/.config/Thunar/uca.xml` (Thunar has no drop-in-a-folder mechanism —
   every custom action lives in that one file, so this is merged in/out by
   `context_menu.rs`'s own text transform rather than just copied, identified
   by a stable `<unique-id>` so re-running `install` updates rather than
-  duplicates it, and `uninstall` only removes this one entry).
+  duplicates it, and `uninstall` only removes this one entry). With no user
+  `uca.xml` yet, install starts from the system one (`/etc/xdg/Thunar/`),
+  since Thunar reads only the first it finds; uninstall deletes the user file
+  again if no actions are left in it.
 
 Not covered: anything that isn't KDE/GNOME/Cinnamon/MATE/XFCE (e.g. LXQt,
 budgie's own file manager if not Nautilus-based) — genuinely different

@@ -27,14 +27,22 @@
 #                      for "the binary can be anywhere," just run any
 #                      `iprolaunch ...` command once first if it's missing;
 #                   2) `command -v iprolaunch` ($PATH lookup).
-#   --entry NAME  binfmt_misc entry name to target. Default: DOSWin.
+#   --entry NAME  binfmt_misc entry name to target. Default: the already-
+#                 installed entry when updating, else DOSWin.
 set -euo pipefail
+
+# Field 7 (interpreter) of FILE's ":$ENTRY_NAME:" line. ENVIRON, not -v:
+# awk -v would expand the backslash escapes binfmt magic strings use.
+entry_interpreter() {
+    ENTRY_PREFIX=":${ENTRY_NAME}:" awk -F: 'index($0, ENVIRON["ENTRY_PREFIX"]) == 1 {print $7; exit}' "$1"
+}
 
 usage() {
     awk '/^#!/{next} /^#$/{print ""; next} /^# /{sub(/^# ?/,""); print; next} {exit}' "$0"
 }
 
 ENTRY_NAME="DOSWin"
+ENTRY_GIVEN=false
 BIN_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         ;;
     --entry)
         ENTRY_NAME="${2:?--entry needs a name}"
+        ENTRY_GIVEN=true
         shift 2
         ;;
     -h | --help)
@@ -72,7 +81,9 @@ basename="" entry="" vendor_file="" # populated by sourcing $STATE_FILE below
 if [[ -f "$STATE_FILE" ]]; then
     # shellcheck source=/dev/null
     source "$STATE_FILE"
-    if [[ "$entry" != "$ENTRY_NAME" ]]; then
+    if ! $ENTRY_GIVEN; then
+        ENTRY_NAME="$entry"
+    elif [[ "$entry" != "$ENTRY_NAME" ]]; then
         echo "error: already installed for entry '$entry', but --entry $ENTRY_NAME was given." >&2
         echo "       omit --entry to update the existing '$entry' override, or uninstall first." >&2
         exit 1
@@ -102,7 +113,7 @@ elif [[ -r "$BIN_PATH_FILE" ]] && reported="$(<"$BIN_PATH_FILE")" && [[ -x "$rep
 elif found="$(command -v iprolaunch || true)" && [[ -n "$found" ]]; then
     IPROLAUNCH_BIN="$found"
 elif $ALREADY_INSTALLED && [[ -e "$OVERRIDE_FILE" ]]; then
-    IPROLAUNCH_BIN="$(awk -F: '{print $7}' "$OVERRIDE_FILE" | grep -v '^$' | head -n1)"
+    IPROLAUNCH_BIN="$(entry_interpreter "$OVERRIDE_FILE")"
     echo "    'iprolaunch' isn't on \$PATH and no --bin was given — reusing the currently"
     echo "    configured path: $IPROLAUNCH_BIN"
 else
@@ -114,7 +125,7 @@ fi
 echo "    -> $IPROLAUNCH_BIN"
 
 if $ALREADY_INSTALLED && [[ -e "$OVERRIDE_FILE" ]]; then
-    CURRENT="$(awk -F: '{print $7}' "$OVERRIDE_FILE" | grep -v '^$' | head -n1 || true)"
+    CURRENT="$(entry_interpreter "$OVERRIDE_FILE" || true)"
     if [[ "$CURRENT" == "$IPROLAUNCH_BIN" ]]; then
         echo "==> Already up to date ($IPROLAUNCH_BIN) — nothing to change."
         exit 0
@@ -161,14 +172,23 @@ fi
 VENDOR_LINE="$(grep "^:${ENTRY_NAME}:" "$ORIGINAL_FILE" | head -n1)"
 IFS=':' read -r _ _name type offset magic mask _interp flags <<<"$VENDOR_LINE"
 
+# The override masks the *whole* vendor file, so carry every other line of
+# it over unchanged (e.g. Fedora's wine.conf also registers windowsPE) and
+# swap only this entry's interpreter.
+NEW_LINE=":${ENTRY_NAME}:${type}:${offset}:${magic}:${mask}:${IPROLAUNCH_BIN}:${flags}"
 echo "==> Writing $OVERRIDE_FILE (sudo)..."
-sudo tee "$OVERRIDE_FILE" >/dev/null <<EOF
+{
+    cat <<EOF
 # Installed/updated by iprolaunch's scripts/binfmt-override-install.sh.
 # Masks $vendor_file (same filename in a higher-precedence binfmt.d
 # directory — see binfmt.d(5)) so Windows executables route through
 # iprolaunch instead. Revert with scripts/binfmt-override-uninstall.sh.
-:${ENTRY_NAME}:${type}:${offset}:${magic}:${mask}:${IPROLAUNCH_BIN}:${flags}
 EOF
+    ENTRY_PREFIX=":${ENTRY_NAME}:" NEW_LINE="$NEW_LINE" awk '
+        !done && index($0, ENVIRON["ENTRY_PREFIX"]) == 1 { print ENVIRON["NEW_LINE"]; done = 1; next }
+        { print }
+    ' "$ORIGINAL_FILE"
+} | sudo tee "$OVERRIDE_FILE" >/dev/null
 
 echo "==> Restarting systemd-binfmt.service (sudo)..."
 sudo systemctl restart systemd-binfmt.service

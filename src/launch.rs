@@ -25,6 +25,12 @@ pub struct RunOptions {
     /// `AutoOpenScope::TuiOnly`'s doc comment for why this gates whether a
     /// failed launch's log gets auto-opened in a new terminal at all.
     pub from_tui: bool,
+    /// Launch this exact profile (quick-launch / Library) instead of looking
+    /// one up by target path — two profiles can share an exe.
+    pub slug: Option<String>,
+    /// The `-gm` window: never pop a terminal + pager for a failed launch's
+    /// log (focus-stealing, and a gamepad can't quit `less`).
+    pub no_log_window: bool,
 }
 
 /// `-f`/`-w`/`-b` (CLI) — wraps the launch in a nested `gamescope` session
@@ -257,11 +263,13 @@ fn gamescope_scaler_value(scaler: crate::config::GamescopeScaler) -> &'static st
 /// no separate "add" step required. CLI-level overrides in `opts` win over
 /// both the profile and global config (see `Config::effective`).
 pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
-    let target = target
-        .canonicalize()
+    let target = canonical_target(&target.to_string_lossy())
         .with_context(|| format!("target executable not found: {}", target.display()))?;
 
-    let (slug, mut profile) = ensure_profile(&target)?;
+    let (slug, profile) = match opts.slug.as_deref().map(|s| (s, Profile::load(s))) {
+        Some((slug, Ok(profile))) => (slug.to_string(), profile),
+        _ => ensure_profile(&target)?,
+    };
 
     let mut effective = cfg.effective(Some(&profile));
     if let Some(proton) = opts.proton {
@@ -304,7 +312,7 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     // `running::matching_pids_for_launch`'s doc comment for why `WINEPREFIX`
     // alone can't do this (every profile shares one in `single` prefix mode).
     let launch_id = running::new_launch_id();
-    install_signal_forwarding(&launch_id);
+    let _signal_guard = install_signal_forwarding(&launch_id);
 
     // CLI-passed `-f`/`-w` win when actually typed (consistent with every
     // other `opts` override beating the profile/global config); otherwise
@@ -443,13 +451,24 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
             "failed to spawn umu-run (is it installed and on $PATH?)".to_string()
         }
     })?;
-    let state_path = running::record(child.id(), &profile.name, &target, &prefix_path, &launch_id)?;
+    // A failed state write must not return before `wait()` — the game would
+    // keep running untracked with its log session never finished.
+    let state_path = running::record(child.id(), &profile.name, &target, &prefix_path, &launch_id)
+        .inspect_err(|err| eprintln!("iprolaunch: warning: not tracked in Running: {err:#}"))
+        .ok();
 
     let status = child.wait().context("waiting for umu-run")?;
-    running::clear(&state_path);
+    if let Some(path) = &state_path {
+        running::clear(path);
+    }
 
-    profile.mark_launched_now();
-    profile.save(&slug)?;
+    // Reload first: the game may have run for hours while the profile was
+    // edited, renamed or deleted in the TUI — saving the launch-time copy
+    // would revert edits or resurrect the old slug.
+    if let Ok(mut latest) = Profile::load(&slug) {
+        latest.mark_launched_now();
+        latest.save(&slug)?;
+    }
 
     if let Some(session) = &log_session
         && let Ok(text) = fs::read_to_string(session.path())
@@ -466,13 +485,24 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     if !status.success() {
         let should_auto_open = effective.auto_open
             && (effective.auto_open_scope == AutoOpenScope::Always || opts.from_tui);
-        if should_auto_open && let Some(path) = &log_path {
+        if opts.no_log_window
+            && let Some(path) = &log_path
+        {
+            eprintln!("iprolaunch: log saved to {}", path.display());
+        } else if should_auto_open && let Some(path) = &log_path {
             let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".into());
             terminal::spawn_in_new_terminal(&pager, path);
         }
         bail!("umu-run exited with {status}");
     }
     Ok(())
+}
+
+/// `~/`-expanded, whitespace-trimmed, canonical form of a target path — the
+/// form `ensure_profile` stores, so callers comparing against
+/// `Profile::target_path` should normalize through this too.
+pub fn canonical_target(path: &str) -> std::io::Result<PathBuf> {
+    crate::config::expand_home(path.trim()).canonicalize()
 }
 
 /// The first (slug, name) pair built from `base` (`base`/`base#1`, then
@@ -482,11 +512,21 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
 /// `ensure_profile`'s own doc comment for the real bug that was). Pure, so
 /// it's testable against a hand-built `existing` list without touching
 /// real disk, unlike `ensure_profile` itself (`Profile::load_all`/`save`).
-fn next_available_slug_and_name(base: &str, existing: &[(String, Profile)]) -> (String, String) {
+/// `on_disk` catches profile dirs `existing` skipped because their
+/// `profile.toml` failed to parse — reusing that slug would overwrite the
+/// user's hand-edited (but broken) file with a fresh default profile.
+fn next_available_slug_and_name(
+    base: &str,
+    existing: &[(String, Profile)],
+    on_disk: impl Fn(&str) -> bool,
+) -> (String, String) {
     let mut n = 1;
     let mut slug = base.to_string();
     let mut name = format!("{base}#{n}");
-    while existing.iter().any(|(s, _)| *s == slug) || existing.iter().any(|(_, p)| p.name == name) {
+    while existing.iter().any(|(s, _)| *s == slug)
+        || on_disk(&slug)
+        || existing.iter().any(|(_, p)| p.name == name)
+    {
         n += 1;
         slug = format!("{base}-{n}");
         name = format!("{base}#{n}");
@@ -515,14 +555,26 @@ pub fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
     let target_str = target.to_string_lossy().into_owned();
     let existing = Profile::load_all()?;
 
-    if let Some((slug, profile)) = existing.iter().find(|(_, p)| p.target_path == target_str) {
+    // Exact match first; then a hand-edited `~/`, relative or symlinked
+    // target_path that resolves to the same file.
+    let found = existing
+        .iter()
+        .find(|(_, p)| p.target_path == target_str)
+        .or_else(|| {
+            existing
+                .iter()
+                .find(|(_, p)| canonical_target(&p.target_path).is_ok_and(|c| c == target))
+        });
+    if let Some((slug, profile)) = found {
         return Ok((slug.clone(), profile.clone()));
     }
 
     clear_execute_bit(target);
 
     let base = prefix::slug_from_exe(target);
-    let (slug, name) = next_available_slug_and_name(&base, &existing);
+    let profiles_dir = Profile::profiles_dir()?;
+    let (slug, name) =
+        next_available_slug_and_name(&base, &existing, |s| profiles_dir.join(s).exists());
 
     let profile = Profile {
         name,
@@ -716,24 +768,52 @@ fn apply_windows_version(prefix_path: &Path, version: &str, winearch: &str) -> R
 /// running orphaned. Best-effort: if installing the handler fails, launch
 /// proceeds anyway with just a warning — Ctrl+C during the run degrades back
 /// to today's behavior rather than blocking the whole launch over it.
-fn install_signal_forwarding(launch_id: &str) {
+///
+/// Registered once per process: the TUI/`-gm` window launch in-process, and a
+/// handler per launch would pile up threads and keep swallowing SIGTERM after
+/// the game exits. With no launch active the signal gets its default action.
+fn install_signal_forwarding(launch_id: &str) -> SignalGuard {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::iterator::Signals;
 
-    match Signals::new([SIGINT, SIGTERM]) {
+    *ACTIVE_LAUNCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(launch_id.to_string());
+    SIGNALS_INSTALLED.get_or_init(|| match Signals::new([SIGINT, SIGTERM]) {
         Ok(mut signals) => {
-            let launch_id = launch_id.to_string();
             std::thread::spawn(move || {
-                for _ in signals.forever() {
-                    let _ = running::terminate(&launch_id);
+                for sig in signals.forever() {
+                    let active = ACTIVE_LAUNCH
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    match active {
+                        Some(id) => {
+                            let _ = running::terminate(&id);
+                        }
+                        None => {
+                            let _ = signal_hook::low_level::emulate_default_handler(sig);
+                        }
+                    }
                 }
             });
         }
         Err(err) => {
             eprintln!("iprolaunch: warning: failed to install Ctrl+C handler: {err}");
         }
+    });
+    SignalGuard
+}
+
+/// Clears the active launch on every exit path out of `run`.
+struct SignalGuard;
+
+impl Drop for SignalGuard {
+    fn drop(&mut self) {
+        *ACTIVE_LAUNCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
+
+static ACTIVE_LAUNCH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SIGNALS_INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 /// Per-key merge: `cli` overrides `base` key-for-key, leaving every other key
 /// from `base` (global + profile, already merged into `effective.env`)
@@ -805,7 +885,15 @@ mod tests {
         // here, even though the slug alone was already free.
         let existing = vec![profile_named("monster-g", "game#1")];
         assert_eq!(
-            next_available_slug_and_name("game", &existing),
+            next_available_slug_and_name("game", &existing, |_| false),
+            ("game-2".to_string(), "game#2".to_string())
+        );
+    }
+
+    #[test]
+    fn next_available_slug_and_name_skips_an_unparseable_profile_dir_on_disk() {
+        assert_eq!(
+            next_available_slug_and_name("game", &[], |s| s == "game"),
             ("game-2".to_string(), "game#2".to_string())
         );
     }
@@ -813,7 +901,7 @@ mod tests {
     #[test]
     fn next_available_slug_and_name_is_just_base_hash_1_with_nothing_existing() {
         assert_eq!(
-            next_available_slug_and_name("game", &[]),
+            next_available_slug_and_name("game", &[], |_| false),
             ("game".to_string(), "game#1".to_string())
         );
     }

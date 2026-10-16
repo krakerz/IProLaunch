@@ -34,14 +34,39 @@ pub fn sanitize(text: &str) -> String {
 /// descends into subdirectories) and silently clobbered by the next
 /// same-stem exe with the same fate, rather than living in its own folder
 /// like every other profile.
+///
+/// A stem equal to a subcommand name (`Config.exe`, `Run.exe`) gets a
+/// `-game` suffix: `iprolaunch config` (a Steam shortcut's launch command)
+/// would run the subcommand instead of the game.
 pub fn slug_from_exe(target: &Path) -> String {
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("app");
     let sanitized = sanitize(stem);
     if sanitized.is_empty() {
         "app".to_string()
+    } else if is_reserved_slug(&sanitized) {
+        format!("{sanitized}-game")
     } else {
         sanitized
     }
+}
+
+/// CLI subcommand names (`main.rs`'s `Command`, kebab-cased by clap, plus
+/// `help`) — a slug equal to one can't be quick-launched by slug.
+const RESERVED_SLUGS: &[&str] = &[
+    "run",
+    "add",
+    "config",
+    "library",
+    "running",
+    "proton",
+    "integrate",
+    "context-menu",
+    "sunshine",
+    "help",
+];
+
+pub fn is_reserved_slug(slug: &str) -> bool {
+    RESERVED_SLUGS.contains(&slug)
 }
 
 /// Resolves the prefix directory for one launch. `PrefixMode::PerSlug` uses
@@ -67,6 +92,16 @@ pub fn resolve(effective: &Effective, slug: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slug_avoids_subcommand_names() {
+        assert_eq!(slug_from_exe(Path::new("/g/Config.exe")), "config-game");
+        assert_eq!(
+            slug_from_exe(Path::new("/g/Context Menu.exe")),
+            "context-menu-game"
+        );
+        assert_eq!(slug_from_exe(Path::new("/g/Runner.exe")), "runner");
+    }
 
     #[test]
     fn slug_sanitizes_and_lowercases() {

@@ -115,16 +115,27 @@ fn is_noise_line(line: &str) -> bool {
 /// while any lingering Wine-spawned helper process (`services.exe`,
 /// `plugplay.exe`, etc. routinely outlive the game's own main exe) still
 /// holds it open, risking a hang instead of just clutter.
+///
+/// Lossy per line (Wine logs often aren't valid UTF-8), and replaced via
+/// rename rather than truncated in place: lingering helpers still hold the
+/// old fd, and truncating under them leaves a NUL-filled gap on their next
+/// write.
 fn strip_noise(path: &Path) {
-    let Ok(raw) = fs::read_to_string(path) else {
+    let Ok(raw) = fs::read(path) else {
         return;
     };
-    let filtered: String = raw
-        .lines()
-        .filter(|line| !is_noise_line(line))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let _ = fs::write(path, filtered);
+    let mut filtered = Vec::with_capacity(raw.len());
+    let mut dropped = false;
+    for line in raw.split_inclusive(|&b| b == b'\n') {
+        if is_noise_line(&String::from_utf8_lossy(line)) {
+            dropped = true;
+        } else {
+            filtered.extend_from_slice(line);
+        }
+    }
+    if dropped {
+        let _ = crate::config::write_atomic(path, &filtered);
+    }
 }
 
 fn timestamp() -> String {
@@ -135,26 +146,39 @@ fn timestamp() -> String {
 }
 
 /// Deletes the oldest `*.log` files for `slug_prefix` in `dir` beyond `keep`.
+/// Always keeps at least the newest (the one just written). Requires the
+/// timestamp right after `<slug>-`, so `game` never claims `game-2`'s logs.
 fn prune(dir: &Path, slug_prefix: &str, keep: u32) -> Result<()> {
     let prefix = format!("{slug_prefix}-");
+    let is_own = |n: &str| {
+        n.strip_prefix(&prefix)
+            .is_some_and(|rest| starts_with_date(rest) && rest.ends_with(".log"))
+    };
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .with_context(|| format!("reading {}", dir.display()))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(OsStr::to_str)
-                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".log"))
-        })
+        .filter(|p| p.file_name().and_then(OsStr::to_str).is_some_and(is_own))
         .collect();
 
     entries.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
     entries.reverse(); // newest first
 
-    for stale in entries.into_iter().skip(keep as usize) {
+    for stale in entries.into_iter().skip(keep.max(1) as usize) {
         let _ = fs::remove_file(stale);
     }
     Ok(())
+}
+
+/// `YYYY-MM-DDT` — the start of every `timestamp()`.
+fn starts_with_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 11
+        && b.iter().enumerate().take(11).all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b'T',
+            _ => c.is_ascii_digit(),
+        })
 }
 
 #[cfg(test)]
@@ -168,9 +192,15 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
 
         for i in 0..5 {
-            fs::write(tmp.join(format!("game-2026010{i}T000000-00-00.log")), "x").unwrap();
+            fs::write(
+                tmp.join(format!("game-2026-01-0{i}T00-00-00+00-00.log")),
+                "x",
+            )
+            .unwrap();
         }
-        fs::write(tmp.join("other-20260101T000000-00-00.log"), "x").unwrap();
+        fs::write(tmp.join("other-2026-01-01T00-00-00+00-00.log"), "x").unwrap();
+        // A same-stem sibling profile's logs share the `game-` prefix.
+        fs::write(tmp.join("game-2-2026-01-01T00-00-00+00-00.log"), "x").unwrap();
 
         prune(&tmp, "game", 2).unwrap();
 
@@ -181,10 +211,20 @@ mod tests {
             .collect();
 
         assert_eq!(
-            remaining.iter().filter(|n| n.starts_with("game-")).count(),
+            remaining
+                .iter()
+                .filter(|n| n.starts_with("game-202"))
+                .count(),
             2
         );
         assert!(remaining.iter().any(|n| n.starts_with("other-")));
+        assert!(remaining.iter().any(|n| n.starts_with("game-2-")));
+
+        prune(&tmp, "game", 0).unwrap();
+        assert!(
+            fs::read_dir(&tmp).unwrap().count() >= 3,
+            "keep=0 still keeps the newest"
+        );
 
         fs::remove_dir_all(&tmp).unwrap();
     }

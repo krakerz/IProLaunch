@@ -878,9 +878,21 @@ impl App {
             Ok(entries) => self.running = entries,
             Err(err) => self.status = Some(format!("couldn't list running games: {err:#}")),
         }
-        if self.running_selected >= self.running.len() {
-            self.running_selected = self.running.len().saturating_sub(1);
-        }
+        self.clamp_running_selection();
+    }
+
+    /// `running_selected` indexes the *filtered* list, so clamp against that
+    /// — clamping against the full list left the highlight on a row that
+    /// every action then silently treated as "nothing selected".
+    pub fn clamp_running_selection(&mut self) {
+        let len = self.filtered_running_indices().len();
+        self.running_selected = self.running_selected.min(len.saturating_sub(1));
+    }
+
+    /// Same as `clamp_running_selection`, for the Library.
+    pub fn clamp_library_selection(&mut self) {
+        let len = self.filtered_profile_indices().len();
+        self.library_selected = self.library_selected.min(len.saturating_sub(1));
     }
 
     /// Reloads the library from disk and, alongside it, which profiles'
@@ -897,9 +909,7 @@ impl App {
             }
             Err(err) => self.status = Some(format!("couldn't list library: {err:#}")),
         }
-        if self.library_selected >= self.profiles.len() {
-            self.library_selected = self.profiles.len().saturating_sub(1);
-        }
+        self.clamp_library_selection();
         self.missing_exes = missing_exe_slugs(&self.profiles);
     }
 
@@ -1327,6 +1337,24 @@ pub fn next_profile_winearch(a: Option<WineArch>) -> Option<WineArch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_selection_clamps_to_the_filtered_list() {
+        let profile = |name: &str| -> (String, Profile) {
+            let raw = format!("name = \"{name}\"\ntarget-path = \"/tmp/{name}.exe\"\n");
+            (name.to_lowercase(), toml::from_str(&raw).unwrap())
+        };
+        let mut app = App::new(Config::default());
+        app.profiles = vec![profile("Elden"), profile("Elden2"), profile("Other")];
+        app.library_filter = Some("elden".to_string());
+        app.library_selected = 1;
+        app.profiles.remove(1);
+        app.clamp_library_selection();
+        assert_eq!(app.library_selected, 0);
+        app.library_filter = Some("nothing matches".to_string());
+        app.clamp_library_selection();
+        assert_eq!(app.library_selected, 0);
+    }
 
     // The 2s-delay-then-advances part of `marquee_tick` depends on real
     // elapsed wall-clock time, so it isn't covered here (a test asserting

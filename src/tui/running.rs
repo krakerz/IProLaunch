@@ -172,6 +172,19 @@ mod tests {
     }
 
     #[test]
+    fn selection_clamps_to_the_filtered_list_not_the_full_one() {
+        let mut app = test_app_with_two_entries();
+        app.running.push(entry("Guild Wars"));
+        app.running_filter = Some("guild".to_string());
+        app.running_selected = 1;
+        // "Guild Wars" exits: two still running, one left matching.
+        app.running.pop();
+        app.clamp_running_selection();
+        assert_eq!(app.running_selected, 0);
+        assert_eq!(app.filtered_running_indices().len(), 1);
+    }
+
+    #[test]
     fn f_starts_an_empty_filter_and_resets_selection() {
         let mut app = test_app_with_two_entries();
         app.running_selected = 1;

@@ -28,6 +28,20 @@ pub struct ProtonBuild {
     pub display_name: String,
 }
 
+/// Index of `current` in `builds`, appending a "(not found)" entry for it
+/// first if it's no longer installed — so opening a picker and pressing
+/// Enter keeps the setting instead of silently switching it to "system".
+pub fn position_or_append_missing(builds: &mut Vec<ProtonBuild>, current: &str) -> usize {
+    if let Some(i) = builds.iter().position(|b| b.id == current) {
+        return i;
+    }
+    builds.push(ProtonBuild {
+        id: current.to_string(),
+        display_name: format!("{current} (not found)"),
+    });
+    builds.len() - 1
+}
+
 /// Every place this machine might have a Steam install — the standard
 /// native path, the `~/.steam/steam` symlink some distros set up pointing
 /// at it (deduped below since it'd otherwise double-count every build), and
@@ -94,10 +108,13 @@ fn steam_library_paths(root: &Path) -> Vec<PathBuf> {
 pub fn scan() -> Result<Vec<ProtonBuild>> {
     let mut builds = Vec::new();
     let mut common_dirs_seen = HashSet::new();
+    let umu_compat = umu_compat_dir().and_then(|d| d.canonicalize().ok());
     for root in steam_roots()? {
-        builds.extend(
-            scan_compatibilitytools(&root.join("compatibilitytools.d"), false).unwrap_or_default(),
-        );
+        // umu-run joins a bare PROTONPATH against its own STEAM_COMPAT dir
+        // only — builds anywhere else (Flatpak/Debian Steam) need the full path.
+        let compat = root.join("compatibilitytools.d");
+        let absolute_id = compat.canonicalize().ok() != umu_compat || umu_compat.is_none();
+        builds.extend(scan_compatibilitytools(&compat, absolute_id).unwrap_or_default());
         let mut common_dirs = vec![root.join("steamapps/common")];
         common_dirs.extend(
             steam_library_paths(&root)
@@ -146,11 +163,18 @@ pub fn resolve_binary_dir(id: &str) -> Result<PathBuf> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
-    let home = UserDirs::new().context("could not determine home directory")?;
-    Ok(home
-        .home_dir()
-        .join(".local/share/Steam/compatibilitytools.d")
+    Ok(umu_compat_dir()
+        .context("could not determine home directory")?
         .join(id))
+}
+
+/// umu-run's `STEAM_COMPAT`: `$XDG_DATA_HOME/Steam/compatibilitytools.d`.
+fn umu_compat_dir() -> Option<PathBuf> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| UserDirs::new().map(|h| h.home_dir().join(".local/share")))?;
+    Some(data.join("Steam/compatibilitytools.d"))
 }
 
 /// The distro's own `wine`/`wineserver` on `$PATH` — `run_winetricks`'s

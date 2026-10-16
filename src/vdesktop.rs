@@ -8,7 +8,7 @@
 //! the per-app Sunshine `prep-cmd`: resizes the virtual output to the client
 //! and creates the stream's audio sink.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -99,15 +99,55 @@ pub fn sway_config(cfg: &Sunshine) -> String {
     out
 }
 
-fn wayland_sockets() -> HashSet<String> {
+/// `wayland-*` socket name → inode. By inode, not just name: libwayland
+/// reuses a stale socket's name (unlinks and rebinds it), so a previous
+/// sway that died without cleaning up would hide the new one by name alone.
+fn wayland_sockets() -> HashMap<String, u64> {
+    use std::os::unix::fs::MetadataExt;
     fs::read_dir(runtime_dir())
         .map(|rd| {
             rd.filter_map(|e| e.ok())
-                .filter_map(|e| e.file_name().into_string().ok())
-                .filter(|n| n.starts_with("wayland-") && !n.ends_with(".lock"))
+                .filter_map(|e| {
+                    let name = e.file_name().into_string().ok()?;
+                    let ino = e.metadata().ok()?.ino();
+                    Some((name, ino))
+                })
+                .filter(|(n, _)| n.starts_with("wayland-") && !n.ends_with(".lock"))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// A socket in `now` that wasn't in `before`, or was but has been re-created.
+fn new_socket(before: &HashMap<String, u64>, now: HashMap<String, u64>) -> Option<String> {
+    now.into_iter()
+        .filter(|(name, ino)| before.get(name) != Some(ino))
+        .map(|(name, _)| name)
+        .min()
+}
+
+/// SIGTERM (so sway removes its sockets), then SIGKILL if it hasn't exited
+/// within a few seconds. Plain `Child::kill` is SIGKILL, which leaves the
+/// stale `wayland-N` behind.
+fn stop_child(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: plain kill(2) on our own still-unreaped child's pid.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn swaymsg_json(sock: &Path, kind: &str) -> Result<Value> {
@@ -173,14 +213,17 @@ fn spawn_sway(cfg: &Sunshine, config_path: &Path) -> Result<Child> {
 }
 
 /// Waits for the headless Sway to create its Wayland socket and IPC socket.
-fn wait_for_display(cfg: &Sunshine, before: &HashSet<String>, sway: &mut Child) -> Result<String> {
+fn wait_for_display(
+    cfg: &Sunshine,
+    before: &HashMap<String, u64>,
+    sway: &mut Child,
+) -> Result<String> {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if let Some(status) = sway.try_wait()? {
             bail!("headless sway exited during startup ({status})");
         }
-        let new = wayland_sockets().into_iter().find(|s| !before.contains(s));
-        if let Some(display) = new
+        if let Some(display) = new_socket(before, wayland_sockets())
             && swaysock(cfg).exists()
         {
             return Ok(display);
@@ -205,7 +248,7 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
     let display = match wait_for_display(s, &before, &mut sway) {
         Ok(d) => d,
         Err(err) => {
-            let _ = sway.kill();
+            stop_child(&mut sway);
             return Err(err);
         }
     };
@@ -220,30 +263,65 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         .env("PULSE_PROP", format!("{STREAM_PROP}=game"))
         .env("PIPEWIRE_PROPS", format!("{{ {STREAM_PROP} = game }}"))
         .env_remove("DISPLAY");
+    // systemd's user environment can hold a previous session's values; these
+    // would make games think they're in that session (e.g. a stale
+    // GAMESCOPE_WAYLAND_DISPLAY skips the gamescope wrap as "already nested").
+    for var in STALE_SESSION_VARS {
+        sunshine.env_remove(var);
+    }
     let mut sunshine = match sunshine.spawn() {
         Ok(c) => c,
         Err(err) => {
-            let _ = sway.kill();
+            stop_child(&mut sway);
             return Err(err).with_context(|| format!("starting {sunshine_bin}"));
         }
     };
 
+    // Stop cleanly on `systemctl stop`/restart, so host input gets re-enabled
+    // and sway removes its sockets instead of being killed mid-way.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+        let _ = signal_hook::flag::register(sig, std::sync::Arc::clone(&stop));
+    }
+
     let mut watcher = InputWatcher::default();
-    let (audio_events, mut subscriber) = subscribe_audio_events();
+    let (mut audio_events, mut subscriber) = subscribe_audio_events();
     let mut host_audio = HostAudioGuard::default();
     let result = loop {
-        if let Some(status) = sunshine.try_wait()? {
-            let _ = sway.kill();
-            let _ = sway.wait();
-            if status.success() {
-                break Ok(());
-            }
-            break Err(anyhow::anyhow!("sunshine exited with {status}"));
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            // Before stopping Sunshine: its devices must still exist to be
+            // re-enabled on KDE/Sway hosts.
+            watcher.restore_host(&s.input_match);
+            stop_child(&mut sunshine);
+            stop_child(&mut sway);
+            break Ok(());
         }
-        if let Some(status) = sway.try_wait()? {
-            let _ = sunshine.kill();
-            let _ = sunshine.wait();
-            break Err(anyhow::anyhow!("headless sway exited ({status})"));
+        match sunshine.try_wait() {
+            Ok(Some(status)) => {
+                stop_child(&mut sway);
+                if status.success() {
+                    break Ok(());
+                }
+                break Err(anyhow::anyhow!("sunshine exited with {status}"));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                stop_child(&mut sunshine);
+                stop_child(&mut sway);
+                break Err(err).context("waiting for sunshine");
+            }
+        }
+        match sway.try_wait() {
+            Ok(Some(status)) => {
+                stop_child(&mut sunshine);
+                break Err(anyhow::anyhow!("headless sway exited ({status})"));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                stop_child(&mut sunshine);
+                stop_child(&mut sway);
+                break Err(err).context("waiting for headless sway");
+            }
         }
         watcher.enable_in_virtual_desktop(s);
         if s.input_isolation {
@@ -257,15 +335,37 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         }
         // Wake early when an audio stream appears, so a game that reopens its
         // output (e.g. on pause) is moved before it's audible on the host.
-        let _ = audio_events.recv_timeout(WATCH_INTERVAL);
-        while audio_events.try_recv().is_ok() {}
+        match audio_events.recv_timeout(WATCH_INTERVAL) {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // `pactl subscribe` is gone (missing, or pipewire-pulse
+                // restarted): a dead channel returns instantly, so wait out the
+                // interval here and try again, rather than spinning.
+                std::thread::sleep(WATCH_INTERVAL);
+                if let Some(mut child) = subscriber.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                (audio_events, subscriber) = subscribe_audio_events();
+            }
+            _ => while audio_events.try_recv().is_ok() {},
+        }
     };
     if let Some(child) = subscriber.as_mut() {
         let _ = child.kill();
         let _ = child.wait();
     }
+    watcher.restore_host(&s.input_match);
     result
 }
+
+/// Host-session variables Sunshine (and the games it launches) must not inherit.
+const STALE_SESSION_VARS: [&str; 5] = [
+    "GAMESCOPE_WAYLAND_DISPLAY",
+    "HYPRLAND_INSTANCE_SIGNATURE",
+    "I3SOCK",
+    "NIRI_SOCKET",
+    "XAUTHORITY",
+];
 
 /// Sunshine makes its own virtual sink the system default during a stream,
 /// which would pull everything playing on the host into it. Game audio is
@@ -311,7 +411,8 @@ impl HostAudioGuard {
 const STREAM_PROP: &str = "iprolaunch.stream";
 
 /// Spawns `pactl subscribe` and forwards a tick for each new/changed playback
-/// stream. Without pactl the channel just never fires and polling still works.
+/// stream. Without pactl (or once it exits) the channel is disconnected; the
+/// service loop then falls back to plain polling and retries the subscriber.
 fn subscribe_audio_events() -> (std::sync::mpsc::Receiver<()>, Option<Child>) {
     use std::io::{BufRead, BufReader};
     let (tx, rx) = std::sync::mpsc::channel();
@@ -518,6 +619,7 @@ struct InputWatcher {
     host_disabled: HashSet<String>,
     reloads_tx: std::sync::mpsc::Sender<()>,
     reloads: std::sync::mpsc::Receiver<()>,
+    restored: bool,
 }
 
 impl Default for InputWatcher {
@@ -529,6 +631,7 @@ impl Default for InputWatcher {
             host_disabled: HashSet::new(),
             reloads_tx,
             reloads,
+            restored: false,
         }
     }
 }
@@ -616,7 +719,7 @@ impl InputWatcher {
             if self.host_disabled.contains(&name) {
                 continue;
             }
-            hyprland_disable(sig, &name)?;
+            hyprland_set_enabled(sig, &name, false)?;
             self.host_disabled.insert(name);
         }
         Ok(())
@@ -662,17 +765,104 @@ impl InputWatcher {
             if !is_sunshine_device("", &name, match_names) {
                 continue;
             }
-            let status = Command::new("busctl")
-                .args(["--user", "set-property", "org.kde.KWin", &path])
-                .args(["org.kde.KWin.InputDevice", "enabled", "b", "false"])
-                .status()
-                .context("running busctl")?;
-            if status.success() {
+            if kde_set_enabled(&sys, false)? {
                 self.host_disabled.insert(sys);
             }
         }
         Ok(())
     }
+
+    /// Re-enables Sunshine's devices on the host when the service stops, so a
+    /// later plain Sunshine (desktop streaming) still gets input. Once only.
+    fn restore_host(&mut self, match_names: &[String]) {
+        if self.restored || self.host == HostDesktop::Unknown {
+            return;
+        }
+        self.restored = true;
+        if let Err(err) = set_host_input(&self.host, match_names, true) {
+            eprintln!("iprolaunch: re-enabling host input: {err:#}");
+        }
+        self.host_disabled.clear();
+    }
+}
+
+/// Enables/disables every Sunshine device currently known to `host` (on
+/// Hyprland also the known names, whose rules outlive the devices).
+fn set_host_input(host: &HostDesktop, match_names: &[String], enabled: bool) -> Result<()> {
+    match host {
+        HostDesktop::Hyprland(sig) => {
+            let mut names: Vec<String> = if match_names.is_empty() {
+                SUNSHINE_DEVICE_NAMES
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect()
+            } else {
+                match_names.to_vec()
+            };
+            if let Ok(out) = hyprctl(sig).args(["devices", "-j"]).output()
+                && let Ok(json) = serde_json::from_slice::<Value>(&out.stdout)
+            {
+                names.extend(
+                    ["mice", "keyboards", "tablets", "touch"]
+                        .iter()
+                        .filter_map(|k| json.get(*k).and_then(Value::as_array))
+                        .flatten()
+                        .filter_map(|d| d.get("name").and_then(Value::as_str))
+                        .filter(|n| is_sunshine_device("", n, match_names))
+                        .map(str::to_string),
+                );
+            }
+            names.sort();
+            names.dedup();
+            for name in names {
+                hyprland_set_enabled(sig, &name, enabled)?;
+            }
+        }
+        HostDesktop::Sway(sock) => {
+            let state = if enabled { "enabled" } else { "disabled" };
+            for (id, name, _) in sway_inputs(sock)? {
+                if is_sunshine_device(&id, &name, match_names) {
+                    let quoted = format!("\"{}\"", id.replace('"', "\\\""));
+                    swaymsg(sock, &format!("input {quoted} events {state}"))?;
+                }
+            }
+        }
+        HostDesktop::Kde => {
+            let devices = busctl_get(
+                "/org/kde/KWin/InputDevice",
+                "org.kde.KWin.InputDeviceManager",
+                "devicesSysNames",
+            )?;
+            for sys in parse_busctl_strings(&devices) {
+                let path = format!("/org/kde/KWin/InputDevice/{sys}");
+                let name = busctl_get(&path, "org.kde.KWin.InputDevice", "name")
+                    .map(|raw| {
+                        parse_busctl_strings(&raw)
+                            .into_iter()
+                            .next()
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                if is_sunshine_device("", &name, match_names) {
+                    kde_set_enabled(&sys, enabled)?;
+                }
+            }
+        }
+        HostDesktop::Unknown => {}
+    }
+    Ok(())
+}
+
+/// Sets a KWin input device's `enabled`; `Ok(false)` if busctl refused.
+fn kde_set_enabled(sys: &str, enabled: bool) -> Result<bool> {
+    let path = format!("/org/kde/KWin/InputDevice/{sys}");
+    let status = Command::new("busctl")
+        .args(["--user", "set-property", "org.kde.KWin", &path])
+        .args(["org.kde.KWin.InputDevice", "enabled", "b"])
+        .arg(if enabled { "true" } else { "false" })
+        .status()
+        .context("running busctl")?;
+    Ok(status.success())
 }
 
 /// `hyprctl` pinned to one instance, since the inherited signature may be stale.
@@ -684,19 +874,18 @@ fn hyprctl(signature: &str) -> Command {
 
 /// Hyprland 0.56+ is Lua-configured (`keyword` is rejected there); older
 /// builds only have `keyword`.
-fn hyprland_disable(sig: &str, name: &str) -> Result<()> {
+fn hyprland_set_enabled(sig: &str, name: &str, enabled: bool) -> Result<()> {
     let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
-    let lua = format!("hl.device({{ name = \"{escaped}\", enabled = false }})");
+    let value = if enabled { "true" } else { "false" };
+    let lua = format!("hl.device({{ name = \"{escaped}\", enabled = {value} }})");
     if hyprctl_ok(sig, &["eval", &lua]) {
         return Ok(());
     }
-    if hyprctl_ok(
-        sig,
-        &["keyword", &format!("device[{name}]:enabled"), "false"],
-    ) {
+    if hyprctl_ok(sig, &["keyword", &format!("device[{name}]:enabled"), value]) {
         return Ok(());
     }
-    bail!("hyprctl couldn't disable `{name}`")
+    let verb = if enabled { "enable" } else { "disable" };
+    bail!("hyprctl couldn't {verb} `{name}`")
 }
 
 /// hyprctl exits 0 even on a rejected command, so judge by its reply text.
@@ -803,17 +992,44 @@ fn sink_module_file() -> PathBuf {
     state_dir().join("sink-module-id")
 }
 
-fn unload_sink() {
-    if let Ok(id) = fs::read_to_string(sink_module_file()) {
-        let _ = Command::new("pactl")
-            .args(["unload-module", id.trim()])
-            .status();
-        let _ = fs::remove_file(sink_module_file());
+/// Indices of the loaded null-sink modules that create `sink_name`.
+fn our_sink_modules(modules: &Value, sink_name: &str) -> Vec<u64> {
+    let wanted = format!("sink_name={sink_name}");
+    modules
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m.get("name").and_then(Value::as_str) == Some("module-null-sink"))
+        .filter(|m| {
+            m.get("argument")
+                .and_then(Value::as_str)
+                .is_some_and(|a| a.split_whitespace().any(|t| t == wanted))
+        })
+        .filter_map(|m| m.get("index").and_then(Value::as_u64))
+        .collect()
+}
+
+/// Unloads the stream sink by matching the module itself: a saved module id
+/// can outlive a pipewire-pulse restart and then name someone else's module.
+fn unload_sink(cfg: &Sunshine) {
+    let ids: Vec<String> = match pactl_json(&["list", "modules"]) {
+        Ok(json) => our_sink_modules(&json, &cfg.audio_sink)
+            .iter()
+            .map(u64::to_string)
+            .collect(),
+        // pactl without JSON output: fall back to the id saved at load time.
+        Err(_) => fs::read_to_string(sink_module_file())
+            .map(|id| vec![id.trim().to_string()])
+            .unwrap_or_default(),
+    };
+    for id in ids.iter().filter(|id| !id.is_empty()) {
+        let _ = Command::new("pactl").args(["unload-module", id]).status();
     }
+    let _ = fs::remove_file(sink_module_file());
 }
 
 fn load_sink(cfg: &Sunshine, channels: u32) -> Result<()> {
-    unload_sink();
+    unload_sink(cfg);
     let out = Command::new("pactl")
         .args([
             "load-module",
@@ -863,7 +1079,7 @@ pub fn prep(cfg: &Config, action: PrepAction, slug: Option<&str>) {
         PrepAction::Undo => {
             let mode = cfg.effective_stream_mode(None, None);
             report("resetting the virtual desktop", set_output_mode(s, mode));
-            unload_sink();
+            unload_sink(s);
         }
     }
 }
@@ -900,15 +1116,47 @@ pub fn override_conf(bin: &Path, sunshine_bin: &str) -> String {
     )
 }
 
-fn override_path(unit: &str) -> Result<PathBuf> {
+const OUR_MARKER: &str = "Written by iprolaunch";
+/// Our own drop-in, sorted after `override.conf` so our `ExecStart` wins,
+/// and leaving the user's own `override.conf` untouched.
+const OUR_DROPIN: &str = "zz-iprolaunch.conf";
+
+fn dropin_dir(unit: &str) -> Result<PathBuf> {
     let home = directories::UserDirs::new()
         .context("no home directory")?
         .home_dir()
         .to_path_buf();
-    Ok(home
-        .join(".config/systemd/user")
-        .join(format!("{unit}.d"))
-        .join("override.conf"))
+    Ok(home.join(".config/systemd/user").join(format!("{unit}.d")))
+}
+
+fn is_ours(path: &Path) -> bool {
+    fs::read_to_string(path).is_ok_and(|s| s.contains(OUR_MARKER))
+}
+
+/// Whether the service is set up by iprolaunch (current drop-in, or an older
+/// version's `override.conf`).
+fn is_installed(unit: &str) -> bool {
+    dropin_dir(unit)
+        .is_ok_and(|d| is_ours(&d.join(OUR_DROPIN)) || is_ours(&d.join("override.conf")))
+}
+
+/// Older versions replaced `override.conf` itself (backing the user's up to
+/// `override.conf.bak`). Puts the user's back, or removes ours. Returns
+/// whether there was anything to undo.
+fn undo_legacy_override(dir: &Path) -> Result<bool> {
+    let path = dir.join("override.conf");
+    if !is_ours(&path) {
+        return Ok(false);
+    }
+    let backup = dir.join("override.conf.bak");
+    if backup.exists() {
+        fs::rename(&backup, &path).with_context(|| format!("restoring {}", backup.display()))?;
+        println!("Restored {} from its backup.", path.display());
+    } else {
+        fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        println!("Removed the old iprolaunch {}.", path.display());
+    }
+    Ok(true)
 }
 
 /// One-line state of the Sunshine service setup, for the TUI.
@@ -916,10 +1164,7 @@ pub fn service_status() -> String {
     let Some(unit) = find_sunshine_unit() else {
         return "Sunshine service not found".to_string();
     };
-    let ours = override_path(unit)
-        .ok()
-        .and_then(|p| fs::read_to_string(p).ok())
-        .is_some_and(|s| s.contains("Written by iprolaunch"));
+    let ours = is_installed(unit);
     let active = Command::new("systemctl")
         .args(["--user", "is-active", "--quiet", unit])
         .status()
@@ -931,36 +1176,44 @@ pub fn service_status() -> String {
     )
 }
 
-/// Undoes `install_service`: puts back the override it backed up, or removes
-/// its own override when there was none before.
+/// Undoes `install_service`: removes its drop-in (and an older version's
+/// `override.conf`), and puts back only the `audio_sink` it changed in
+/// sunshine.conf — every other setting changed since install is kept.
 pub fn restore_service() -> Result<()> {
     let unit = find_sunshine_unit().context("no Sunshine systemd user service found")?;
-    let path = override_path(unit)?;
-    let backup = path.with_file_name("override.conf.bak");
-    let ours = fs::read_to_string(&path).is_ok_and(|s| s.contains("Written by iprolaunch"));
-    let mut restored = false;
-    if backup.exists() {
-        fs::rename(&backup, &path).with_context(|| format!("restoring {}", backup.display()))?;
-        println!("Restored {} from its backup.", path.display());
-        restored = true;
-    } else if ours {
-        fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-        if let Some(dir) = path.parent() {
-            let _ = fs::remove_dir(dir); // only succeeds when empty
-        }
+    let dir = dropin_dir(unit)?;
+    let mut restored = undo_legacy_override(&dir)?;
+    let ours = dir.join(OUR_DROPIN);
+    if ours.exists() {
+        fs::remove_file(&ours).with_context(|| format!("removing {}", ours.display()))?;
         println!(
             "Removed {} — Sunshine's service is back to its default.",
-            path.display()
+            ours.display()
         );
         restored = true;
     }
+    let _ = fs::remove_dir(&dir); // only succeeds when empty
     let conf = sunshine_conf_path()?;
     let conf_backup = conf_backup_path(&conf);
-    if conf_backup.exists() {
-        fs::rename(&conf_backup, &conf)
-            .with_context(|| format!("restoring {}", conf_backup.display()))?;
-        println!("Restored {} from its backup.", conf.display());
+    if let Ok(snapshot) = fs::read_to_string(&conf_backup) {
+        let current = fs::read_to_string(&conf).unwrap_or_default();
+        let text = match get_conf_key(&snapshot, "audio_sink") {
+            Some(previous) => set_conf_key(&current, "audio_sink", &previous),
+            None => remove_conf_key(&current, "audio_sink"),
+        };
+        crate::config::write_atomic(&conf, text.as_bytes())?;
+        let _ = fs::remove_file(&conf_backup);
+        println!("Restored audio_sink in {}.", conf.display());
         restored = true;
+    }
+    // Hyprland keeps our runtime "disabled" rules for Sunshine's devices until
+    // a config reload; a plain Sunshine would get no input on this host.
+    let sunshine = Config::load_or_init()
+        .map(|c| c.sunshine)
+        .unwrap_or_default();
+    let host = HostDesktop::detect(&swaysock(&sunshine));
+    if let Err(err) = set_host_input(&host, &sunshine.input_match, true) {
+        println!("Couldn't re-enable Sunshine's input devices on this desktop: {err:#}");
     }
     if !restored {
         bail!("nothing to restore — the Sunshine service isn't set up by iprolaunch");
@@ -993,10 +1246,7 @@ pub fn restart_after_update() {
     let Some(unit) = find_sunshine_unit() else {
         return;
     };
-    let ours = override_path(unit)
-        .ok()
-        .and_then(|p| fs::read_to_string(p).ok())
-        .is_some_and(|s| s.contains("Written by iprolaunch"));
+    let ours = is_installed(unit);
     let active = Command::new("systemctl")
         .args(["--user", "is-active", "--quiet", unit])
         .status()
@@ -1012,24 +1262,19 @@ pub fn restart_after_update() {
     }
 }
 
-/// Points Sunshine's systemd user service at `iprolaunch sunshine service`,
-/// backing up any existing override first (see `restore_service`).
+/// Points Sunshine's systemd user service at `iprolaunch sunshine service`
+/// via its own drop-in, leaving any user `override.conf` in place (see
+/// `restore_service`).
 pub fn install_service(cfg: &Config) -> Result<()> {
     let unit = find_sunshine_unit()
         .context("no Sunshine systemd user service found (looked for app-dev.lizardbyte.app.Sunshine.service and sunshine.service)")?;
     let sunshine_bin = which("sunshine").context("`sunshine` isn't on $PATH")?;
-    let bin = std::env::current_exe()?.canonicalize()?;
-    let path = override_path(unit)?;
-    let dropin = path.parent().context("override path has no parent")?;
-    fs::create_dir_all(dropin)?;
-    if let Ok(existing) = fs::read_to_string(&path)
-        && !existing.contains("Written by iprolaunch")
-    {
-        let backup = dropin.join("override.conf.bak");
-        fs::write(&backup, existing)?;
-        println!("Backed up the existing override to {}", backup.display());
-    }
-    fs::write(&path, override_conf(&bin, &sunshine_bin))?;
+    let bin = crate::updater::own_exe()?.canonicalize()?;
+    let dropin = dropin_dir(unit)?;
+    fs::create_dir_all(&dropin)?;
+    undo_legacy_override(&dropin)?;
+    let path = dropin.join(OUR_DROPIN);
+    crate::config::write_atomic(&path, override_conf(&bin, &sunshine_bin).as_bytes())?;
     Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .status()
@@ -1046,11 +1291,10 @@ pub fn install_service(cfg: &Config) -> Result<()> {
     if let Some(dir) = conf.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(
+    crate::config::write_atomic(
         &conf,
-        set_conf_key(&text, "audio_sink", &cfg.sunshine.audio_sink),
-    )
-    .with_context(|| format!("writing {}", conf.display()))?;
+        set_conf_key(&text, "audio_sink", &cfg.sunshine.audio_sink).as_bytes(),
+    )?;
     println!(
         "Set audio_sink = {} in {}",
         cfg.sunshine.audio_sink,
@@ -1089,6 +1333,27 @@ fn conf_backup_path(conf: &Path) -> PathBuf {
 fn conf_key_matches(line: &str, key: &str) -> bool {
     line.split_once('=')
         .is_some_and(|(k, _)| k.trim() == key && !line.trim_start().starts_with('#'))
+}
+
+/// The value of `key` in a sunshine.conf body, if set.
+fn get_conf_key(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .find(|l| conf_key_matches(l, key))
+        .and_then(|l| l.split_once('='))
+        .map(|(_, v)| v.trim().to_string())
+}
+
+/// Drops every `key = ...` line from a sunshine.conf body.
+fn remove_conf_key(text: &str, key: &str) -> String {
+    let mut out: String = text
+        .lines()
+        .filter(|l| !conf_key_matches(l, key))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
 }
 
 /// Sets `key = value` in a sunshine.conf body: replaces the existing line or appends one.
@@ -1258,6 +1523,42 @@ mod tests {
             parse_busctl_strings("s \"libvirtualhid-mouse\""),
             vec!["libvirtualhid-mouse"]
         );
+    }
+
+    #[test]
+    fn get_and_remove_conf_key() {
+        let text = "output_name = 2\naudio_sink = old\n# audio_sink = c\n";
+        assert_eq!(get_conf_key(text, "audio_sink").as_deref(), Some("old"));
+        assert_eq!(get_conf_key("# audio_sink = c\n", "audio_sink"), None);
+        assert_eq!(
+            remove_conf_key(text, "audio_sink"),
+            "output_name = 2\n# audio_sink = c\n"
+        );
+        assert_eq!(remove_conf_key("audio_sink = x\n", "audio_sink"), "");
+    }
+
+    #[test]
+    fn new_socket_spots_a_recreated_name_and_ignores_unchanged_ones() {
+        let before = HashMap::from([("wayland-0".to_string(), 10), ("wayland-1".to_string(), 11)]);
+        let same = before.clone();
+        assert_eq!(new_socket(&before, same), None);
+        let rebound = HashMap::from([("wayland-0".to_string(), 10), ("wayland-1".to_string(), 99)]);
+        assert_eq!(new_socket(&before, rebound).as_deref(), Some("wayland-1"));
+        let added = HashMap::from([("wayland-0".to_string(), 10), ("wayland-2".to_string(), 5)]);
+        assert_eq!(new_socket(&before, added).as_deref(), Some("wayland-2"));
+    }
+
+    #[test]
+    fn finds_only_our_null_sink_modules() {
+        let json: Value = serde_json::from_str(
+            r#"[
+                {"index": 4, "name": "module-null-sink", "argument": "sink_name=iprolaunch-stream channels=2"},
+                {"index": 5, "name": "module-null-sink", "argument": "sink_name=iprolaunch-stream-other"},
+                {"index": 6, "name": "module-echo-cancel", "argument": "sink_name=iprolaunch-stream"}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(our_sink_modules(&json, "iprolaunch-stream"), vec![4]);
     }
 
     #[test]

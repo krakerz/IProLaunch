@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+## [1.44.0] — 2026-10-16
+
+### Changed
+- Sunshine service setup now uses its own systemd drop-in and leaves your `override.conf` alone; restoring only reverts `audio_sink` instead of the whole `sunshine.conf`.
+- Adding or syncing a game in Sunshine keeps your own prep commands, custom cover image and other edits to that entry.
+- New games whose exe is named like a command (`Config.exe`, `Run.exe`, …) get a `-game` slug suffix, and slug renames reject command names.
+- Renaming a slug warns when the game's Steam or Sunshine entry still points at the old one.
+- The release archive now includes `README.md`.
+
+### Fixed
+- `config.example.toml` and hand-written partial configs failed to load with "missing field".
+- A `profile.toml` with a typo could be overwritten by a fresh default profile on the next launch by path.
+- Profile edits made while its game was running were reverted when the game exited, and a deleted or renamed profile came back.
+- Launching a game by slug, from the Library, Steam or Sunshine, now always uses that exact profile, even when its target path uses `~/`, a symlink, or is shared with another profile.
+- Pruning one game's logs could delete the logs of a same-named sibling such as `game-2`, and `keep = 0` deleted the log that was just written.
+- Log noise filtering skipped non-UTF-8 logs and could leave NUL gaps in them.
+- Config and profile saves are now atomic, so a crash can't leave an empty file.
+- `run --prefix` with a relative or `~/` path didn't work.
+- `-gm` in a game's own arguments was rewritten to `--gamemode`.
+- `config show` printed the Sunshine token and SteamGridDB key.
+- The TUI and `-gm` window stopped responding to SIGTERM after the first launch.
+- Community Proton builds from a Flatpak or Debian Steam install failed with "PROTONPATH is not valid".
+- A failed launch's log could open in two terminal windows, and a `$PAGER` with flags didn't work.
+- A `WINEPREFIX` exported in your shell made the prefix look permanently busy.
+- Gamepad presses made during a game were replayed in the TUI afterwards, which could delete or relaunch a game.
+- Gamepad buttons typed stray letters into text fields and quick-search.
+- The `-gm` window no longer opens a terminal for a failed launch's log, no longer freezes on an internal error, no longer starts blank, and reports startup errors.
+- The `-gm` output view mangled CRLF lines, split CJK characters and cut off long lines.
+- The Running tab rescanned processes about 30 times a second while idle.
+- After deleting or killing an entry in a filtered list, actions silently did nothing until the selection moved.
+- Popups crashed the TUI on terminals narrower than 20 columns, and narrow Library rows were one column too wide.
+- CJK names didn't scroll or truncate correctly in lists.
+- Prefix/log path fields are trimmed and prefix paths can't be blank; numeric overrides must be positive.
+- Renaming an env or DLL-override key onto an existing one silently overwrote it.
+- Opening the Proton picker on a build that's no longer installed switched the setting to "system".
+- A target path edited in the profile editor is stored canonical and can't duplicate another profile's.
+- The Sunshine service could spin a CPU core after PipeWire restarted, and failed to restart after a crash because of a stale Wayland socket.
+- Host input devices disabled for streaming were never re-enabled.
+- Sunshine games could pick up stale host-session variables such as `GAMESCOPE_WAYLAND_DISPLAY`.
+- A stale audio module id could unload an unrelated PipeWire module.
+- An unreachable Sunshine host or cover source froze the TUI instead of timing out.
+- A SteamGridDB error stopped the Steam cover fallback.
+- A transient lookup error when adding to Sunshine created a duplicate entry.
+- Binary paths with spaces broke Sunshine and Steam shortcut detection.
+- Desktop entries, launchers and Steam/context-menu integration pointed at a missing binary after an in-app update until restart.
+- Integration files are escaped correctly for paths containing quotes, `$`, `%` or `&`.
+- Installing desktop integration on a fresh XFCE profile hid Thunar's built-in custom actions.
+- `library add-to-steam` hung until Steam exited when Steam wasn't already running.
+- The GNOME-family "Add to IProLaunch Library" script did nothing in Nemo and Caja and globbed names with brackets.
+- The binfmt override dropped other entries from multi-entry vendor files, failed on re-run after a custom `--entry`, and uninstall could leave the registration active.
+- `mimeapps.list` and Thunar's `uca.xml` are written atomically.
+
 ## [1.43.2] — 2026-10-15
 
 ### Fixed
