@@ -6,6 +6,7 @@ use crate::config::{
     GamescopeSetting, LogMode, PrefixMode, Profile, RecordMode, ResolutionMode, WindowsVersion,
     WineArch,
 };
+use crate::gamedb;
 use crate::proton::ProtonBuild;
 use crate::running::{self, RunningEntry};
 
@@ -256,6 +257,7 @@ pub enum FieldKind {
     Number,
     Text,
     ProtonPicker,
+    GameIdPicker,
     MapEditor,
 }
 
@@ -363,6 +365,7 @@ pub enum ProfileField {
     Slug,
     Name,
     Title,
+    GameId,
     Args,
     PrefixMode,
     Proton,
@@ -396,11 +399,12 @@ pub enum ProfileField {
 }
 
 impl ProfileField {
-    pub const ALL: [ProfileField; 34] = [
+    pub const ALL: [ProfileField; 35] = [
         ProfileField::TargetPath,
         ProfileField::Slug,
         ProfileField::Name,
         ProfileField::Title,
+        ProfileField::GameId,
         ProfileField::Args,
         ProfileField::PrefixMode,
         ProfileField::Proton,
@@ -439,6 +443,7 @@ impl ProfileField {
             ProfileField::Slug => "slug (folder name)",
             ProfileField::Name => "name (#N auto-managed)",
             ProfileField::Title => "title (for GAMEID matching)",
+            ProfileField::GameId => "GAMEID",
             ProfileField::Args => "args (space-separated)",
             ProfileField::PrefixMode => "defaults.prefix_mode override",
             ProfileField::Proton => "defaults.proton override (per-slug mode only)",
@@ -482,6 +487,7 @@ impl ProfileField {
     pub fn kind(self) -> FieldKind {
         match self {
             ProfileField::Proton => FieldKind::ProtonPicker,
+            ProfileField::GameId => FieldKind::GameIdPicker,
             ProfileField::LogRecord
             | ProfileField::LogAutoOpen
             | ProfileField::LogAutoOpenScope
@@ -538,6 +544,16 @@ pub enum Mode {
         builds: Vec<ProtonBuild>,
         selected: usize,
         target: ProtonPickerTarget,
+    },
+    /// Searchable picker for a profile's `gameid` override. Rows: 0 = auto
+    /// (clear the override), 1 = `umu-default`, 2.. = `results`.
+    GameIdPicker {
+        slug: String,
+        query: String,
+        /// Char index into `query`, same convention as `TextInput::cursor`.
+        cursor: usize,
+        results: Vec<gamedb::GameDbEntry>,
+        selected: usize,
     },
     /// Browsing one map's entries (`env` or `winedlloverride`): `a` add,
     /// `e` edit the selected entry, `d` delete it, Esc back to Config.
@@ -1119,6 +1135,39 @@ pub fn move_selection(selected: usize, len: usize, delta: isize) -> usize {
     }
 }
 
+/// Row count of the GAMEID picker: the two fixed rows plus `results`.
+pub fn gameid_picker_len(results: &[gamedb::GameDbEntry]) -> usize {
+    2 + results.len()
+}
+
+/// The `gameid` a picker row stands for: row 0 clears the override, row 1
+/// pins `umu-default`, the rest are `results` in order.
+pub fn gameid_for_row(row: usize, results: &[gamedb::GameDbEntry]) -> Option<String> {
+    match row {
+        0 => None,
+        1 => Some("umu-default".to_string()),
+        n => results.get(n - 2).map(|e| e.umu_id.clone()),
+    }
+}
+
+/// Row to highlight when the picker opens, given the profile's current
+/// `gameid` (a custom id absent from `results` falls back to row 0).
+pub fn gameid_preselect(current: Option<&str>, results: &[gamedb::GameDbEntry]) -> usize {
+    match current {
+        Some("umu-default") => 1,
+        Some(id) => results
+            .iter()
+            .position(|e| e.umu_id == id)
+            .map_or(0, |i| i + 2),
+        None => 0,
+    }
+}
+
+/// Row to highlight after the query changes: the first result if any.
+pub fn gameid_row_after_search(results: &[gamedb::GameDbEntry]) -> usize {
+    if results.is_empty() { 0 } else { 2 }
+}
+
 /// Cycles an enum value forward, for `FieldKind::Cycle` fields.
 pub fn next_prefix_mode(m: PrefixMode) -> PrefixMode {
     match m {
@@ -1457,6 +1506,7 @@ mod tests {
                 name: "whatever".to_string(),
                 target_path: target_path.to_string(),
                 title: None,
+                gameid: None,
                 last_launched: None,
                 args: Vec::new(),
                 defaults: Default::default(),
@@ -1659,6 +1709,41 @@ mod tests {
         assert_eq!(v, Some(false));
         v = next_optional_bool(v);
         assert_eq!(v, None);
+    }
+
+    fn game(title: &str, umu_id: &str) -> gamedb::GameDbEntry {
+        gamedb::GameDbEntry {
+            title: title.to_string(),
+            umu_id: umu_id.to_string(),
+            stores: vec!["steam".to_string()],
+        }
+    }
+
+    #[test]
+    fn gameid_rows_map_to_auto_default_then_results() {
+        let results = [game("A", "umu-1"), game("B", "umu-2")];
+        assert_eq!(gameid_picker_len(&results), 4);
+        assert_eq!(gameid_for_row(0, &results), None);
+        assert_eq!(gameid_for_row(1, &results).as_deref(), Some("umu-default"));
+        assert_eq!(gameid_for_row(2, &results).as_deref(), Some("umu-1"));
+        assert_eq!(gameid_for_row(3, &results).as_deref(), Some("umu-2"));
+        assert_eq!(gameid_for_row(4, &results), None); // out of range
+    }
+
+    #[test]
+    fn gameid_preselect_finds_the_current_choice() {
+        let results = [game("A", "umu-1"), game("B", "umu-2")];
+        assert_eq!(gameid_preselect(None, &results), 0);
+        assert_eq!(gameid_preselect(Some("umu-default"), &results), 1);
+        assert_eq!(gameid_preselect(Some("umu-2"), &results), 3);
+        assert_eq!(gameid_preselect(Some("umu-custom"), &results), 0);
+        assert_eq!(gameid_preselect(Some("umu-default"), &[]), 1);
+    }
+
+    #[test]
+    fn gameid_row_after_search_skips_the_fixed_rows_only_with_results() {
+        assert_eq!(gameid_row_after_search(&[]), 0);
+        assert_eq!(gameid_row_after_search(&[game("A", "umu-1")]), 2);
     }
 
     #[test]

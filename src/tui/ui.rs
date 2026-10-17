@@ -68,6 +68,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             selected,
             target,
         } => draw_proton_picker_popup(frame, builds, *selected, target, tick),
+        Mode::GameIdPicker {
+            query,
+            cursor,
+            results,
+            selected,
+            ..
+        } => draw_gamedb_picker_popup(frame, query, *cursor, results, *selected, tick),
         Mode::MapEditor { field, selected } => {
             draw_map_editor_popup(frame, app, field, *selected, tick)
         }
@@ -546,6 +553,11 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                     .title
                     .clone()
                     .unwrap_or_else(|| "(inherit: exe filename)".to_string()),
+                ProfileField::GameId => match profile.gameid.as_deref() {
+                    None => "(auto: umu-database lookup)".to_string(),
+                    Some("umu-default") => "none (umu-default)".to_string(),
+                    Some(id) => id.to_string(),
+                },
                 ProfileField::Args => {
                     if profile.args.is_empty() {
                         "(none)".to_string()
@@ -1275,6 +1287,10 @@ Profile editor (Library, after 'e'):
                            opens a picker for the proton override, or opens
                            the entry list for env/winedlloverride
   Esc                      back to the Library list
+  GAMEID opens a searchable picker over the umu-database (prefilled with
+  the title, else the exe name): Auto looks it up at launch, None forces
+  umu-default (no game fixes), or pick a game to pin its UMU_ID (and
+  fill an empty title with its name).
   A blank text field / the picker's \"inherit\" choice clears that override
   back to the global default. Changes save to that profile.toml immediately.
   target-path/slug/name are exceptions, not overrides:
@@ -1719,6 +1735,72 @@ fn draw_proton_picker_popup(
     frame.render_stateful_widget(list, area, &mut list_state(selected));
 }
 
+/// Query line, a one-line hint, then the choices: auto, umu-default, and the
+/// database matches. The `List`'s own scrolling keeps the selection visible.
+fn draw_gamedb_picker_popup(
+    frame: &mut Frame,
+    query: &str,
+    cursor: usize,
+    results: &[crate::gamedb::GameDbEntry],
+    selected: usize,
+    tick: usize,
+) {
+    let area = centered_rect(60, 60, frame.area());
+    frame.render_widget(Clear, area);
+    let title = marquee_title(
+        "GAMEID — type to search, Enter = choose, Esc = cancel".to_string(),
+        area.width,
+        tick,
+    );
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(cursor_line(query, cursor, chunks[0].width as usize)),
+        chunks[0],
+    );
+    let hint = if !crate::gamedb::cache_exists() {
+        Some("umu-database not downloaded yet (fetched on next launch)")
+    } else if results.is_empty() && !query.trim().is_empty() {
+        Some("no matches; pick None if the exe name is too generic")
+    } else {
+        None
+    };
+    if let Some(hint) = hint {
+        frame.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+            chunks[1],
+        );
+    }
+
+    let mut items = vec![
+        ListItem::new("Auto: look up at launch"),
+        ListItem::new("None: umu-default (no game fixes)"),
+    ];
+    items.extend(results.iter().map(|e| {
+        let stores = if e.stores.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", e.stores.join(", "))
+        };
+        ListItem::new(format!("{} — {}{stores}", e.title, e.umu_id))
+    }));
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, chunks[2], &mut list_state(selected));
+}
+
 /// The width to left-pad a field-list row's label to, so every row's value
 /// starts at the same column — a real reported bug otherwise: a fixed
 /// guessed width (34, previously hardcoded at each of this function's three
@@ -1911,6 +1993,7 @@ fn marquee_signature(app: &App) -> String {
         Mode::ProtonPicker {
             selected, target, ..
         } => format!("proton:{selected}:{target:?}"),
+        Mode::GameIdPicker { slug, selected, .. } => format!("gameid:{slug}:{selected}"),
         Mode::MapEditor { field, selected } => format!("map:{field:?}:{selected}"),
         Mode::MapEntryInput { field, step, .. } => format!("mapentry:{field:?}:{step:?}"),
         Mode::ConfirmDeleteProfile { slug, .. } => format!("confirmdelete:{slug}"),
@@ -2554,6 +2637,7 @@ mod tests {
             name: name.to_string(),
             target_path: "/tmp/game.exe".to_string(),
             title: None,
+            gameid: None,
             last_launched: None,
             args: Vec::new(),
             defaults: Default::default(),

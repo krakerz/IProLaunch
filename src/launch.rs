@@ -284,11 +284,38 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
             .unwrap_or("")
             .to_string()
     });
-    let gameid = gamedb::lookup_gameid(&gameid_query, &target);
-    match &gameid {
-        Some(id) => eprintln!("iprolaunch: matched GAMEID {id} for \"{gameid_query}\""),
-        None => eprintln!("iprolaunch: no umu-database match for \"{gameid_query}\""),
-    }
+    let gameid_override = profile
+        .gameid
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let gameid = match gameid_override {
+        Some("umu-default") => {
+            eprintln!("iprolaunch: GAMEID set to umu-default in profile");
+            None
+        }
+        Some(id) => {
+            eprintln!("iprolaunch: using profile GAMEID {id}");
+            Some(id.to_string())
+        }
+        None => match gamedb::lookup_gameid(&gameid_query, &target) {
+            gamedb::GameIdMatch::Found(id) => {
+                eprintln!("iprolaunch: matched GAMEID {id} for \"{gameid_query}\"");
+                Some(id)
+            }
+            gamedb::GameIdMatch::Ambiguous(ids) => {
+                eprintln!(
+                    "iprolaunch: \"{gameid_query}\" matches several umu-database games ({}); using umu-default",
+                    ids.join(", ")
+                );
+                None
+            }
+            gamedb::GameIdMatch::None => {
+                eprintln!("iprolaunch: no umu-database match for \"{gameid_query}\"");
+                None
+            }
+        },
+    };
 
     let prefix_path = opts
         .prefix
@@ -407,6 +434,15 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
     }
     if let Some(overrides) = winedlloverrides_value(&effective.winedlloverride) {
         command.env("WINEDLLOVERRIDES", overrides);
+    }
+    // Sunshine's service strips DISPLAY on purpose, so without gamescope's own
+    // Xwayland Proton's X11 driver has no server; use the headless sway's.
+    if let Some(display) = sunshine_x_display(
+        wrap_with_gamescope,
+        std::env::var("DISPLAY").ok().as_deref(),
+        std::env::var("IPROLAUNCH_SWAY_DISPLAY").ok().as_deref(),
+    ) {
+        command.env("DISPLAY", display);
     }
     let mut env = merge_env(&effective.env, &opts.env);
     // `umu-run` defaults to Proton's `waitforexitandrun` verb, which waits
@@ -580,6 +616,7 @@ pub fn ensure_profile(target: &Path) -> Result<(String, Profile)> {
         name,
         target_path: target_str,
         title: None,
+        gameid: None,
         last_launched: None,
         defaults: Default::default(),
         logging: Default::default(),
@@ -845,9 +882,39 @@ fn winedlloverrides_value(overrides: &BTreeMap<String, String>) -> Option<String
     )
 }
 
+/// The `DISPLAY` to hand the game when it runs without gamescope under the
+/// Sunshine service: sway's Xwayland, passed down as `IPROLAUNCH_SWAY_DISPLAY`.
+/// `None` when gamescope provides its own X server, or `DISPLAY` is already set.
+fn sunshine_x_display(
+    wrap_with_gamescope: bool,
+    display: Option<&str>,
+    sway_display: Option<&str>,
+) -> Option<String> {
+    if wrap_with_gamescope || display.is_some_and(|d| !d.is_empty()) {
+        return None;
+    }
+    sway_display.filter(|d| !d.is_empty()).map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sunshine_x_display_only_fills_a_missing_display_without_gamescope() {
+        assert_eq!(sunshine_x_display(true, None, Some(":1")), None);
+        assert_eq!(sunshine_x_display(false, Some(":0"), Some(":1")), None);
+        assert_eq!(
+            sunshine_x_display(false, None, Some(":1")),
+            Some(":1".to_string())
+        );
+        assert_eq!(
+            sunshine_x_display(false, Some(""), Some(":1")),
+            Some(":1".to_string())
+        );
+        assert_eq!(sunshine_x_display(false, None, Some("")), None);
+        assert_eq!(sunshine_x_display(false, None, None), None);
+    }
 
     fn profile_named(slug: &str, name: &str) -> (String, Profile) {
         (
@@ -856,6 +923,7 @@ mod tests {
                 name: name.to_string(),
                 target_path: format!("/tmp/{slug}.exe"),
                 title: None,
+                gameid: None,
                 last_launched: None,
                 defaults: Default::default(),
                 logging: Default::default(),

@@ -290,6 +290,7 @@ mod tests {
             name: name.into(),
             target_path: "/tmp/game.exe".into(),
             title: title.map(str::to_string),
+            gameid: None,
             last_launched: None,
             defaults: Default::default(),
             logging: Default::default(),

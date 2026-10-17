@@ -912,13 +912,19 @@ pub struct Profile {
     pub name: String,
     #[serde(rename = "target-path")]
     pub target_path: String,
-    /// The game's real title, for umu-database GAMEID lookup (see
-    /// `gamedb::lookup_gameid`) — deliberately separate from `name`, which is
-    /// often an auto-generated slug like `eldenring#1`, not a matchable
-    /// title. Blank/absent falls back to the exe's file stem, a weaker
-    /// signal that rarely matches a proper multi-word title.
+    /// The game's real title: names its Steam/Sunshine entries, drives cover
+    /// search, and is the auto GAMEID lookup query (see
+    /// `gamedb::lookup_gameid`). Separate from `name`, which is often an
+    /// auto-generated slug like `eldenring#1`. Blank/absent falls back to the
+    /// exe's file stem for the lookup, a weaker signal. Picking a game in the
+    /// TUI GAMEID picker fills it when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// GAMEID override. Unset = look it up in the umu-database at launch;
+    /// `"umu-default"` = force no game-specific fixes; anything else = that
+    /// UMU_ID verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gameid: Option<String>,
     /// `DD-Mon-YYYY, HH:MM:SS`, local time — see `Profile::mark_launched_now`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_launched: Option<String>,
@@ -1082,11 +1088,33 @@ mod tests {
     }
 
     #[test]
+    fn gameid_is_omitted_when_none_and_round_trips_when_set() {
+        let mut profile = Profile {
+            name: "game#1".into(),
+            target_path: "/tmp/game.exe".into(),
+            title: None,
+            gameid: None,
+            last_launched: None,
+            defaults: ProfileDefaults::default(),
+            logging: ProfileLogging::default(),
+            env: BTreeMap::new(),
+            winedlloverride: BTreeMap::new(),
+            args: Vec::new(),
+        };
+        assert!(!toml::to_string(&profile).unwrap().contains("gameid"));
+
+        profile.gameid = Some("umu-271590".to_string());
+        let back: Profile = toml::from_str(&toml::to_string(&profile).unwrap()).unwrap();
+        assert_eq!(back.gameid.as_deref(), Some("umu-271590"));
+    }
+
+    #[test]
     fn display_title_prefers_title_then_falls_back_to_name_base() {
         let mut profile = Profile {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1110,6 +1138,7 @@ mod tests {
             name: "EldenRing#1".into(),
             target_path: "/a/b/c/Downloads/EldenRing.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1146,6 +1175,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1170,6 +1200,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1210,6 +1241,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1233,6 +1265,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1299,6 +1332,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1333,6 +1367,7 @@ mod tests {
             name: "battle-net#1".into(),
             target_path: "/tmp/battle-net.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1376,6 +1411,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1405,6 +1441,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1435,6 +1472,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1528,6 +1566,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1555,6 +1594,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),
@@ -1578,6 +1618,7 @@ mod tests {
             name: "game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: ProfileDefaults::default(),
             logging: ProfileLogging::default(),

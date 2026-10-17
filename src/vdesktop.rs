@@ -81,7 +81,7 @@ const NO_DECORATIONS: [&str; 3] = [
     "for_window [all] border none",
 ];
 
-pub fn sway_config(cfg: &Sunshine) -> String {
+pub fn sway_config(cfg: &Sunshine, xdisplay_file: &Path) -> String {
     let mut out = format!(
         "output * mode {}x{}@{}Hz scale {}\n\
          swaybg_command /usr/bin/true\n\
@@ -96,7 +96,30 @@ pub fn sway_config(cfg: &Sunshine) -> String {
         "seat * hide_cursor {}\n",
         cfg.cursor.hide_timeout_ms()
     ));
+    // Sway sets DISPLAY for exec children once its lazy Xwayland socket exists;
+    // record it so games launched without gamescope get an X server.
+    out.push_str(&format!(
+        "exec sh -c 'printf %s \"$DISPLAY\" > {}'\n",
+        sh_quote_in_single(&xdisplay_file.to_string_lossy())
+    ));
     out
+}
+
+/// Quotes a path as a double-quoted shell word that itself sits inside an
+/// outer single-quoted `sh -c '...'` string (`'` -> `'\''`).
+fn sh_quote_in_single(path: &str) -> String {
+    let mut inner = String::new();
+    for c in path.chars() {
+        match c {
+            '\\' | '"' | '$' | '`' => {
+                inner.push('\\');
+                inner.push(c);
+            }
+            '\'' => inner.push_str("'\\''"),
+            _ => inner.push(c),
+        }
+    }
+    format!("\"{inner}\"")
 }
 
 /// `wayland-*` socket name → inode. By inode, not just name: libwayland
@@ -233,14 +256,34 @@ fn wait_for_display(
     bail!("headless sway didn't create its sockets within 15s")
 }
 
+/// Polls for the file sway's startup `exec` writes `$DISPLAY` into.
+fn wait_for_xdisplay(path: &Path) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(text) = fs::read_to_string(path) {
+            let text = text.trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Runs the headless virtual desktop and Sunshine inside it until either exits.
 pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
     let s = &cfg.sunshine;
     let dir = state_dir();
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let config_path = dir.join("sway.conf");
-    fs::write(&config_path, sway_config(s))
+    let xdisplay_path = dir.join("xdisplay");
+    fs::write(&config_path, sway_config(s, &xdisplay_path))
         .with_context(|| format!("writing {}", config_path.display()))?;
+    // A previous run's value would point games at a dead X server.
+    let _ = fs::remove_file(&xdisplay_path);
     let _ = fs::remove_file(swaysock(s));
 
     let before = wayland_sockets();
@@ -263,6 +306,16 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         .env("PULSE_PROP", format!("{STREAM_PROP}=game"))
         .env("PIPEWIRE_PROPS", format!("{{ {STREAM_PROP} = game }}"))
         .env_remove("DISPLAY");
+    // Sunshine itself stays X-free, but games it launches need sway's Xwayland
+    // when they run without gamescope; launch.rs picks this up.
+    match wait_for_xdisplay(&xdisplay_path) {
+        Some(d) => {
+            sunshine.env("IPROLAUNCH_SWAY_DISPLAY", d);
+        }
+        None => eprintln!(
+            "iprolaunch: sway's X display wasn't reported within 5s; games without gamescope get no DISPLAY"
+        ),
+    }
     // systemd's user environment can hold a previous session's values; these
     // would make games think they're in that session (e.g. a stale
     // GAMESCOPE_WAYLAND_DISPLAY skips the gamescope wrap as "already nested").
@@ -1446,8 +1499,12 @@ mod tests {
             cursor: crate::config::CursorMode::Hidden,
             ..Default::default()
         };
-        let text = sway_config(&cfg);
-        assert!(sway_config(&Sunshine::default()).contains("seat * hide_cursor 3000"));
+        let xdisplay = Path::new("/run/user/1000/iprolaunch-sunshine/xdisplay");
+        let text = sway_config(&cfg, xdisplay);
+        assert!(sway_config(&Sunshine::default(), xdisplay).contains("seat * hide_cursor 3000"));
+        assert!(text.contains(
+            "exec sh -c 'printf %s \"$DISPLAY\" > \"/run/user/1000/iprolaunch-sunshine/xdisplay\"'"
+        ));
         assert!(text.contains("output * mode 1920x1080@60Hz scale 1"));
         assert!(text.contains("input * events disabled"));
         assert!(text.contains("default_floating_border none"));
