@@ -170,6 +170,30 @@ fn prune(dir: &Path, slug_prefix: &str, keep: u32) -> Result<()> {
     Ok(())
 }
 
+/// Renames `old`'s log files in `dir` to `new` after a profile slug rename,
+/// so `prune` keeps finding them. Same ownership rule as `prune`; best-effort,
+/// never overwrites an existing file, and a missing dir is a no-op.
+pub(crate) fn rename_slug_logs(dir: &Path, old: &str, new: &str) {
+    let Ok(read) = fs::read_dir(dir) else {
+        return;
+    };
+    let prefix = format!("{old}-");
+    for entry in read.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let Some(rest) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(&prefix))
+            .filter(|rest| starts_with_date(rest) && rest.ends_with(".log"))
+        else {
+            continue;
+        };
+        let target = dir.join(format!("{new}-{rest}"));
+        if !target.exists() {
+            let _ = fs::rename(entry.path(), target);
+        }
+    }
+}
+
 /// `YYYY-MM-DDT` — the start of every `timestamp()`.
 fn starts_with_date(s: &str) -> bool {
     let b = s.as_bytes();
@@ -226,6 +250,35 @@ mod tests {
             "keep=0 still keeps the newest"
         );
 
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn rename_slug_logs_moves_only_exact_slug() {
+        let tmp = std::env::temp_dir().join(format!("iprolaunch-rename-{}", std::process::id()));
+        fs::create_dir_all(&tmp).unwrap();
+        let d = "2026-01-01T00-00-00+00-00.log";
+        let e = "2026-01-02T00-00-00+00-00.log";
+        fs::write(tmp.join(format!("game-{d}")), "x").unwrap();
+        fs::write(tmp.join(format!("game-{e}")), "old").unwrap();
+        fs::write(tmp.join(format!("foo-{e}")), "keep").unwrap();
+        fs::write(tmp.join(format!("game-2-{d}")), "x").unwrap();
+        fs::write(tmp.join(format!("other-{d}")), "x").unwrap();
+
+        rename_slug_logs(&tmp, "game", "foo");
+
+        assert!(tmp.join(format!("foo-{d}")).exists());
+        assert!(!tmp.join(format!("game-{d}")).exists());
+        // Existing target is not overwritten; the source stays put.
+        assert_eq!(
+            fs::read_to_string(tmp.join(format!("foo-{e}"))).unwrap(),
+            "keep"
+        );
+        assert!(tmp.join(format!("game-{e}")).exists());
+        assert!(tmp.join(format!("game-2-{d}")).exists());
+        assert!(tmp.join(format!("other-{d}")).exists());
+
+        rename_slug_logs(&tmp.join("missing"), "game", "foo");
         fs::remove_dir_all(&tmp).unwrap();
     }
 

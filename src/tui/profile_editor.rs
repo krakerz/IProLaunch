@@ -4,6 +4,7 @@ use super::app::{
     self, App, FieldKind, MapField, Mode, ProfileField, ProtonPickerTarget, TextInputPurpose,
 };
 use crate::config::name_base;
+use crate::gamedb;
 use crate::proton;
 
 /// Keys while the Library tab is showing one profile's editor
@@ -55,6 +56,28 @@ fn activate_selected(app: &mut App, slug: &str) {
             }
             Err(err) => app.status = Some(format!("proton scan failed: {err:#}")),
         },
+        FieldKind::GameIdPicker => {
+            let Some(profile) = app.profile(slug) else {
+                return;
+            };
+            // Same query `launch::run` looks the GAMEID up with.
+            let query = profile.title.clone().unwrap_or_else(|| {
+                std::path::Path::new(&profile.target_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string()
+            });
+            let results = gamedb::search(&query);
+            let selected = app::gameid_preselect(profile.gameid.as_deref(), &results);
+            app.mode = Mode::GameIdPicker {
+                slug: slug.to_string(),
+                cursor: query.chars().count(),
+                query,
+                results,
+                selected,
+            };
+        }
         FieldKind::MapEditor => {
             let map_field = match field {
                 ProfileField::EnvTable => MapField::ProfileEnv(slug.to_string()),
@@ -386,6 +409,11 @@ fn perform_slug_rename(app: &mut App, slug: &str, candidate: &str) -> bool {
         app.status = Some(format!("couldn't rename profile folder: {err}"));
         return false;
     }
+    // Log filenames embed the slug; `prune` only matches the current one.
+    crate::logging::rename_slug_logs(&new_dir.join("logs"), slug, candidate);
+    if let Ok(log_dir) = app.cfg.log_dir() {
+        crate::logging::rename_slug_logs(&log_dir, slug, candidate);
+    }
 
     if let Some(entry) = app.profiles.iter_mut().find(|(s, _)| s == slug) {
         entry.0 = candidate.to_string();
@@ -531,6 +559,7 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         // via a text popup — they open a different mode
         // (`ProtonPicker`/`MapEditor`/`Cycle`) instead.
         ProfileField::Slug
+        | ProfileField::GameId
         | ProfileField::PrefixMode
         | ProfileField::Proton
         | ProfileField::LogRecord
@@ -550,6 +579,41 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
         | ProfileField::WineDllOverrideTable => {}
     }
     save_profile(app, slug);
+}
+
+/// Commits a `Mode::GameIdPicker` choice to the profile and saves it.
+pub fn apply_gameid_choice(
+    app: &mut App,
+    slug: &str,
+    selected: usize,
+    results: &[gamedb::GameDbEntry],
+) {
+    let Some(profile) = app.profile_mut(slug) else {
+        app.status = Some(format!("couldn't find profile \"{slug}\""));
+        return;
+    };
+    profile.gameid = app::gameid_for_row(selected, results);
+    // A picked game also names an untitled profile, for covers and Steam/Sunshine.
+    if let Some(title) = picked_title(profile.title.as_deref(), selected, results) {
+        profile.title = Some(title);
+    }
+    save_profile(app, slug);
+}
+
+/// The database title to adopt as the profile's `title`: only for a real
+/// game row (not Auto/None) and only when no title is set yet.
+fn picked_title(
+    current: Option<&str>,
+    selected: usize,
+    results: &[gamedb::GameDbEntry],
+) -> Option<String> {
+    if current.is_some_and(|t| !t.trim().is_empty()) {
+        return None;
+    }
+    selected
+        .checked_sub(2)
+        .and_then(|i| results.get(i))
+        .map(|e| e.title.clone())
 }
 
 /// Saves the named profile (looked up fresh, since the caller may only hold
@@ -586,6 +650,7 @@ mod tests {
                 name: "Game#1".to_string(),
                 target_path: format!("/tmp/{slug}.exe"),
                 title: Some("Real Title".to_string()),
+                gameid: None,
                 last_launched: None,
                 args: vec!["--dx11".to_string()],
                 defaults: Default::default(),
@@ -686,6 +751,7 @@ mod tests {
             name: name.to_string(),
             target_path: "/tmp/game.exe".to_string(),
             title: None,
+            gameid: None,
             last_launched: None,
             args: Vec::new(),
             defaults: Default::default(),
@@ -837,5 +903,25 @@ mod tests {
         assert!(!dir.join("renamed").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn picked_title_fills_only_an_empty_title_from_a_game_row() {
+        let results = [gamedb::GameDbEntry {
+            title: "Genshin Impact".to_string(),
+            umu_id: "umu-genshin".to_string(),
+            stores: vec!["none".to_string()],
+        }];
+        assert_eq!(
+            picked_title(None, 2, &results).as_deref(),
+            Some("Genshin Impact")
+        );
+        assert_eq!(
+            picked_title(Some("  "), 2, &results).as_deref(),
+            Some("Genshin Impact")
+        );
+        assert_eq!(picked_title(Some("Mine"), 2, &results), None);
+        assert_eq!(picked_title(None, 0, &results), None); // Auto
+        assert_eq!(picked_title(None, 1, &results), None); // None (umu-default)
     }
 }

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.45.0] — 2026-10-17
+
+### Added
+- GAMEID field in the profile editor: search the umu-database and pick a game, or choose None (umu-default) for a too-generic exe; picking a game also fills an empty title; also settable as `gameid` in `profile.toml`.
+
+### Changed
+- A game title that matches several umu-database IDs now uses the standalone entry, or umu-default when there isn't exactly one.
+
+### Fixed
+- Sunshine games launched without gamescope had no X display.
+- Old log files are renamed along with a profile's slug, so log pruning still finds them.
+
 ## [1.44.0] — 2026-10-16
 
 ### Changed

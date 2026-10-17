@@ -25,6 +25,7 @@ use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 
 use crate::config::Config;
+use crate::gamedb;
 use app::{App, InputKind, Mode, TextInputPurpose};
 use gamepad::GamepadSource;
 
@@ -253,7 +254,7 @@ fn event_loop(terminal: &mut Term, app: &mut App, gamepad: &mut GamepadSource) -
 fn is_text_entry(app: &App) -> bool {
     matches!(
         app.mode,
-        Mode::TextInput { .. } | Mode::MapEntryInput { .. }
+        Mode::TextInput { .. } | Mode::MapEntryInput { .. } | Mode::GameIdPicker { .. }
     ) || (matches!(app.mode, Mode::Normal)
         && ((app.tab == app::Tab::Running && app.running_filter_editing)
             || (app.tab == app::Tab::Library && app.library_filter_editing)))
@@ -279,6 +280,7 @@ fn on_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     match &app.mode {
         Mode::TextInput { .. } => return handle_text_input(app, code, terminal),
         Mode::ProtonPicker { .. } => return handle_proton_picker(app, code),
+        Mode::GameIdPicker { .. } => return handle_gameid_picker(app, code),
         Mode::MapEditor { .. } => return config::map_editor_key(app, code),
         Mode::MapEntryInput { .. } => return config::map_entry_input_key(app, code),
         Mode::ConfirmDeleteProfile { .. } => return library::confirm_delete_key(app, code),
@@ -370,7 +372,8 @@ fn help_scroll_key(app: &mut App, code: KeyCode) {
     }
 }
 
-/// Cursor movement, insert, and delete for `Mode::TextInput` — everything
+/// Cursor movement, insert, and delete for `Mode::TextInput` (and the GAMEID
+/// picker's query) — everything
 /// that never needs `terminal`, kept separate from `handle_text_input` so
 /// it's unit-testable without needing a real `Term`. Operates on
 /// `buffer.chars()` (char index, not byte offset) throughout. Returns
@@ -379,19 +382,19 @@ fn help_scroll_key(app: &mut App, code: KeyCode) {
 fn edit_text_buffer(app: &mut App, code: KeyCode) -> bool {
     match code {
         KeyCode::Left => {
-            if let Mode::TextInput { cursor, .. } = &mut app.mode {
+            if let Some((_, cursor)) = text_fields(&mut app.mode) {
                 *cursor = cursor.saturating_sub(1);
             }
             true
         }
         KeyCode::Right => {
-            if let Mode::TextInput { buffer, cursor, .. } = &mut app.mode {
+            if let Some((buffer, cursor)) = text_fields(&mut app.mode) {
                 *cursor = (*cursor + 1).min(buffer.chars().count());
             }
             true
         }
         KeyCode::Backspace => {
-            if let Mode::TextInput { buffer, cursor, .. } = &mut app.mode
+            if let Some((buffer, cursor)) = text_fields(&mut app.mode)
                 && *cursor > 0
             {
                 let mut chars: Vec<char> = buffer.chars().collect();
@@ -402,7 +405,7 @@ fn edit_text_buffer(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Char(c) => {
-            if let Mode::TextInput { buffer, cursor, .. } = &mut app.mode {
+            if let Some((buffer, cursor)) = text_fields(&mut app.mode) {
                 let mut chars: Vec<char> = buffer.chars().collect();
                 chars.insert((*cursor).min(chars.len()), c);
                 *buffer = chars.into_iter().collect();
@@ -411,6 +414,16 @@ fn edit_text_buffer(app: &mut App, code: KeyCode) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+/// The editable buffer and char cursor of whichever mode owns one, so the
+/// GAMEID picker's query edits exactly like a `TextInput`.
+fn text_fields(mode: &mut Mode) -> Option<(&mut String, &mut usize)> {
+    match mode {
+        Mode::TextInput { buffer, cursor, .. } => Some((buffer, cursor)),
+        Mode::GameIdPicker { query, cursor, .. } => Some((query, cursor)),
+        _ => None,
     }
 }
 
@@ -505,6 +518,51 @@ fn handle_proton_picker(app: &mut App, code: KeyCode) {
             config::apply_proton_choice(app, &builds, selected, &target);
         }
         _ => {}
+    }
+}
+
+fn handle_gameid_picker(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Up | KeyCode::Down => {
+            if let Mode::GameIdPicker {
+                results, selected, ..
+            } = &mut app.mode
+            {
+                let delta = if code == KeyCode::Up { -1 } else { 1 };
+                *selected = app::move_selection(*selected, app::gameid_picker_len(results), delta);
+            }
+        }
+        KeyCode::Enter => {
+            let Mode::GameIdPicker {
+                slug,
+                results,
+                selected,
+                ..
+            } = std::mem::replace(&mut app.mode, Mode::Normal)
+            else {
+                return;
+            };
+            profile_editor::apply_gameid_choice(app, &slug, selected, &results);
+        }
+        _ => {
+            let before = match &app.mode {
+                Mode::GameIdPicker { query, .. } => query.clone(),
+                _ => return,
+            };
+            edit_text_buffer(app, code);
+            if let Mode::GameIdPicker {
+                query,
+                results,
+                selected,
+                ..
+            } = &mut app.mode
+                && *query != before
+            {
+                *results = gamedb::search(query);
+                *selected = app::gameid_row_after_search(results);
+            }
+        }
     }
 }
 
@@ -639,6 +697,45 @@ mod tests {
             cursor,
         };
         app
+    }
+
+    fn gameid_picker_app(query: &str, results: Vec<gamedb::GameDbEntry>) -> App {
+        let mut app = App::new(crate::config::Config::default());
+        app.mode = Mode::GameIdPicker {
+            slug: "g".to_string(),
+            query: query.to_string(),
+            cursor: query.chars().count(),
+            results,
+            selected: 0,
+        };
+        app
+    }
+
+    #[test]
+    fn gameid_picker_counts_as_text_entry_and_edits_its_query() {
+        let mut app = gameid_picker_app("ab", Vec::new());
+        assert!(is_text_entry(&app));
+        handle_gameid_picker(&mut app, KeyCode::Backspace);
+        let Mode::GameIdPicker { query, cursor, .. } = &app.mode else {
+            panic!("expected GameIdPicker")
+        };
+        assert_eq!((query.as_str(), *cursor), ("a", 1));
+    }
+
+    #[test]
+    fn gameid_picker_up_down_stay_within_the_fixed_rows_plus_results() {
+        let entry = gamedb::GameDbEntry {
+            title: "A".to_string(),
+            umu_id: "umu-1".to_string(),
+            stores: Vec::new(),
+        };
+        let mut app = gameid_picker_app("", vec![entry]);
+        for _ in 0..5 {
+            handle_gameid_picker(&mut app, KeyCode::Down);
+        }
+        assert!(matches!(app.mode, Mode::GameIdPicker { selected: 2, .. }));
+        handle_gameid_picker(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     fn cursor_and_buffer(app: &App) -> (usize, &str) {

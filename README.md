@@ -258,7 +258,9 @@ one, regardless of the global default)/proton/prefix path/Windows version
 override)/gamescope, logging, env vars,
 DLL overrides (`[winedlloverride]`, e.g. `winhttp = "n,b"`), extra args
 (`args = ["--dx11"]`, always forwarded), or `title` (matched against the
-umu-database for a GAMEID).
+umu-database for a GAMEID). `gameid` (or the GAMEID field in the profile
+editor) pins a UMU_ID, or `umu-default` for no game-specific fixes,
+overriding that lookup; picking a game there also fills an empty `title`.
 
 ## Injecting env vars or a wrapper tool via a Steam shortcut
 

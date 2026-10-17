@@ -99,6 +99,8 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
             }
             Err(err) => app.status = Some(format!("proton scan failed: {err:#}")),
         },
+        // No config field uses this kind (profile-only).
+        FieldKind::GameIdPicker => {}
         FieldKind::MapEditor => {
             let map_field = match field {
                 ConfigField::EnvTable => MapField::Env,

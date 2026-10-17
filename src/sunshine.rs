@@ -613,6 +613,7 @@ mod tests {
             name: "Game#1".into(),
             target_path: "/tmp/game.exe".into(),
             title: None,
+            gameid: None,
             last_launched: None,
             defaults: Default::default(),
             logging: Default::default(),
