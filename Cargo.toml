@@ -1,6 +1,6 @@
 [package]
 name = "iprolaunch"
-version = "1.43.2"
+version = "1.44.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 

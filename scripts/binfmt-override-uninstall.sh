@@ -22,14 +22,14 @@ source "$STATE_FILE" # provides: basename=, entry=, vendor_file=
 
 OVERRIDE_FILE="/etc/binfmt.d/$basename"
 
-if [[ ! -e "$OVERRIDE_FILE" ]]; then
-    echo "note: $OVERRIDE_FILE is already gone — removing stale backup state."
-    rm -f "$STATE_FILE" "$ORIGINAL_FILE"
-    exit 0
+if [[ -e "$OVERRIDE_FILE" ]]; then
+    echo "==> Removing $OVERRIDE_FILE (sudo)..."
+    sudo rm -f "$OVERRIDE_FILE"
+else
+    # Still restart + verify: the live /proc registration outlives the file
+    # until systemd-binfmt reloads, so the backup isn't stale yet.
+    echo "note: $OVERRIDE_FILE is already gone — reloading the live registration anyway."
 fi
-
-echo "==> Removing $OVERRIDE_FILE (sudo)..."
-sudo rm -f "$OVERRIDE_FILE"
 
 echo "==> Restarting systemd-binfmt.service (sudo)..."
 sudo systemctl restart systemd-binfmt.service

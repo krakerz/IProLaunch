@@ -40,12 +40,12 @@ fn activate_selected(app: &mut App, slug: &str) {
         }
         FieldKind::Cycle => cycle_field(app, slug, field),
         FieldKind::ProtonPicker => match proton::scan() {
-            Ok(builds) => {
+            Ok(mut builds) => {
                 let current = app.profile(slug).and_then(|p| p.defaults.proton.clone());
                 let selected = match current.as_deref() {
                     None => 0,
-                    Some("system") => 1,
-                    Some(id) => builds.iter().position(|b| b.id == id).map_or(1, |i| i + 2),
+                    Some("system") | Some("") => 1,
+                    Some(id) => proton::position_or_append_missing(&mut builds, id) + 2,
                 };
                 app.mode = Mode::ProtonPicker {
                     builds,
@@ -282,6 +282,13 @@ fn rename_slug(app: &mut App, slug: &str, requested: &str) {
         app.status = Some("slug can't be blank — left unchanged.".to_string());
         return;
     }
+    // `iprolaunch <slug>` would run the subcommand instead of the game.
+    if crate::prefix::is_reserved_slug(&sanitized) {
+        app.status = Some(format!(
+            "\"{sanitized}\" is an iprolaunch command name — slug left unchanged."
+        ));
+        return;
+    }
     let candidate = next_available_slug(&sanitized, &app.profiles, slug);
     if candidate == slug {
         return; // nothing to rename
@@ -386,7 +393,23 @@ fn perform_slug_rename(app: &mut App, slug: &str, candidate: &str) -> bool {
     if app.profile_editor.as_deref() == Some(slug) {
         app.profile_editor = Some(candidate.to_string());
     }
-    app.status = Some(format!("Renamed to \"{candidate}\"."));
+    // Steam shortcuts and Sunshine apps launch `iprolaunch <slug>`, so
+    // they now point at nothing — say so instead of failing silently later.
+    let stale: Vec<&str> = [
+        ("Steam", app.steam_slugs.contains(slug)),
+        ("Sunshine", app.sunshine_slugs.contains(slug)),
+    ]
+    .into_iter()
+    .filter_map(|(what, hit)| hit.then_some(what))
+    .collect();
+    app.status = Some(if stale.is_empty() {
+        format!("Renamed to \"{candidate}\".")
+    } else {
+        format!(
+            "Renamed to \"{candidate}\". Its {} entry still launches \"{slug}\" — remove and re-add it.",
+            stale.join(" and ")
+        )
+    });
     true
 }
 
@@ -414,21 +437,37 @@ pub fn apply_text_field(app: &mut App, slug: &str, field: ProfileField, value: S
             | ProfileField::SunshineRefresh
             | ProfileField::SteamAppId
     );
-    if is_numeric_field && !trimmed.is_empty() && trimmed.parse::<u32>().is_err() {
+    if is_numeric_field && !trimmed.is_empty() && !trimmed.parse::<u32>().is_ok_and(|n| n > 0) {
         app.status = Some(format!(
-            "\"{trimmed}\" isn't a whole number — {} left unchanged.",
+            "\"{trimmed}\" isn't a positive whole number — {} left unchanged.",
             field.label()
         ));
         return;
     }
+    // Stored canonical, the form launches look profiles up by — a `~/`,
+    // relative or symlinked path would otherwise spawn a duplicate profile.
+    let mut trimmed = trimmed;
     if field == ProfileField::TargetPath {
         if trimmed.is_empty() {
             app.status = Some("target-path can't be blank — left unchanged.".to_string());
             return;
         }
-        if !std::path::Path::new(&trimmed).is_file() {
+        match crate::launch::canonical_target(&trimmed) {
+            Ok(path) if path.is_file() => trimmed = path.to_string_lossy().into_owned(),
+            _ => {
+                app.status = Some(format!(
+                    "\"{trimmed}\" doesn't exist — target-path left unchanged."
+                ));
+                return;
+            }
+        }
+        if let Some((other, _)) = app
+            .profiles
+            .iter()
+            .find(|(s, p)| s != slug && p.target_path == trimmed)
+        {
             app.status = Some(format!(
-                "\"{trimmed}\" doesn't exist — target-path left unchanged."
+                "\"{other}\" already points at that exe — target-path left unchanged."
             ));
             return;
         }
@@ -636,7 +675,7 @@ mod tests {
             app.status
                 .as_deref()
                 .unwrap()
-                .contains("isn't a whole number")
+                .contains("isn't a positive whole number")
         );
         // Untouched — still `None` (the default), never reached `save_profile`.
         assert_eq!(app.profile("game-1").unwrap().logging.keep, None);

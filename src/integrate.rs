@@ -139,9 +139,48 @@ pub fn registered_binary_path() -> Option<String> {
 fn parse_exec_path(content: &str) -> Option<String> {
     content.lines().find_map(|line| {
         let rest = line.strip_prefix("Exec=\"")?;
-        let end = rest.find('"')?;
-        Some(rest[..end].to_string())
+        // Undo `desktop_exec_quote`: the string-value unescape (`\\` -> `\`)
+        // first, then the quoted-argument rules (`\X` -> X, `%%` -> `%`).
+        let mut unescaped = String::new();
+        let mut chars = rest.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' && chars.clone().next() == Some('\\') {
+                chars.next();
+            }
+            unescaped.push(c);
+        }
+        let mut out = String::new();
+        let mut chars = unescaped.chars();
+        loop {
+            match chars.next()? {
+                '"' => return Some(out),
+                '\\' => out.push(chars.next()?),
+                '%' => out.push(chars.next().filter(|c| *c == '%')?),
+                c => out.push(c),
+            }
+        }
     })
+}
+
+/// `path` as one double-quoted `Exec=` argument per the Desktop Entry spec:
+/// inside quotes `"` `` ` `` `$` `\` need a backslash, and the string-value
+/// unescape runs first, so each becomes `\\X` (`\\\\` for a backslash). A
+/// literal `%` is `%%` (field codes are expanded even inside quotes).
+pub(crate) fn desktop_exec_quote(path: &Path) -> String {
+    let mut out = String::from("\"");
+    for c in path.to_string_lossy().chars() {
+        match c {
+            '\\' => out.push_str("\\\\\\\\"),
+            '"' | '`' | '$' => {
+                out.push_str("\\\\");
+                out.push(c);
+            }
+            '%' => out.push_str("%%"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Registers `iprolaunch` as the default handler for Windows `.exe`
@@ -168,7 +207,7 @@ fn parse_exec_path(content: &str) -> Option<String> {
 /// two mimetypes, and a plain "skip if file exists" would have left the
 /// newly-added one with nothing to restore on a later `uninstall`.
 pub fn install() -> Result<()> {
-    let exe = std::env::current_exe().context("resolving iprolaunch's own binary path")?;
+    let exe = crate::updater::own_exe()?;
     let dir = applications_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -395,7 +434,7 @@ fn remove_default_associations() -> Result<bool> {
     };
     let (new_content, changed) = strip_desktop_entry_from_mimeapps(&original);
     if changed {
-        fs::write(&path, new_content).with_context(|| format!("writing {}", path.display()))?;
+        crate::config::write_atomic(&path, new_content.as_bytes())?;
     }
     Ok(changed)
 }
@@ -406,13 +445,13 @@ fn desktop_file_contents(exe: &Path) -> String {
 Type=Application\n\
 Name=IProLaunch\n\
 Comment=Launch Windows apps/games through Proton via umu-run\n\
-Exec=\"{}\" run %f\n\
+Exec={} run %f\n\
 Terminal=false\n\
 NoDisplay=true\n\
 Icon={ICON_NAME}\n\
 Categories=Game;Utility;\n\
 MimeType={};\n",
-        exe.display(),
+        desktop_exec_quote(exe),
         MIME_TYPES.join(";"),
     )
 }
@@ -428,11 +467,11 @@ fn menu_desktop_file_contents(exe: &Path) -> String {
 Type=Application\n\
 Name=IProLaunch\n\
 Comment=Launch Windows apps/games through Proton via umu-run\n\
-Exec=\"{}\"\n\
+Exec={}\n\
 Terminal=true\n\
 Icon={ICON_NAME}\n\
 Categories=Game;Utility;\n",
-        exe.display(),
+        desktop_exec_quote(exe),
     )
 }
 
@@ -594,6 +633,21 @@ mod tests {
         assert_eq!(
             parse_exec_path(&content),
             Some("/opt/iprolaunch/iprolaunch".to_string())
+        );
+    }
+
+    #[test]
+    fn desktop_exec_quote_escapes_specials_and_round_trips() {
+        let path = Path::new(r#"/home/u/A&B "x" $y `z` 100% \w/iprolaunch"#);
+        let quoted = desktop_exec_quote(path);
+        assert_eq!(
+            quoted,
+            r#""/home/u/A&B \\"x\\" \\$y \\`z\\` 100%% \\\\w/iprolaunch""#
+        );
+        let content = desktop_file_contents(path);
+        assert_eq!(
+            parse_exec_path(&content),
+            Some(path.to_string_lossy().into_owned())
         );
     }
 

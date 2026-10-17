@@ -224,9 +224,10 @@ To stream a game to a Sunshine client:
 
 1. In the TUI's Sunshine tab, use **setup sunshine service** in the "Sunshine
    service" table (or run `iprolaunch sunshine install-service`). This points
-   Sunshine's systemd user service at IProLaunch's built-in virtual desktop and
-   sets Sunshine's `audio_sink` to the stream sink, backing up both first
-   (**restore original service** puts them back), and updates games you've
+   Sunshine's systemd user service at IProLaunch's built-in virtual desktop
+   (via its own drop-in, leaving any `override.conf` alone) and sets Sunshine's
+   `audio_sink` to the stream sink (**restore original service** undoes both,
+   keeping your other Sunshine settings), and updates games you've
    already added to Sunshine. Then use **restart sunshine** — that's it.
 2. Add games to Sunshine using the Library's `s` (Share/Add-to) popup.
 3. Tune stream resolution, refresh, and audio channels in the TUI's Sunshine

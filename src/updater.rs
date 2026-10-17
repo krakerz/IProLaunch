@@ -24,6 +24,21 @@ use serde::Deserialize;
 
 const REPO: &str = "krakerz/IProLaunch";
 
+/// This binary's own path. After `apply_update` renames a new build over the
+/// running one, `/proc/self/exe` reads `<path> (deleted)` — the new build sits
+/// at the original path, so that's what generated launchers must point at.
+pub(crate) fn own_exe() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("resolving iprolaunch's own binary path")?;
+    Ok(strip_deleted_suffix(exe))
+}
+
+fn strip_deleted_suffix(exe: PathBuf) -> PathBuf {
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(original) => PathBuf::from(original),
+        None => exe,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ReleaseAsset {
     name: String,
@@ -159,8 +174,8 @@ fn find_binary(dir: &Path) -> Option<PathBuf> {
 /// alongside). See this module's own doc comment for why the swap itself
 /// is safe to do while running.
 pub fn apply_update(asset_url: &str) -> Result<()> {
-    let target = std::env::current_exe()
-        .and_then(|p| p.canonicalize())
+    let target = own_exe()?
+        .canonicalize()
         .context("resolving iprolaunch's own binary path")?;
     let target_dir = target
         .parent()
@@ -216,6 +231,18 @@ pub fn apply_update(asset_url: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_deleted_suffix_recovers_the_original_path_after_a_self_update() {
+        assert_eq!(
+            strip_deleted_suffix(PathBuf::from("/home/u/My Apps/iprolaunch (deleted)")),
+            PathBuf::from("/home/u/My Apps/iprolaunch")
+        );
+        assert_eq!(
+            strip_deleted_suffix(PathBuf::from("/usr/bin/iprolaunch")),
+            PathBuf::from("/usr/bin/iprolaunch")
+        );
+    }
 
     #[test]
     fn parse_version_strips_a_leading_v() {

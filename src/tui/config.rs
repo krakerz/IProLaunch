@@ -83,11 +83,14 @@ fn activate_selected(app: &mut App, terminal: &mut Term) {
             };
         }
         FieldKind::ProtonPicker => match proton::scan() {
-            Ok(builds) => {
-                let selected = builds
-                    .iter()
-                    .position(|b| b.id == app.cfg.defaults.proton)
-                    .map_or(0, |i| i + 1); // +1: index 0 is the "system" entry
+            Ok(mut builds) => {
+                let current = app.cfg.defaults.proton.clone();
+                let selected = if current.is_empty() || current == "system" {
+                    0
+                } else {
+                    // +1: index 0 is the "system" entry
+                    proton::position_or_append_missing(&mut builds, &current) + 1
+                };
                 app.mode = Mode::ProtonPicker {
                     builds,
                     selected,
@@ -535,18 +538,26 @@ pub fn apply_text_field(app: &mut App, field: ConfigField, value: String) {
             | ConfigField::GamescopeNestedWidth
             | ConfigField::GamescopeNestedHeight
     );
-    if is_numeric_field && !trimmed.is_empty() && trimmed.parse::<u32>().is_err() {
+    if is_numeric_field && !trimmed.is_empty() && !trimmed.parse::<u32>().is_ok_and(|n| n > 0) {
         app.status = Some(format!(
-            "\"{trimmed}\" isn't a whole number — {} left unchanged.",
+            "\"{trimmed}\" isn't a positive whole number — {} left unchanged.",
+            field.label()
+        ));
+        return;
+    }
+    // A blank prefix path would resolve relative to whatever cwd launched us.
+    if matches!(field, ConfigField::PrefixPath | ConfigField::PrefixesRoot) && trimmed.is_empty() {
+        app.status = Some(format!(
+            "{} can't be blank — left unchanged.",
             field.label()
         ));
         return;
     }
 
     match field {
-        ConfigField::PrefixPath => app.cfg.defaults.prefix_path = value,
-        ConfigField::PrefixesRoot => app.cfg.defaults.prefixes_root = value,
-        ConfigField::LogPath => app.cfg.logging.path = value,
+        ConfigField::PrefixPath => app.cfg.defaults.prefix_path = trimmed.clone(),
+        ConfigField::PrefixesRoot => app.cfg.defaults.prefixes_root = trimmed.clone(),
+        ConfigField::LogPath => app.cfg.logging.path = trimmed.clone(),
         ConfigField::GamescopeOutputWidth => {
             app.cfg.defaults.gamescope_settings.output_width = trimmed.parse::<u32>().ok();
         }
@@ -613,7 +624,7 @@ fn adjust_number(app: &mut App, delta: i64) {
     };
     match field {
         ConfigField::LogKeep => {
-            app.cfg.logging.keep = adjust_u32(app.cfg.logging.keep, delta);
+            app.cfg.logging.keep = adjust_u32(app.cfg.logging.keep, delta).max(1);
             save_config(app);
         }
         ConfigField::GamedbInterval => {
@@ -789,7 +800,13 @@ pub fn map_entry_input_key(app: &mut App, code: KeyCode) {
         }
         app::MapEntryStep::Value => {
             let key = key.trim().to_string();
-            if !key.is_empty()
+            let clobbers = original_key.as_deref() != Some(key.as_str())
+                && app.map_mut(&field).is_some_and(|m| m.contains_key(&key));
+            if clobbers {
+                app.status = Some(format!(
+                    "\"{key}\" already exists — edit that entry instead; nothing changed."
+                ));
+            } else if !key.is_empty()
                 && let Some(map) = app.map_mut(&field)
             {
                 if let Some(old_key) = &original_key

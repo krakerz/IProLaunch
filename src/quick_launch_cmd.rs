@@ -30,7 +30,7 @@ pub fn command_for(exe: &Path, extra_flags: &[&str], slug: &str) -> String {
 /// clipboard copy (`c` key) is meant for pasting into whatever the user is
 /// setting up themselves, not tied to any particular gamescope choice.
 pub fn copy_for_slug(slug: &str) -> Result<String> {
-    let exe = std::env::current_exe().context("resolving iprolaunch's own binary path")?;
+    let exe = crate::updater::own_exe()?;
     let command = command_for(&exe, &[], slug);
     copy_to_clipboard(&command)?;
     Ok(command)

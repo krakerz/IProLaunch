@@ -6,6 +6,7 @@ use ratatui::widgets::{
     Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, Paragraph, Row, Table,
     TableState, Tabs, Wrap,
 };
+use unicode_width::UnicodeWidthStr;
 
 use super::app::{
     self, App, ConfigField, InputKind, IntegrateField, MapEntryStep, MapField, Mode, ProfileField,
@@ -360,12 +361,11 @@ fn draw_library_narrow(
     tick: usize,
 ) {
     // 2 (border) + 2 ("> "/blank highlight_symbol column, reserved on every
-    // row whether or not it's selected) + 3 (the "S! "-shaped Steam-added/
-    // exe-missing marker, always reserved so the rest of the row lines up
-    // whether or not this particular row has either — see the marker/
-    // `combined` split below) — the space actually available for the
-    // marqueeing part of a list-item's text inside the block.
-    let inner_width = area.width.saturating_sub(8) as usize;
+    // row whether or not it's selected) + the marker plus its trailing space
+    // (always reserved so the rest of the row lines up whether or not this
+    // particular row has one — see the marker/`combined` split below) — the
+    // space actually available for the marqueeing part of a list-item's text.
+    let inner_width = area.width.saturating_sub(4 + LIBRARY_MARKER_W + 1) as usize;
     let items: Vec<ListItem> = indices
         .iter()
         .enumerate()
@@ -389,14 +389,16 @@ fn draw_library_narrow(
                 Some(last) => {
                     let right = format!("last launched: {last}");
                     let pad = inner_width
-                        .saturating_sub(left.chars().count() + right.chars().count())
+                        .saturating_sub(
+                            UnicodeWidthStr::width(left.as_str()) + right.chars().count(),
+                        )
                         .max(1);
                     format!("{left}{:pad$}{right}", "")
                 }
                 None => left,
             };
             let text = if display_index == app.library_selected
-                && combined.chars().count() > inner_width
+                && UnicodeWidthStr::width(combined.as_str()) > inner_width
             {
                 format!("{marker}{}", marquee(&combined, inner_width, tick))
             } else {
@@ -676,8 +678,7 @@ fn draw_profile_editor(frame: &mut Frame, area: Rect, app: &App, slug: &str) {
                 ProfileField::WineDllOverrideTable => entry_count(&profile.winedlloverride),
             };
             let combined = format!("{:<label_width$} {value}", field.label());
-            let text = if i == app.profile_field_selected && combined.chars().count() > inner_width
-            {
+            let text = if i == app.profile_field_selected && combined.width() > inner_width {
                 marquee(&combined, inner_width, tick)
             } else {
                 combined
@@ -920,7 +921,7 @@ fn draw_sunshine_service_table(frame: &mut Frame, area: Rect, app: &App) {
                 }
             };
             let combined = format!("{:<label_width$} {value}", field.label());
-            let text = if selected_local == Some(i) && combined.chars().count() > inner_width {
+            let text = if selected_local == Some(i) && combined.width() > inner_width {
                 marquee(&combined, inner_width, tick)
             } else {
                 combined
@@ -975,7 +976,7 @@ fn draw_field_list(
         .map(|(i, field)| {
             let value = config_field_value(app, *field);
             let combined = format!("{:<label_width$} {value}", field.label());
-            let text = if i == selected && combined.chars().count() > inner_width {
+            let text = if i == selected && combined.width() > inner_width {
                 marquee(&combined, inner_width, tick)
             } else {
                 combined
@@ -1128,7 +1129,7 @@ fn draw_integrate_table(frame: &mut Frame, area: Rect, app: &App) {
                 }
             };
             let combined = format!("{:<label_width$} {value}", field.label());
-            let text = if selected_local == Some(i) && combined.chars().count() > inner_width {
+            let text = if selected_local == Some(i) && combined.width() > inner_width {
                 marquee(&combined, inner_width, tick)
             } else {
                 combined
@@ -1943,9 +1944,11 @@ fn marquee_signature(app: &App) -> String {
 /// full text is still readable over a couple of seconds instead of being
 /// silently clipped. Text that already fits is returned unchanged (no
 /// pointless scrolling of something that's already fully visible).
+/// Measured in display columns, not chars — a CJK char takes two.
 fn marquee(text: &str, width: usize, tick: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
     let width = width.max(1);
-    if text.chars().count() <= width {
+    if text.width() <= width {
         return text.to_string();
     }
     // A gap between one lap and the next, so wrap-around reads as
@@ -1953,7 +1956,19 @@ fn marquee(text: &str, width: usize, tick: usize) -> String {
     const GAP: &str = "    ";
     let padded: Vec<char> = text.chars().chain(GAP.chars()).collect();
     let start = tick % padded.len();
-    padded.iter().cycle().skip(start).take(width).collect()
+    let mut out = String::new();
+    let mut used = 0;
+    for &c in padded.iter().cycle().skip(start) {
+        let w = c.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    // A wide char that didn't fit leaves one column; pad so the row stays aligned.
+    out.extend(std::iter::repeat_n(' ', width - used));
+    out
 }
 
 /// Same idea as `marquee`, but vertically and per-line instead of
@@ -1988,7 +2003,7 @@ fn vertical_scroll_window(lines: &[String], visible_rows: usize, tick: usize) ->
 /// so every popup title call site doesn't have to repeat that subtraction.
 fn marquee_title(title: String, area_width: u16, tick: usize) -> String {
     let width = area_width.saturating_sub(2) as usize;
-    if title.chars().count() > width {
+    if title.width() > width {
         marquee(&title, width, tick)
     } else {
         title
@@ -2058,7 +2073,12 @@ fn wrapped_line_count(text: &str, width: usize) -> usize {
 /// `wrapped_line_count`, so it can never be more — or less — than `body`
 /// actually needs once wrapped to that width, plus the 2 border rows.
 fn content_sized_rect(area: Rect, body: &str, max_width: u16) -> Rect {
-    let width = max_width.min(area.width.saturating_sub(4)).max(20);
+    // `.max(20)` must not exceed the screen itself — ratatui panics drawing
+    // past the buffer on a very narrow terminal/tmux split.
+    let width = max_width
+        .min(area.width.saturating_sub(4))
+        .max(20)
+        .min(area.width);
     let text_width = width.saturating_sub(2) as usize; // minus left/right border
     let lines = wrapped_line_count(body, text_width) as u16;
     let height = (lines + 2).min(area.height); // + top/bottom border

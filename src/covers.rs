@@ -62,14 +62,28 @@ fn exact_match(results: &[(u64, String)], wanted: &str) -> Option<u64> {
         .map(|(id, _)| *id)
 }
 
+/// Shared agent with a timeout, so a stalled SteamGridDB/Steam request can't
+/// hang a sync (or the TUI waiting on it) indefinitely.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build()
+            .new_agent()
+    })
+}
+
 fn get_json(url: &str, bearer: Option<&str>) -> Result<Value> {
-    let mut req = ureq::get(url);
+    let mut req = agent().get(url);
     if let Some(key) = bearer {
         req = req.header("Authorization", &format!("Bearer {key}"));
     }
     req.call()
         .map_err(|err| match err {
-            ureq::Error::StatusCode(401) => anyhow::anyhow!("SteamGridDB rejected the API key"),
+            ureq::Error::StatusCode(401) if bearer.is_some() => {
+                anyhow::anyhow!("SteamGridDB rejected the API key")
+            }
             other => anyhow::Error::from(other),
         })?
         .body_mut()
@@ -190,7 +204,8 @@ fn to_png(bytes: Vec<u8>) -> Result<Vec<u8>> {
 }
 
 fn download(url: &str) -> Result<Vec<u8>> {
-    ureq::get(url)
+    agent()
+        .get(url)
         .call()
         .with_context(|| format!("downloading {url}"))?
         .body_mut()
@@ -202,34 +217,46 @@ fn download(url: &str) -> Result<Vec<u8>> {
 
 /// Finds a cover URL: the profile's Steam app ID override, then SteamGridDB
 /// (with a key), then the Steam store — by exact name, title before name.
+/// A failing source (revoked key, rate limit, outage) falls through to the
+/// next one; its error is only reported if nothing else finds a cover.
 fn find_cover_url(sgdb_key: Option<&str>, profile: &Profile) -> Result<String> {
     if let Some(appid) = profile.defaults.steam_appid {
         return steam_cover_url(appid.into())?
             .with_context(|| format!("Steam has no library cover for app {appid}"));
     }
     let names = names_for(profile);
+    let mut errors: Vec<String> = Vec::new();
+    let mut note = |err: anyhow::Error| {
+        let msg = format!("{err:#}");
+        if !errors.contains(&msg) {
+            errors.push(msg);
+        }
+    };
     if let Some(key) = sgdb_key {
         for name in &names {
-            if let Some(url) = sgdb_cover_url(key, name)? {
-                return Ok(url);
+            match sgdb_cover_url(key, name) {
+                Ok(Some(url)) => return Ok(url),
+                Ok(None) => {}
+                Err(err) => note(err),
             }
         }
     }
     for name in &names {
-        if let Some(appid) = steam_appid_for(name)?
-            && let Some(url) = steam_cover_url(appid)?
-        {
-            return Ok(url);
+        match steam_appid_for(name).and_then(|id| id.map(steam_cover_url).transpose()) {
+            Ok(Some(Some(url))) => return Ok(url),
+            Ok(_) => {}
+            Err(err) => note(err),
         }
     }
-    bail!(
-        "no cover found (tried {}) — set the game's Steam app ID in its profile",
-        names
-            .iter()
-            .map(|n| format!("\"{n}\""))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+    let tried = names
+        .iter()
+        .map(|n| format!("\"{n}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !errors.is_empty() {
+        bail!("no cover found (tried {tried}): {}", errors.join("; "));
+    }
+    bail!("no cover found (tried {tried}) — set the game's Steam app ID in its profile")
 }
 
 /// Downloads `profile`'s cover (unless cached and `refetch` is false) and
@@ -249,7 +276,8 @@ pub fn fetch_cover(
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    fs::write(&path, png).with_context(|| format!("writing {}", path.display()))?;
+    // Atomic: a truncated PNG would pass the `is_file` cache check forever.
+    crate::config::write_atomic(&path, &png)?;
     Ok(path)
 }
 

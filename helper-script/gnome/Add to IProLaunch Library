@@ -1,20 +1,33 @@
 #!/bin/sh
 # Adds every selected .exe/.bat/.cmd/.msi file to the IProLaunch library.
 # Installed by `iprolaunch context-menu install gnome` into whichever of
-# Nautilus/Nemo/Caja's own "scripts" folders exist on this system — Nemo
-# understands the same variable Nautilus sets, Caja sets its own.
-paths="${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-$CAJA_SCRIPT_SELECTED_FILE_PATHS}"
+# Nautilus/Nemo/Caja's own "scripts" folders exist on this system — each
+# sets its own newline-separated selection variable.
+paths="${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-${NEMO_SCRIPT_SELECTED_FILE_PATHS:-$CAJA_SCRIPT_SELECTED_FILE_PATHS}}"
 count=0
-IFS='
-'
-for path in $paths; do
-    [ -z "$path" ] && continue
-    case "$path" in
+
+add_one() {
+    case "$1" in
         *.[Ee][Xx][Ee]|*.[Bb][Aa][Tt]|*.[Cc][Mm][Dd]|*.[Mm][Ss][Ii])
-            "{bin}" add "$path" && count=$((count + 1))
+            {bin} add "$1" && count=$((count + 1))
             ;;
     esac
-done
+}
+
+if [ -n "$paths" ]; then
+    # No globbing: names like "[FitGirl Repack]" must stay literal.
+    set -f
+    IFS='
+'
+    for path in $paths; do
+        [ -n "$path" ] && add_one "$path"
+    done
+else
+    # Fallback: the selection is also passed as arguments.
+    for path in "$@"; do
+        add_one "$path"
+    done
+fi
 if command -v notify-send >/dev/null 2>&1; then
     notify-send "IProLaunch" "Added $count profile(s)."
 fi

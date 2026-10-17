@@ -70,7 +70,12 @@ fn exec_style(program_basename: &str) -> ExecStyle {
 /// itself succeeded; doesn't (can't, being fire-and-forget) confirm the
 /// window actually appeared or that `program` accepted the flags it was
 /// given.
-fn spawn_with_style(program: &str, existing_args: &[&str], pager: &str, log_path: &str) -> bool {
+fn spawn_with_style(
+    program: &str,
+    existing_args: &[&str],
+    pager: &[String],
+    log_path: &str,
+) -> bool {
     if basename(program) == "wezterm" {
         // wezterm's own two-command dance (try an already-running instance,
         // fall back to starting a fresh one) doesn't fit this function's
@@ -85,13 +90,13 @@ fn spawn_with_style(program: &str, existing_args: &[&str], pager: &str, log_path
     cmd.args(existing_args);
     match exec_style(basename(program)) {
         ExecStyle::DashE => {
-            cmd.arg("-e").arg(pager).arg(log_path);
+            cmd.arg("-e").args(pager).arg(log_path);
         }
         ExecStyle::DoubleDash => {
-            cmd.arg("--").arg(pager).arg(log_path);
+            cmd.arg("--").args(pager).arg(log_path);
         }
         ExecStyle::BareArgv => {
-            cmd.arg(pager).arg(log_path);
+            cmd.args(pager).arg(log_path);
         }
     }
     spawn_detached(cmd).is_some()
@@ -127,14 +132,20 @@ fn spawn_detached(mut command: Command) -> Option<Child> {
 /// found anything to exec into. A short grace period distinguishes those
 /// two cases (still running vs. already exited) without ever blocking on a
 /// real terminal's own — potentially very long — lifetime.
-fn try_xdg_terminal_exec(pager: &str, log_path: &str) -> bool {
+fn try_xdg_terminal_exec(pager: &[String], log_path: &str) -> bool {
     let mut cmd = Command::new("xdg-terminal-exec");
-    cmd.arg(pager).arg(log_path);
+    cmd.args(pager).arg(log_path);
     let Some(mut child) = spawn_detached(cmd) else {
         return false;
     };
     std::thread::sleep(Duration::from_millis(400));
-    matches!(child.try_wait(), Ok(None))
+    // A clean early exit is also success: single-instance terminals
+    // (gnome-terminal, ptyxis, ghostty) hand off to a running instance.
+    match child.try_wait() {
+        Ok(None) => true,
+        Ok(Some(status)) => status.success(),
+        Err(_) => false,
+    }
 }
 
 /// `wezterm start -- <cmd>` (confirmed against wezterm's own docs/GitHub
@@ -153,10 +164,10 @@ fn try_xdg_terminal_exec(pager: &str, log_path: &str) -> bool {
 /// start` (which — since it really is starting a brand-new, long-lived GUI
 /// process this time — stays detached, not waited on) if no instance was
 /// there to spawn into.
-fn try_wezterm(pager: &str, log_path: &str) -> bool {
+fn try_wezterm(pager: &[String], log_path: &str) -> bool {
     let status = Command::new("wezterm")
         .args(["cli", "spawn", "--new-window", "--"])
-        .arg(pager)
+        .args(pager)
         .arg(log_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -167,7 +178,7 @@ fn try_wezterm(pager: &str, log_path: &str) -> bool {
     }
 
     let mut cmd = Command::new("wezterm");
-    cmd.arg("start").arg("--").arg(pager).arg(log_path);
+    cmd.arg("start").arg("--").args(pager).arg(log_path);
     spawn_detached(cmd).is_some()
 }
 
@@ -177,7 +188,7 @@ fn try_wezterm(pager: &str, log_path: &str) -> bool {
 /// `proton::steam_library_paths`'s VDF scan; a `TerminalApplication` value
 /// is a simple binary+flags string in practice, never quoted-argument
 /// shell syntax.
-fn try_kde(pager: &str, log_path: &str) -> bool {
+fn try_kde(pager: &[String], log_path: &str) -> bool {
     for kreadconfig in ["kreadconfig6", "kreadconfig5"] {
         let Ok(output) = Command::new(kreadconfig)
             .args([
@@ -211,9 +222,11 @@ fn try_kde(pager: &str, log_path: &str) -> bool {
 /// XFCE's own preferred-application resolver — delegates XFCE's own
 /// exec-syntax handling to `exo-open` itself rather than this module
 /// guessing xfce4-terminal's flags directly.
-fn try_xfce(pager: &str, log_path: &str) -> bool {
+fn try_xfce(pager: &[String], log_path: &str) -> bool {
     let mut cmd = Command::new("exo-open");
-    cmd.args(["--launch", "TerminalEmulator", pager, log_path]);
+    cmd.args(["--launch", "TerminalEmulator"])
+        .args(pager)
+        .arg(log_path);
     spawn_detached(cmd).is_some()
 }
 
@@ -224,7 +237,7 @@ fn try_xfce(pager: &str, log_path: &str) -> bool {
 /// `try_xdg_terminal_exec` already ran first and would have caught that
 /// case if the tool were actually installed, seeing that same value here
 /// means it isn't, so there's nothing left to do but fall through.
-fn try_gnome(pager: &str, log_path: &str) -> bool {
+fn try_gnome(pager: &[String], log_path: &str) -> bool {
     let Ok(output) = Command::new("gsettings")
         .args([
             "get",
@@ -267,7 +280,7 @@ const FALLBACK_TERMINALS: [&str; 8] = [
     "xterm",
 ];
 
-fn try_fallback_list(pager: &str, log_path: &str) -> bool {
+fn try_fallback_list(pager: &[String], log_path: &str) -> bool {
     FALLBACK_TERMINALS
         .iter()
         .any(|program| spawn_with_style(program, &[], pager, log_path))
@@ -281,6 +294,14 @@ fn try_fallback_list(pager: &str, log_path: &str) -> bool {
 /// `launch::run`), not an error: this is a convenience, not a requirement.
 pub fn spawn_in_new_terminal(pager: &str, log_path: &Path) -> bool {
     let log_path = log_path.to_string_lossy();
+    // `$PAGER` may carry flags (`less -R`); each must be its own argv entry.
+    let pager: Vec<String> = pager.split_whitespace().map(str::to_string).collect();
+    let pager = if pager.is_empty() {
+        vec!["less".to_string()]
+    } else {
+        pager
+    };
+    let pager = pager.as_slice();
 
     if try_xdg_terminal_exec(pager, &log_path) {
         return true;

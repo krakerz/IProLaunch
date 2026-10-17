@@ -26,6 +26,7 @@
 //! Steam Deck Game Mode race this works around.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyCode;
@@ -52,6 +53,16 @@ pub struct GamepadSource {
     /// Physical pads Steam has wrapped in its virtual gamepad — see
     /// `ignored_devices_from_env`.
     ignored_devices: HashSet<(u16, u16)>,
+}
+
+/// Set by `tui::resume`. gilrs has no background reader, so every press made
+/// while the TUI was suspended (a whole game's worth) sits in the evdev
+/// buffer and would replay as keys on the next `poll` — X then RT in-game
+/// became "delete profile" + "y".
+static DISCARD_PENDING: AtomicBool = AtomicBool::new(false);
+
+pub fn discard_pending() {
+    DISCARD_PENDING.store(true, Ordering::SeqCst);
 }
 
 /// What a gamepad press turns into.
@@ -123,12 +134,17 @@ impl GamepadSource {
             return Vec::new();
         };
         let repeat = self.repeat;
+        let discard = DISCARD_PENDING.swap(false, Ordering::SeqCst);
+        if discard {
+            self.view_held = false;
+            self.view_chorded = false;
+        }
         let mut codes = Vec::new();
         while let Some(event) = gilrs.next_event().filter_ev(&repeat, gilrs) {
             // `Repeat` needs each event fed back through `update` to track
             // per-button press timestamps — see its own module docs.
             gilrs.update(&event);
-            if is_ignored(gilrs, &self.ignored_devices, event.id) {
+            if discard || is_ignored(gilrs, &self.ignored_devices, event.id) {
                 continue;
             }
             let button = match event.event {

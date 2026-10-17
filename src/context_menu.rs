@@ -34,7 +34,7 @@ const XFCE_UNIQUE_ID: &str = "com.iprolaunch.add-to-library";
 /// one requested (propagating its error directly, since an explicit choice
 /// failing should be loud).
 pub fn install(de: Option<DesktopEnv>) -> Result<()> {
-    let exe = std::env::current_exe().context("resolving iprolaunch's own binary path")?;
+    let exe = crate::updater::own_exe()?;
     match de {
         Some(de) => install_one(de, &exe),
         None => run_all(&exe, install_one),
@@ -42,7 +42,7 @@ pub fn install(de: Option<DesktopEnv>) -> Result<()> {
 }
 
 pub fn uninstall(de: Option<DesktopEnv>) -> Result<()> {
-    let exe = std::env::current_exe().context("resolving iprolaunch's own binary path")?;
+    let exe = crate::updater::own_exe()?;
     match de {
         Some(de) => uninstall_one(de, &exe),
         None => run_all(&exe, uninstall_one),
@@ -113,7 +113,7 @@ fn kde_service_menu_paths() -> Result<Vec<PathBuf>> {
 fn kde_desktop_contents(exe: &std::path::Path) -> String {
     KDE_TEMPLATE
         .replace("{mimetypes}", &MIME_TYPES.join(";"))
-        .replace("{bin}", &exe.display().to_string())
+        .replace("{bin}", &integrate::desktop_exec_quote(exe))
 }
 
 /// Writes the same service-menu file to both the Plasma 6 (`kio/
@@ -170,13 +170,25 @@ fn gnome_script_dirs() -> Result<Vec<PathBuf>> {
 }
 
 fn gnome_script_contents(exe: &std::path::Path) -> String {
-    GNOME_SCRIPT_TEMPLATE.replace("{bin}", &exe.display().to_string())
+    GNOME_SCRIPT_TEMPLATE.replace("{bin}", &shell_quote(&exe.to_string_lossy()))
+}
+
+/// POSIX single-quoting: nothing inside `'...'` is special except `'` itself.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Element-text escaping (`<command>` content, never an attribute).
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Writes (and marks executable) the same script into Nautilus's, Nemo's,
 /// and Caja's own "scripts" folders — see `helper-script/README.md`; one
 /// script covers all three since they share the drop-a-script-in convention
-/// (and Nemo understands Nautilus's own selection env var).
+/// (each sets its own `*_SCRIPT_SELECTED_FILE_PATHS`, all checked).
 fn install_gnome_family(exe: &std::path::Path) -> Result<()> {
     let contents = gnome_script_contents(exe);
     for dir in gnome_script_dirs()? {
@@ -212,8 +224,23 @@ fn thunar_uca_path() -> Result<PathBuf> {
     Ok(integrate::base_dirs()?.config_dir().join("Thunar/uca.xml"))
 }
 
+/// Thunar shell-parses `<command>` (after quoting the `%f` it substitutes),
+/// so the path is shell-quoted, then XML-escaped for the file itself.
 fn xfce_action_xml(exe: &std::path::Path) -> String {
-    XFCE_ACTION_TEMPLATE.replace("{bin}", &exe.display().to_string())
+    XFCE_ACTION_TEMPLATE.replace("{bin}", &xml_escape(&shell_quote(&exe.to_string_lossy())))
+}
+
+/// Thunar reads only the first `uca.xml` it finds, user dir first — so a
+/// fresh user file must start from the system one, or its stock actions
+/// ("Open Terminal Here", ...) disappear.
+fn system_uca_xml() -> Option<String> {
+    let dirs = std::env::var("XDG_CONFIG_DIRS")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/etc/xdg".to_string());
+    dirs.split(':')
+        .filter(|d| !d.is_empty())
+        .find_map(|d| fs::read_to_string(PathBuf::from(d).join("Thunar/uca.xml")).ok())
 }
 
 /// Thunar has no drop-a-file-in mechanism like KDE/Nautilus — every custom
@@ -222,12 +249,15 @@ fn xfce_action_xml(exe: &std::path::Path) -> String {
 /// whatever the user already has configured there.
 fn install_xfce(exe: &std::path::Path) -> Result<()> {
     let path = thunar_uca_path()?;
-    let existing = fs::read_to_string(&path).unwrap_or_default();
+    let existing = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => system_uca_xml().unwrap_or_default(),
+    };
     let updated = upsert_uca_action(&existing, XFCE_UNIQUE_ID, &xfce_action_xml(exe));
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    fs::write(&path, updated).with_context(|| format!("writing {}", path.display()))
+    crate::config::write_atomic(&path, updated.as_bytes())
 }
 
 fn uninstall_xfce() -> Result<()> {
@@ -236,10 +266,14 @@ fn uninstall_xfce() -> Result<()> {
         return Ok(());
     };
     let (updated, changed) = remove_uca_action(&existing, XFCE_UNIQUE_ID);
-    if changed {
-        fs::write(&path, updated).with_context(|| format!("writing {}", path.display()))?;
+    if !changed {
+        return Ok(());
     }
-    Ok(())
+    // An action-less user file would still shadow the system `uca.xml`.
+    if !updated.contains("<action>") {
+        return fs::remove_file(&path).with_context(|| format!("removing {}", path.display()));
+    }
+    crate::config::write_atomic(&path, updated.as_bytes())
 }
 
 /// Pure text transform: strips any `<action>...</action>` block whose body
@@ -310,6 +344,8 @@ mod tests {
     fn kde_desktop_contents_substitutes_both_placeholders() {
         let contents = kde_desktop_contents(std::path::Path::new("/opt/iprolaunch/iprolaunch"));
         assert!(contents.contains("Exec=\"/opt/iprolaunch/iprolaunch\" add %f"));
+        let odd = kde_desktop_contents(std::path::Path::new("/opt/$x/iprolaunch"));
+        assert!(odd.contains(r#"Exec="/opt/\\$x/iprolaunch" add %f"#));
         for mime in MIME_TYPES {
             assert!(contents.contains(mime), "missing {mime}");
         }
@@ -320,15 +356,22 @@ mod tests {
     #[test]
     fn gnome_script_contents_substitutes_the_binary_path() {
         let contents = gnome_script_contents(std::path::Path::new("/opt/iprolaunch/iprolaunch"));
-        assert!(contents.contains("\"/opt/iprolaunch/iprolaunch\" add \"$path\""));
+        assert!(contents.contains("'/opt/iprolaunch/iprolaunch' add \"$1\""));
         assert!(!contents.contains("{bin}"));
+    }
+
+    #[test]
+    fn shell_quote_survives_quotes_and_dollars() {
+        assert_eq!(shell_quote("/a/it's $HOME"), r"'/a/it'\''s $HOME'");
     }
 
     #[test]
     fn xfce_action_xml_substitutes_the_binary_path() {
         let xml = xfce_action_xml(std::path::Path::new("/opt/iprolaunch/iprolaunch"));
-        assert!(xml.contains("\"/opt/iprolaunch/iprolaunch\" add %f"));
+        assert!(xml.contains("'/opt/iprolaunch/iprolaunch' add %f"));
         assert!(!xml.contains("{bin}"));
+        let odd = xfce_action_xml(std::path::Path::new("/Games & <Apps>/iprolaunch"));
+        assert!(odd.contains("<command>'/Games &amp; &lt;Apps&gt;/iprolaunch' add %f</command>"));
     }
 
     #[test]

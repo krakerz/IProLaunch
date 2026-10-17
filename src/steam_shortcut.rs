@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -36,7 +37,7 @@ fn wrappers_dir() -> Result<PathBuf> {
 /// `"-w" "<slug>"`), which is required: one quoted segment containing more
 /// than one value (e.g. `"-w <slug>"`) does not work.
 fn wrapper_contents(name: &str, exe: &Path, extra_flags: &[&str], slug: &str) -> String {
-    let mut exec = format!("\"{}\"", exe.display());
+    let mut exec = crate::integrate::desktop_exec_quote(exe);
     for flag in extra_flags {
         exec.push(' ');
         exec.push_str(flag);
@@ -79,7 +80,7 @@ fn steam_url(wrapper_path: &Path) -> String {
 fn write_wrapper(profile: &Profile, extra_flags: &[&str], slug: &str) -> Result<PathBuf> {
     let dir = wrappers_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let exe = std::env::current_exe().context("resolving iprolaunch's own binary path")?;
+    let exe = crate::updater::own_exe()?;
     let path = dir.join(format!("{slug}.desktop"));
     let contents = wrapper_contents(profile.display_title(), &exe, extra_flags, slug);
     fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
@@ -162,12 +163,27 @@ pub fn add_profile(
     let wrapper_path = write_wrapper(profile, &extra_flags, slug)?;
     touch_add_sentinel()?;
     let url = steam_url(&wrapper_path);
-    let status = Command::new("steam")
+    let mut child = Command::new("steam")
         .arg(&url)
-        .status()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
         .context("failed to run steam (is it installed and on $PATH?)")?;
-    if !status.success() {
-        bail!("steam exited with {status}");
+    // With a client already running, `steam <url>` hands off and exits in
+    // about a second. Without one, this call *is* the full client and only
+    // exits when Steam quits, so stop waiting and let it run detached.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait().context("waiting for steam")? {
+            Some(status) if !status.success() => bail!("steam exited with {status}"),
+            Some(_) => break,
+            None if Instant::now() >= deadline => {
+                std::thread::spawn(move || child.wait());
+                break;
+            }
+            None => std::thread::sleep(Duration::from_millis(100)),
+        }
     }
     Ok(wrapper_path)
 }
@@ -272,13 +288,32 @@ fn find_obj<'a>(entries: &'a [(String, VdfValue)], key: &str) -> Option<&'a [(St
 /// itself adds around each Launch-Options token (confirmed for real: a
 /// freshly-added shortcut's own Launch Options box literally shows
 /// `"<slug>"`, quotes included).
+///
+/// A hand-edited Target can hold the whole command (`"<path with spaces>"
+/// <slug>`), so the program is the leading quoted token, not the whole
+/// field; the slug then falls back to that field's remainder.
 fn matching_slug(exe: &str, launch_options: &str) -> Option<String> {
-    let exe_stem = Path::new(exe.trim_matches('"')).file_stem()?.to_str()?;
-    if exe_stem != "iprolaunch" {
+    let (program, rest) = split_program(exe)?;
+    if Path::new(program).file_stem()?.to_str()? != "iprolaunch" {
         return None;
     }
-    let last = launch_options.split_whitespace().last()?;
+    let last = launch_options
+        .split_whitespace()
+        .last()
+        .or_else(|| rest.split_whitespace().last())?;
     Some(last.trim_matches('"').to_string())
+}
+
+/// Leading program token of a command line — `"..."`-quoted (may contain
+/// spaces) or up to the first whitespace — and whatever follows it.
+fn split_program(cmd: &str) -> Option<(&str, &str)> {
+    let cmd = cmd.trim_start();
+    if let Some(quoted) = cmd.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        return Some((&quoted[..end], &quoted[end + 1..]));
+    }
+    let end = cmd.find(char::is_whitespace).unwrap_or(cmd.len());
+    (end > 0).then(|| (&cmd[..end], &cmd[end..]))
 }
 
 /// Every `userdata/<account-id>/config/shortcuts.vdf` across every known
@@ -468,6 +503,19 @@ mod tests {
         assert_eq!(find_str(entry, "appname"), Some("Some Game"));
         assert_eq!(find_str(entry, "exe"), Some("\"/opt/iprolaunch\""));
         assert_eq!(find_str(entry, "LaunchOptions"), Some("\"ktsysview\""));
+    }
+
+    #[test]
+    fn matching_slug_handles_a_quoted_path_with_spaces_and_inline_args() {
+        assert_eq!(
+            matching_slug("\"/home/u/My Apps/iprolaunch\"", "\"game\""),
+            Some("game".to_string())
+        );
+        assert_eq!(
+            matching_slug("\"/home/u/My Apps/iprolaunch\" -w game", ""),
+            Some("game".to_string())
+        );
+        assert_eq!(matching_slug("\"/home/u/My Apps/other\" game", ""), None);
     }
 
     #[test]

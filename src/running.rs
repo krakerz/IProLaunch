@@ -120,8 +120,40 @@ pub fn list_live() -> Result<Vec<RunningEntry>> {
 /// used before touching a prefix's wineserver (e.g. resetting a stale one)
 /// to avoid tearing down a session that's actually still in use, by a
 /// *different* launch sharing the same prefix in `single` mode.
+///
+/// iprolaunch itself and its ancestors don't count: a `WINEPREFIX` exported
+/// in the launching shell would otherwise make the prefix look busy forever.
 pub fn is_prefix_active(prefix_path: &str) -> bool {
-    !matching_pids_for_prefix(prefix_path).is_empty()
+    let own = self_and_ancestors();
+    matching_pids_for_prefix(prefix_path)
+        .iter()
+        .any(|pid| !own.contains(pid))
+}
+
+fn self_and_ancestors() -> Vec<u32> {
+    let mut chain = vec![std::process::id()];
+    while let Some(&pid) = chain.last()
+        && pid > 1
+        && chain.len() < 64
+    {
+        // `/proc/<pid>/stat`: "pid (comm) state ppid ..." — comm may contain
+        // spaces/parens, so parse after the last ')'.
+        let Some(ppid) = fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| {
+                s.rsplit_once(')')?
+                    .1
+                    .split_whitespace()
+                    .nth(1)?
+                    .parse()
+                    .ok()
+            })
+        else {
+            break;
+        };
+        chain.push(ppid);
+    }
+    chain
 }
 
 /// Scans `/proc/*/environ` for every pid carrying `var=<something matches>`.
