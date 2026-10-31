@@ -421,6 +421,21 @@ fn perform_slug_rename(app: &mut App, slug: &str, candidate: &str) -> bool {
     if app.profile_editor.as_deref() == Some(slug) {
         app.profile_editor = Some(candidate.to_string());
     }
+    // Unlike Steam/Sunshine entries the desktop shortcut is our own file, so it follows.
+    let mut shortcut_note = String::new();
+    if app.desktop_slugs.remove(slug) {
+        let moved = app
+            .profile(candidate)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("profile not found"))
+            .and_then(|profile| crate::desktop_shortcut::rename(slug, candidate, &profile));
+        match moved {
+            Ok(()) => {
+                app.desktop_slugs.insert(candidate.to_string());
+            }
+            Err(err) => shortcut_note = format!(" Couldn't move its desktop shortcut: {err:#}"),
+        }
+    }
     // Steam shortcuts and Sunshine apps launch `iprolaunch <slug>`, so
     // they now point at nothing — say so instead of failing silently later.
     let stale: Vec<&str> = [
@@ -431,10 +446,10 @@ fn perform_slug_rename(app: &mut App, slug: &str, candidate: &str) -> bool {
     .filter_map(|(what, hit)| hit.then_some(what))
     .collect();
     app.status = Some(if stale.is_empty() {
-        format!("Renamed to \"{candidate}\".")
+        format!("Renamed to \"{candidate}\".{shortcut_note}")
     } else {
         format!(
-            "Renamed to \"{candidate}\". Its {} entry still launches \"{slug}\" — remove and re-add it.",
+            "Renamed to \"{candidate}\". Its {} entry still launches \"{slug}\" — remove and re-add it.{shortcut_note}",
             stale.join(" and ")
         )
     });

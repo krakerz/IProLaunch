@@ -68,22 +68,26 @@ entry.
 - Built-in headless Sway virtual desktop for [Sunshine](https://github.com/LizardByte/Sunshine) game streaming — runs Sunshine in an isolated virtual desktop, keeps streamed input devices off the host, and dynamically adjusts resolution/refresh/audio to match the connecting client (with fixed-mode and per-game overrides via the new Sunshine tab in the TUI). Cover artwork for Sunshine games, with optional SteamGridDB support and per-game Steam app ID overrides, both configurable via the Sunshine tab and profile editor.
 - Library `s` opens a Share/Add-to popup: add a game to Steam as a
   non-Steam-game shortcut, live, via Steam's own importer — no
-  `shortcuts.vdf` editing, no restart required — or add it to Sunshine via
-  its REST API (asked for your Sunshine username/password once, then cached).
+  `shortcuts.vdf` editing, no restart required — add a desktop shortcut so
+  it shows up in app launchers (all kept in
+  `~/.local/share/applications/iprolaunch/`, cover as icon), or add it to
+  Sunshine via its REST API (asked for your Sunshine username/password once,
+  then cached).
   Re-adding a game updates its existing entry instead of duplicating it.
   Sunshine games run in fullscreen gamescope with their window stretched to
   fill the stream by default (switchable globally in the Sunshine tab, or per
   game in the profile editor); resolution follows each client.
-- Library rows show status markers: `S` for games in Steam, `!` for games
-  with missing exe, `SU` for games added to Sunshine (reads "SUS" if in both).
+- Library rows show status markers: `D` for games with a desktop shortcut,
+  `SU` for games added to Sunshine, `S` for games in Steam (reads "SUS" if in
+  both), `!` for games with missing exe.
 - Gamepad navigation — a real controller works alongside the keyboard with
   zero setup (see the Help screen's "Gamepad" section for the full button
   map); every legend switches to the matching captions automatically.
 - `iprolaunch integrate install` — registers as the default handler for
   `.exe`/`.bat`/`.cmd`/`.msi`, adds an app-menu entry with an icon, and the
   right-click "Add to Library" action for whichever DE is present —
-  backing up the prior default so `uninstall` restores everything. Also
-  available from the TUI's Config tab. `context-menu install
+  backing up the prior default so `uninstall` restores everything (and
+  removes game desktop shortcuts). Also available from the TUI's Config tab. `context-menu install
   [kde|gnome|xfce]` manages just the right-click action alone.
 - Config tab's Desktop integration table also has a "check for update" row —
   checks GitHub for a newer release and, if there is one, downloads and
@@ -160,6 +164,10 @@ iprolaunch library list
 
 # Search the library by name or exe path (case-insensitive substring)
 iprolaunch library search elden
+
+# Add (or update) / remove a game's app-launcher shortcut
+iprolaunch library add-desktop "eldenring#1"
+iprolaunch library remove-desktop "eldenring#1"
 
 # The TUI in its own window instead of a terminal (Steam Game Mode)
 iprolaunch -gm 1920x1200

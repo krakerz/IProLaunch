@@ -282,7 +282,7 @@ fn filter_title(filter: &Option<String>, editing: bool, normal_title: &str) -> S
 /// NOTES.md) — below that, `draw_library_narrow` (today's
 /// single-line-per-row layout) is used instead.
 const LIBRARY_COL_SPACING: u16 = 1;
-const LIBRARY_MARKER_W: u16 = 4;
+const LIBRARY_MARKER_W: u16 = 5;
 const LIBRARY_LAST_LAUNCHED_W: u16 = 21;
 const LIBRARY_FIXED_OVERHEAD: u16 =
     2 + 2 + LIBRARY_COL_SPACING * 4 + LIBRARY_MARKER_W + LIBRARY_LAST_LAUNCHED_W;
@@ -336,11 +336,16 @@ fn draw_library(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// Fixed-width status slots: `SU` in Sunshine, `S` in Steam, `!` exe missing
-/// (so a game in both reads "SUS").
+/// Fixed-width status slots: `D` desktop shortcut, `SU` in Sunshine, `S` in
+/// Steam, `!` exe missing (so a game in both Sunshine and Steam reads "SUS").
 fn library_marker(app: &App, slug: &str) -> String {
     format!(
-        "{}{}{}",
+        "{}{}{}{}",
+        if app.desktop_slugs.contains(slug) {
+            "D"
+        } else {
+            " "
+        },
         if app.sunshine_slugs.contains(slug) {
             "SU"
         } else {
@@ -1235,6 +1240,12 @@ Library:
                                shortcuts.vdf a moment after the launcher
                                that handed it the URL already exited) — a
                                stray `r` picks it up.
+                             - Add desktop shortcut, so the game shows up in
+                               app launchers and menus (rofi, fuzzel, KDE, …)
+                               from ~/.local/share/applications/iprolaunch/,
+                               with its cover as the icon. Re-adding updates
+                               it; it follows a slug rename and is removed
+                               with the profile or by `integrate uninstall`.
                              - Add to Sunshine, registering this game as an
                                app on a locally running Sunshine game-
                                streaming server, via its own REST API
@@ -1271,9 +1282,10 @@ Library:
   Esc                      cancel while typing a path, or clear an active
                            quick-search (typing or locked)
 
-  Each row's leftmost column shows up to two independent markers — static,
+  Each row's leftmost column shows up to four independent markers — static,
   never part of the row's own marquee-scrolling if the rest of it is too
   long to fit:
+    D   has a desktop shortcut (Share popup, 's').
     SU  already added to Sunshine (asked from Sunshine at startup/refresh,
         once you've logged in by adding a game to it).
     S   already added to Steam (detected at startup/refresh by scanning
@@ -2383,7 +2395,7 @@ mod tests {
         // `library_table_shows_headers_and_a_bracket_free_location` for the
         // wide/table layout's own equivalent. A short synthetic name/slug/
         // path (not a realistic one) is deliberate: the narrow band tops
-        // out at inner_width 64, and the fixed 36-char "last launched: ..."
+        // out at inner_width 65, and the fixed 36-char "last launched: ..."
         // text alone leaves too little room left for anything longer to
         // render without marqueeing kicking in and hiding it off-screen —
         // this test is about the padding/right-align math, not marqueeing.
@@ -2393,7 +2405,7 @@ mod tests {
         profile.target_path = "/z/a.exe".to_string();
         profile.last_launched = Some("06-Sep-2026, 13:04:45".to_string());
         app.profiles = vec![("a".to_string(), profile)];
-        let out = rendered(&mut app, 65, 24);
+        let out = rendered(&mut app, 66, 24);
         assert!(out.contains("[..\\z]"));
         // Right-aligned: "last launched:" should land near the row's right
         // edge, not immediately after the rest of the row's content.

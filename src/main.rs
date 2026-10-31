@@ -1,6 +1,7 @@
 mod config;
 mod context_menu;
 mod covers;
+mod desktop_shortcut;
 mod gamedb;
 mod integrate;
 mod launch;
@@ -219,6 +220,11 @@ enum LibraryAction {
         #[arg(long)]
         gamescope: bool,
     },
+    /// Adds (or updates) an app-launcher shortcut for a profile under
+    /// `~/.local/share/applications/iprolaunch/`, with its cover as the icon.
+    AddDesktop { query: String },
+    /// Removes a profile's app-launcher shortcut.
+    RemoveDesktop { query: String },
 }
 
 #[derive(Subcommand)]
@@ -285,7 +291,7 @@ fn add_profile(target: &Path) -> Result<()> {
 
 /// Resolves `query` against a profile's slug or display name
 /// (case-insensitive, so a fumbled Steam shortcut still lands) — shared by
-/// `quick_launch` and `library add-to-steam`.
+/// `quick_launch` and the `library add-*` commands.
 fn resolve_profile(query: &str) -> Result<(String, Profile)> {
     let profiles = Profile::load_all()?;
     let matches: Vec<&(String, Profile)> = profiles
@@ -532,6 +538,38 @@ fn main() -> Result<()> {
                 profile.name,
                 wrapper_path.display()
             );
+            Ok(())
+        }
+        Some(Command::Library {
+            action: LibraryAction::AddDesktop { query },
+        }) => {
+            let (slug, profile) = resolve_profile(&query)?;
+            let key = cfg.steamgriddb.api_key.as_deref();
+            let cover = covers::fetch_cover(key, &slug, &profile, false);
+            if let Err(err) = &cover {
+                println!("No cover found, using the IProLaunch icon: {err:#}");
+            }
+            let icon = desktop_shortcut::icon_value(cover.ok().as_deref());
+            let verb = match desktop_shortcut::add(&profile, &slug, &icon)? {
+                desktop_shortcut::Written::Created => "Added",
+                desktop_shortcut::Written::Updated => "Updated",
+            };
+            println!(
+                "{verb} the desktop shortcut for \"{}\" in {}",
+                profile.name,
+                desktop_shortcut::shortcuts_dir()?.display()
+            );
+            Ok(())
+        }
+        Some(Command::Library {
+            action: LibraryAction::RemoveDesktop { query },
+        }) => {
+            let (slug, profile) = resolve_profile(&query)?;
+            if desktop_shortcut::remove(&slug)? {
+                println!("Removed the desktop shortcut for \"{}\".", profile.name);
+            } else {
+                println!("\"{}\" had no desktop shortcut.", profile.name);
+            }
             Ok(())
         }
         Some(Command::Running {
