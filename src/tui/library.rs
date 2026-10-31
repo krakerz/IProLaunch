@@ -315,7 +315,8 @@ pub fn share_to_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
             match selected {
                 0 => add_to_steam(app, &slug, &name, false, terminal),
                 1 => add_to_steam(app, &slug, &name, true, terminal),
-                2 => prompt_add_to_sunshine(app, &slug, &name),
+                2 => add_desktop_shortcut(app, &slug, &name),
+                3 => prompt_add_to_sunshine(app, &slug, &name),
                 _ => {} // "Cancel" (or anything out of range) — do nothing
             }
         }
@@ -361,14 +362,13 @@ fn steam_add_precheck(app: &App, slug: &str, name: &str) -> Result<Profile, Stri
 /// Mirrors `run_winetricks`'s existing suspend/resume shape exactly.
 ///
 /// The `refresh_steam_status()` right after a successful add is
-/// best-effort, not a guarantee the "S" marker shows up *immediately*:
-/// `steam_shortcut::add_profile`'s `steam <url>` call only waits for the
-/// short-lived launcher process that hands the URL to Steam's own
-/// already-running client, not for that client to actually finish parsing
-/// the wrapper and writing `shortcuts.vdf` — confirmed for real, that write
-/// can trail the launcher's own exit by up to roughly a second. A stray `r`
-/// (or just waiting a moment) picks it up if this particular refresh ran
-/// too early.
+/// best-effort: `steam_shortcut::add_profile`'s `steam <url>` call only
+/// waits for the short-lived launcher process that hands the URL to Steam's
+/// own already-running client, not for that client to actually finish
+/// parsing the wrapper and writing `shortcuts.vdf` — confirmed for real,
+/// that write can trail the launcher's own exit by up to roughly a second.
+/// So the slug is also marked optimistically (as the Sunshine add does);
+/// the next `r` re-reads the real `shortcuts.vdf`.
 fn add_to_steam(
     app: &mut App,
     slug: &str,
@@ -397,9 +397,37 @@ fn add_to_steam(
     app.status = Some(match result {
         Ok(_) => {
             app.refresh_steam_status();
+            app.steam_slugs.insert(slug.to_string());
             format!("Sent \"{name}\" to Steam — check your Steam library.")
         }
         Err(err) => format!("couldn't add \"{name}\" to Steam: {err:#}"),
+    });
+}
+
+/// Share popup's "Add desktop shortcut" option: writes (or rewrites) the
+/// game's launcher entry, with its cover as the icon when one can be had.
+/// No subprocess, so no `suspend` needed.
+fn add_desktop_shortcut(app: &mut App, slug: &str, name: &str) {
+    let Some(profile) = app.profile(slug).cloned() else {
+        app.status = Some(format!("couldn't find profile \"{name}\" to add"));
+        return;
+    };
+    let key = app.cfg.steamgriddb.api_key.as_deref();
+    let (cover, cover_note) = match crate::covers::fetch_cover(key, slug, &profile, false) {
+        Ok(path) => (Some(path), String::new()),
+        Err(err) => (None, format!(" (no cover: {err:#})")),
+    };
+    let icon = crate::desktop_shortcut::icon_value(cover.as_deref());
+    app.status = Some(match crate::desktop_shortcut::add(&profile, slug, &icon) {
+        Ok(written) => {
+            app.desktop_slugs.insert(slug.to_string());
+            let verb = match written {
+                crate::desktop_shortcut::Written::Created => "Added",
+                crate::desktop_shortcut::Written::Updated => "Updated",
+            };
+            format!("{verb} desktop shortcut for \"{name}\".{cover_note}")
+        }
+        Err(err) => format!("couldn't add a desktop shortcut for \"{name}\": {err:#}"),
     });
 }
 
@@ -583,7 +611,18 @@ fn delete_profile(app: &mut App, slug: &str, name: &str) {
     };
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => {
-            app.status = Some(format!("Deleted \"{name}\"."));
+            // Our own launcher entry would launch nothing now.
+            let shortcut_err = if app.desktop_slugs.remove(slug) {
+                crate::desktop_shortcut::remove(slug).err()
+            } else {
+                None
+            };
+            app.status = Some(match shortcut_err {
+                None => format!("Deleted \"{name}\"."),
+                Some(err) => {
+                    format!("Deleted \"{name}\", but couldn't remove its desktop shortcut: {err:#}")
+                }
+            });
             if app.profile_editor.as_deref() == Some(slug) {
                 app.profile_editor = None;
             }
@@ -791,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn share_to_up_down_wraps_within_all_four_options() {
+    fn share_to_up_down_wraps_within_all_five_options() {
         let mut app = test_app_with_profile("game-1", "Game#1");
         app.mode = Mode::ShareTo {
             slug: "game-1".to_string(),
@@ -804,9 +843,10 @@ mod tests {
         share_to_key(&mut app, KeyCode::Down, &mut term);
         share_to_key(&mut app, KeyCode::Down, &mut term);
         share_to_key(&mut app, KeyCode::Down, &mut term);
-        assert!(matches!(app.mode, Mode::ShareTo { selected: 3, .. }));
+        share_to_key(&mut app, KeyCode::Down, &mut term);
+        assert!(matches!(app.mode, Mode::ShareTo { selected: 4, .. }));
         share_to_key(&mut app, KeyCode::Down, &mut term); // already at the last option
-        assert!(matches!(app.mode, Mode::ShareTo { selected: 3, .. }));
+        assert!(matches!(app.mode, Mode::ShareTo { selected: 4, .. }));
     }
 
     #[test]
@@ -823,7 +863,7 @@ mod tests {
 
     #[test]
     fn share_to_enter_on_cancel_returns_to_normal_without_side_effects() {
-        // Selecting "Cancel" (index 3) and pressing Enter must behave
+        // Selecting "Cancel" (index 4) and pressing Enter must behave
         // exactly like Esc — never reach `add_to_steam` (which would shell
         // out to the real `steam` binary and write a real file under
         // `~/.local/share/iprolaunch/`, neither of which anything here can
@@ -832,7 +872,7 @@ mod tests {
         app.mode = Mode::ShareTo {
             slug: "game-1".to_string(),
             name: "Game#1".to_string(),
-            selected: 3,
+            selected: 4,
         };
         share_to_key(&mut app, KeyCode::Enter, &mut test_term());
         assert!(matches!(app.mode, Mode::Normal));

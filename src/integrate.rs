@@ -49,7 +49,7 @@ const MENU_DESKTOP_FILE_NAME: &str = "iprolaunch-menu.desktop";
 /// (`ICON_SVG`/`ICON_PNG`) and written out to the theme directories by
 /// `install`, so there's no runtime dependency on `assets/` existing next
 /// to the binary.
-const ICON_NAME: &str = "iprolaunch";
+pub(crate) const ICON_NAME: &str = "iprolaunch";
 const ICON_SVG: &[u8] = include_bytes!("../assets/icon.svg");
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
@@ -167,8 +167,13 @@ fn parse_exec_path(content: &str) -> Option<String> {
 /// unescape runs first, so each becomes `\\X` (`\\\\` for a backslash). A
 /// literal `%` is `%%` (field codes are expanded even inside quotes).
 pub(crate) fn desktop_exec_quote(path: &Path) -> String {
+    desktop_exec_quote_str(&path.to_string_lossy())
+}
+
+/// `desktop_exec_quote` for any argument, e.g. a slug.
+pub(crate) fn desktop_exec_quote_str(arg: &str) -> String {
     let mut out = String::from("\"");
-    for c in path.to_string_lossy().chars() {
+    for c in arg.chars() {
         match c {
             '\\' => out.push_str("\\\\\\\\"),
             '"' | '`' | '$' => {
@@ -287,6 +292,7 @@ fn install_icon() -> Result<()> {
 /// untouched. Restores whatever was the default before `install` ran, per
 /// the backup it wrote (if any), then deletes that backup file so the next
 /// `install` starts fresh rather than restoring stale data a second time.
+/// Also removes every game desktop shortcut (`desktop_shortcut::remove_all`).
 pub fn uninstall() -> Result<()> {
     let desktop_path = desktop_file_path()?;
     let removed_desktop = desktop_path.exists();
@@ -302,6 +308,20 @@ pub fn uninstall() -> Result<()> {
     }
 
     let removed_icon = remove_icon()?;
+
+    // Game shortcuts launch this binary too, so they go with it.
+    let removed_shortcuts = match crate::desktop_shortcut::remove_all() {
+        Ok(count) => {
+            if count > 0 {
+                println!("Removed {count} game desktop shortcut(s).");
+            }
+            count > 0
+        }
+        Err(err) => {
+            println!("Game desktop shortcuts: {err:#}");
+            false
+        }
+    };
 
     let backup_file = backup_path()?;
     let restored = restore_prior_defaults(&backup_file)?;
@@ -319,7 +339,7 @@ pub fn uninstall() -> Result<()> {
         println!("Right-click \"Add to IProLaunch Library\" action: {err:#}");
     }
 
-    if removed_desktop || removed_menu || removed_icon || restored || cleared {
+    if removed_desktop || removed_menu || removed_icon || removed_shortcuts || restored || cleared {
         println!("Uninstalled.");
     } else {
         println!("Nothing to uninstall — it wasn't installed.");

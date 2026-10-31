@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [1.46.0] — 2026-10-31
+
+### Added
+- Library share popup option to add a game as a desktop shortcut, so it shows up in app launchers; shortcuts live in `~/.local/share/applications/iprolaunch/` and use the game's cover as the icon.
+- `library add-desktop` and `library remove-desktop` commands.
+- `D` marker in the Library for games with a desktop shortcut.
+
+### Changed
+- Renaming a slug moves the game's desktop shortcut, deleting a profile removes it, and `integrate uninstall` removes all of them.
+
+### Fixed
+- The Library's `S` marker could stay missing after adding a game to Steam until a manual refresh.
+
 ## [1.45.0] — 2026-10-17
 
 ### Added

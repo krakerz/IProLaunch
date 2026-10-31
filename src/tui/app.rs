@@ -636,9 +636,10 @@ pub enum Mode {
 /// The selectable rows of `Mode::ShareTo`, in order — index into this with
 /// `selected` for both the label to render and, on `Enter`, which action to
 /// take. `len()` is used for `Up`/`Down` wraparound.
-pub const SHARE_TO_OPTIONS: [&str; 4] = [
+pub const SHARE_TO_OPTIONS: [&str; 5] = [
     "Add to Steam (no gamescope flag)",
     "Add to Steam (with gamescope flag)",
+    "Add desktop shortcut (app launcher)",
     "Add to Sunshine",
     "Cancel",
 ];
@@ -781,6 +782,9 @@ pub struct App {
     /// popup or just reports "already added" (see `library::prompt_add_to_steam`).
     pub steam_slugs: HashSet<String>,
     pub sunshine_slugs: HashSet<String>,
+    /// Slugs with a launcher shortcut (`desktop_shortcut::installed_slugs`) —
+    /// the Library's "D" marker; reloaded with the profiles.
+    pub desktop_slugs: HashSet<String>,
     /// Every slug whose `target_path` didn't exist on disk as of the last
     /// `refresh_profiles()` (startup or `r`) — drives the Library list's
     /// per-row "!" marker. Recomputed only on refresh, not every render/tick,
@@ -853,6 +857,7 @@ impl App {
             library_filter_editing: false,
             steam_slugs: HashSet::new(),
             sunshine_slugs: HashSet::new(),
+            desktop_slugs: HashSet::new(),
             missing_exes: HashSet::new(),
             config_selected: 0,
             sunshine_selected: 0,
@@ -927,6 +932,7 @@ impl App {
         }
         self.clamp_library_selection();
         self.missing_exes = missing_exe_slugs(&self.profiles);
+        self.desktop_slugs = crate::desktop_shortcut::installed_slugs();
     }
 
     /// Indices into `self.profiles` currently displayed — every index, in
