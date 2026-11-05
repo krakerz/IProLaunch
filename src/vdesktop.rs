@@ -33,6 +33,9 @@ const SUNSHINE_DEVICE_NAMES: [&str; 6] = [
     "libvirtualhid-touchscreen",
 ];
 const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// How long the stream sink must sit unused before it's unloaded: Sunshine
+/// only runs the undo command when the app quits, not on a client disconnect.
+const LEFTOVER_SINK_GRACE: Duration = Duration::from_secs(30);
 
 fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -276,6 +279,10 @@ fn wait_for_xdisplay(path: &Path) -> Option<String> {
 /// Runs the headless virtual desktop and Sunshine inside it until either exits.
 pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
     let s = &cfg.sunshine;
+    // Existing installs pick up the WirePlumber rule without re-running setup.
+    if let Err(err) = refresh_wireplumber_rule() {
+        eprintln!("iprolaunch: WirePlumber stream rule: {err:#}");
+    }
     let dir = state_dir();
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let config_path = dir.join("sway.conf");
@@ -340,6 +347,7 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
     let mut watcher = InputWatcher::default();
     let (mut audio_events, mut subscriber) = subscribe_audio_events();
     let mut host_audio = HostAudioGuard::default();
+    let mut idle_since: Option<Instant> = None;
     let result = loop {
         if stop.load(std::sync::atomic::Ordering::Relaxed) {
             // Before stopping Sunshine: its devices must still exist to be
@@ -386,6 +394,7 @@ pub fn run_service(cfg: &Config, sunshine_bin: &str) -> Result<()> {
         if s.keep_host_audio {
             host_audio.keep_default(&s.audio_sink);
         }
+        unload_leftover_sink(s, sunshine.id(), &mut idle_since);
         // Wake early when an audio stream appears, so a game that reopens its
         // output (e.g. on pause) is moved before it's audible on the host.
         match audio_events.recv_timeout(WATCH_INTERVAL) {
@@ -539,6 +548,99 @@ fn parse_sink_inputs(json: &Value) -> Vec<SinkInput> {
             })
         })
         .collect()
+}
+
+/// Whether any source-output records from `monitor_name`, given the JSON of
+/// `pactl list sources` and `pactl list source-outputs` (matched by index).
+fn monitor_recorded(sources: &Value, outputs: &Value, monitor_name: &str) -> bool {
+    let Some(monitor) = sources
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s.get("name").and_then(Value::as_str) == Some(monitor_name))
+        .and_then(|s| s.get("index").and_then(Value::as_u64))
+    else {
+        return false;
+    };
+    outputs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|o| o.get("source").and_then(Value::as_u64) == Some(monitor))
+}
+
+/// Whether any live process other than Sunshine itself descends from it.
+fn has_sunshine_descendants(sunshine_pid: u32) -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+    entries
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .any(|pid| pid != sunshine_pid && descends_from(pid, sunshine_pid))
+}
+
+/// Next idle timer and whether to unload the stream sink now. The timer starts
+/// when the sink is first seen idle and resets whenever it's gone or busy.
+fn leftover_sink_action(
+    sink_loaded: bool,
+    busy: bool,
+    idle_since: Option<Instant>,
+    now: Instant,
+    grace: Duration,
+) -> (Option<Instant>, bool) {
+    if !sink_loaded || busy {
+        return (None, false);
+    }
+    let since = idle_since.unwrap_or(now);
+    if now.duration_since(since) >= grace {
+        (None, true)
+    } else {
+        (Some(since), false)
+    }
+}
+
+/// Unloads the stream sink once nothing has used it for `LEFTOVER_SINK_GRACE`.
+/// Never while a client records it. Any pactl error leaves the timer alone.
+fn unload_leftover_sink(cfg: &Sunshine, sunshine_pid: u32, idle_since: &mut Option<Instant>) {
+    let state = (|| -> Result<(bool, bool)> {
+        let loaded =
+            !our_sink_modules(&pactl_json(&["list", "modules"])?, &cfg.audio_sink).is_empty();
+        if !loaded {
+            return Ok((false, false));
+        }
+        let monitor = format!("{}.monitor", cfg.audio_sink);
+        let recorded = monitor_recorded(
+            &pactl_json(&["list", "sources"])?,
+            &pactl_json(&["list", "source-outputs"])?,
+            &monitor,
+        );
+        let marked = parse_sink_inputs(&pactl_json(&["list", "sink-inputs"])?)
+            .iter()
+            .any(|i| i.marked);
+        Ok((
+            true,
+            recorded || marked || has_sunshine_descendants(sunshine_pid),
+        ))
+    })();
+    let Ok((loaded, busy)) = state else {
+        return;
+    };
+    let (next, unload) = leftover_sink_action(
+        loaded,
+        busy,
+        *idle_since,
+        Instant::now(),
+        LEFTOVER_SINK_GRACE,
+    );
+    *idle_since = next;
+    if unload {
+        eprintln!(
+            "iprolaunch: unloading the idle stream sink {} (no stream for {}s)",
+            cfg.audio_sink,
+            LEFTOVER_SINK_GRACE.as_secs()
+        );
+        unload_sink(cfg);
+    }
 }
 
 fn pactl_json(args: &[&str]) -> Result<Value> {
@@ -1169,6 +1271,57 @@ pub fn override_conf(bin: &Path, sunshine_bin: &str) -> String {
     )
 }
 
+/// WirePlumber drop-in telling it not to remember the stream sink as the
+/// output of streams from games Sunshine launched.
+fn wireplumber_rule() -> String {
+    format!(
+        "# Written by IProLaunch: streams from games launched through Sunshine never\n\
+         # make WirePlumber remember the stream sink as their output.\n\
+         stream.rules = [\n  \
+           {{\n    \
+             matches = [ {{ {STREAM_PROP} = \"game\" }} ]\n    \
+             actions = {{ update-props = {{ state.restore-target = false }} }}\n  \
+           }}\n\
+         ]\n"
+    )
+}
+
+fn wireplumber_rule_path() -> Result<PathBuf> {
+    let home = directories::UserDirs::new()
+        .context("no home directory")?
+        .home_dir()
+        .to_path_buf();
+    Ok(home.join(".config/wireplumber/wireplumber.conf.d/70-iprolaunch-stream.conf"))
+}
+
+/// Writes the rule when it's missing or different. Returns whether it was
+/// created for the first time.
+fn write_wireplumber_rule(path: &Path) -> Result<bool> {
+    let wanted = wireplumber_rule();
+    let existing = fs::read_to_string(path).ok();
+    if existing.as_deref() == Some(wanted.as_str()) {
+        return Ok(false);
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    crate::config::write_atomic(path, wanted.as_bytes())?;
+    Ok(existing.is_none())
+}
+
+fn refresh_wireplumber_rule() -> Result<()> {
+    write_wireplumber_rule(&wireplumber_rule_path()?).map(|_| ())
+}
+
+/// Removes the rule; a missing file is fine. Returns whether one was removed.
+fn remove_wireplumber_rule(path: &Path) -> Result<bool> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
 const OUR_MARKER: &str = "Written by iprolaunch";
 /// Our own drop-in, sorted after `override.conf` so our `ExecStart` wins,
 /// and leaving the user's own `override.conf` untouched.
@@ -1246,6 +1399,11 @@ pub fn restore_service() -> Result<()> {
         restored = true;
     }
     let _ = fs::remove_dir(&dir); // only succeeds when empty
+    let rule = wireplumber_rule_path()?;
+    if remove_wireplumber_rule(&rule)? {
+        println!("Removed {}.", rule.display());
+        restored = true;
+    }
     let conf = sunshine_conf_path()?;
     let conf_backup = conf_backup_path(&conf);
     if let Ok(snapshot) = fs::read_to_string(&conf_backup) {
@@ -1354,6 +1512,14 @@ pub fn install_service(cfg: &Config) -> Result<()> {
         conf.display()
     );
 
+    let rule = wireplumber_rule_path()?;
+    if write_wireplumber_rule(&rule)? {
+        println!("Installed {}", rule.display());
+        println!(
+            "restart WirePlumber (systemctl --user restart wireplumber) to apply the stream audio rule"
+        );
+    }
+
     println!();
     match cfg.sunshine.auth_token.as_deref() {
         Some(token) => match crate::sunshine::sync_apps(cfg, token, false) {
@@ -1444,6 +1610,76 @@ fn which(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wireplumber_rule_matches_stream_prop() {
+        let rule = wireplumber_rule();
+        assert!(rule.contains(&format!("{STREAM_PROP} = \"game\"")));
+        assert!(rule.contains("state.restore-target = false"));
+    }
+
+    #[test]
+    fn wireplumber_rule_write_and_remove() {
+        let dir = std::env::temp_dir().join(format!("iprolaunch-wp-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("wireplumber.conf.d/70-iprolaunch-stream.conf");
+        assert!(write_wireplumber_rule(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), wireplumber_rule());
+        assert!(!write_wireplumber_rule(&path).unwrap());
+        fs::write(&path, "stale").unwrap();
+        assert!(!write_wireplumber_rule(&path).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), wireplumber_rule());
+        assert!(remove_wireplumber_rule(&path).unwrap());
+        assert!(!remove_wireplumber_rule(&path).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn leftover_sink_timer() {
+        let grace = Duration::from_secs(30);
+        let t0 = Instant::now();
+        let later = |s| t0 + Duration::from_secs(s);
+        assert_eq!(
+            leftover_sink_action(false, false, Some(t0), t0, grace),
+            (None, false)
+        );
+        assert_eq!(
+            leftover_sink_action(true, true, Some(t0), t0, grace),
+            (None, false)
+        );
+        assert_eq!(
+            leftover_sink_action(true, false, None, t0, grace),
+            (Some(t0), false)
+        );
+        assert_eq!(
+            leftover_sink_action(true, false, Some(t0), later(29), grace),
+            (Some(t0), false)
+        );
+        assert_eq!(
+            leftover_sink_action(true, false, Some(t0), later(30), grace),
+            (None, true)
+        );
+        assert_eq!(
+            leftover_sink_action(true, false, Some(t0), later(90), grace),
+            (None, true)
+        );
+    }
+
+    #[test]
+    fn detects_recorder_on_monitor() {
+        let sources: Value = serde_json::from_str(
+            r#"[{"index":1,"name":"alsa_input.mic"},{"index":7,"name":"iprolaunch-stream.monitor"}]"#,
+        )
+        .unwrap();
+        let on_monitor: Value = serde_json::from_str(r#"[{"index":3,"source":7}]"#).unwrap();
+        let elsewhere: Value = serde_json::from_str(r#"[{"index":3,"source":1}]"#).unwrap();
+        let none: Value = serde_json::from_str("[]").unwrap();
+        let name = "iprolaunch-stream.monitor";
+        assert!(monitor_recorded(&sources, &on_monitor, name));
+        assert!(!monitor_recorded(&sources, &elsewhere, name));
+        assert!(!monitor_recorded(&sources, &none, name));
+        assert!(!monitor_recorded(&none, &on_monitor, name));
+    }
 
     #[test]
     fn detects_sunshine_devices_by_vendor_or_name() {
