@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.47.0] — 2026-11-05
+
+### Added
+- Sunshine service setup installs a WirePlumber rule so games played through Sunshine aren't remembered on the stream sink (restart WirePlumber once to apply).
+
+### Fixed
+- Games played through Sunshine could later play their desktop audio on the stream sink.
+- A stream audio sink left behind after a stream is now removed automatically once nothing is streaming or running from Sunshine.
+
 ## [1.46.0] — 2026-10-31
 
 ### Added
