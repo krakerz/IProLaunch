@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.47.1] — 2026-11-06
+
+### Fixed
+- The windows-version setting used the system Wine instead of the profile's Proton, which could break a fresh prefix pinned to an older Proton.
+
 ## [1.47.0] — 2026-11-05
 
 ### Added
