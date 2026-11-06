@@ -11,6 +11,7 @@ use crate::config::{AutoOpenScope, Config, Effective, Profile, RecordMode};
 use crate::gamedb;
 use crate::logging::LogSession;
 use crate::prefix;
+use crate::proton;
 use crate::running;
 use crate::terminal;
 
@@ -327,6 +328,7 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
         &prefix_path,
         effective.windows_version.as_str(),
         effective.winearch.as_str(),
+        effective.proton.as_str(),
     ) {
         // Best-effort: a failed registry tweak shouldn't block the game itself.
         eprintln!(
@@ -718,69 +720,87 @@ fn cached_windows_version(prefix_path: &Path) -> Option<String> {
 
 /// Sets the prefix's reported Windows version via `winetricks -q <version>`,
 /// but only when `version` actually differs from what's cached as already
-/// applied to this exact prefix (see `cached_windows_version`) — a real
-/// reported problem: winetricks' own "already applied" bookkeeping wasn't
-/// enough to stop this from re-running (and killing/relaunching wineserver
-/// below) on *every single launch*, version unchanged or not, which is real
-/// overhead/disruption on every launch rather than just the first one for a
-/// given version. Deliberately independent of *why* the effective value is
-/// what it is (the global default changed, a per-slug profile's own
-/// override changed, or this is just a brand new prefix) — any of those
-/// just means "does the marker already say this string?", same check
-/// either way, so a change in *either* direction (global 11 → profile
-/// override 10, or a later global 11 → 10 with no override) is picked up
-/// correctly, while a launch where nothing changed short-circuits before
-/// spawning anything at all.
+/// applied to this exact prefix (see `cached_windows_version`), so a launch
+/// where nothing changed short-circuits before spawning anything at all.
+/// Independent of *why* the effective value is what it is (global default,
+/// profile override, brand new prefix): it only asks "does the marker already
+/// say this string?".
 ///
-/// Uses the system winetricks/wine rather than the Proton build's own bundled
-/// wine (there's no clean way to know which build umu-run resolved to ahead
-/// of its own run) — fine for these verbs specifically, since `win7`/`win10`/
-/// etc. only rewrite a few registry keys rather than run real Windows code.
-/// A real consequence of that: since this is also the *first* thing to ever
-/// touch a brand new prefix (see `winearch` below), it's the *system*
-/// wine's own support for `WINEARCH=win32` that actually gates whether a
-/// `win32` prefix can be created at all — not whichever Proton build the
-/// profile/global default has selected for the real launch.
+/// Runs against the profile's own Proton wine (`proton`, the same value
+/// `run` turns into `PROTONPATH`), never the system wine: a prefix first
+/// built by a newer system Wine breaks when an older Proton later upgrades
+/// it. For the same reason it never initialises a prefix itself: until
+/// Proton has written its `version` file (see `prefix_is_proton_initialised`)
+/// the call is skipped, without a marker, and retried on the next launch.
+/// `"system"`/empty (umu-managed UMU-Proton) goes through `umu-run winetricks`
+/// since there's no fixed Proton dir to point at.
 ///
-/// `winearch`: threaded through as `WINEARCH` alongside `WINEPREFIX` on the
-/// same `winetricks` call — a real reported bug otherwise: without it, a
-/// freshly deleted/nonexistent prefix always came up `win64` regardless of
-/// the configured `winearch`, since this function runs (and creates the
-/// prefix) before the actual game-launch command below ever gets a chance
-/// to apply its own `WINEARCH`.
-///
-/// Kills any wineserver already bound to this prefix first, but only when
-/// nothing of ours is actually running against it — a previous launch's
-/// Proton-bundled wineserver can be left stale/attached, and if its version
-/// doesn't match the system wine's, winetricks fails outright (observed:
-/// `wine client error:0: version mismatch 856/961` — confirmed by testing,
-/// see project NOTES.md). Checking `running::is_prefix_active` first matters:
-/// unconditionally killing it would just as easily tear down a wineserver
-/// that's genuinely still in use (e.g. the same exe launched twice, or two
-/// exes sharing a prefix in single mode).
-fn apply_windows_version(prefix_path: &Path, version: &str, winearch: &str) -> Result<()> {
+/// Kills a stale wineserver bound to this prefix first (the build's own, so
+/// the versions match), only when `running::is_prefix_active` says nothing of
+/// ours is using it.
+fn apply_windows_version(
+    prefix_path: &Path,
+    version: &str,
+    winearch: &str,
+    proton: &str,
+) -> Result<()> {
     if cached_windows_version(prefix_path).as_deref() == Some(version) {
         return Ok(());
     }
 
-    if !running::is_prefix_active(&prefix_path.to_string_lossy()) {
-        Command::new("wineserver")
-            .arg("-k")
-            .env("WINEPREFIX", prefix_path)
-            .status()
-            .ok();
+    if !prefix_is_proton_initialised(prefix_path) {
+        eprintln!(
+            "iprolaunch: windows-version={version} will be applied on the next launch, \
+             once Proton has created the prefix"
+        );
+        return Ok(());
     }
 
-    // A real reported bug: this is the *first* thing to ever touch a freshly
-    // deleted/nonexistent prefix (before the actual game launch's own
-    // umu-run invocation), so it — not that later invocation — is what
-    // actually decides a new prefix's architecture. Without `WINEARCH` set
-    // here too, a fresh prefix always came up `win64` regardless of the
-    // configured `winearch`, since this ran and created it first.
-    let status = Command::new("winetricks")
-        .arg("-q")
-        .arg(version)
-        .env("WINEPREFIX", prefix_path)
+    let wineprefix = proton_wineprefix(prefix_path);
+    let mut command;
+    if proton.is_empty() || proton == "system" {
+        command = Command::new("umu-run");
+        command
+            .arg("winetricks")
+            .arg("-q")
+            .arg(version)
+            .env("GAMEID", "umu-default")
+            .env_remove("PROTONPATH")
+            // umu wants the compat dir and adds `pfx` itself.
+            .env("WINEPREFIX", prefix_path);
+    } else {
+        let bin = match proton::resolve_binary_dir(proton) {
+            Ok(dir) => dir.join("files").join("bin"),
+            Err(err) => {
+                eprintln!("iprolaunch: warning: skipping windows-version={version}: {err:#}");
+                return Ok(());
+            }
+        };
+        let wine = bin.join("wine");
+        let wineserver = bin.join("wineserver");
+        if !wine.is_file() {
+            eprintln!(
+                "iprolaunch: warning: skipping windows-version={version}: {} not found",
+                wine.display()
+            );
+            return Ok(());
+        }
+        if !running::is_prefix_active(&prefix_path.to_string_lossy()) {
+            Command::new(&wineserver)
+                .arg("-k")
+                .env("WINEPREFIX", &wineprefix)
+                .status()
+                .ok();
+        }
+        command = Command::new("winetricks");
+        command
+            .arg("-q")
+            .arg(version)
+            .env("WINE", &wine)
+            .env("WINESERVER", &wineserver)
+            .env("WINEPREFIX", &wineprefix);
+    }
+    let status = command
         .env("WINEARCH", winearch)
         .status()
         .context("failed to run winetricks (is it installed and on $PATH?)")?;
@@ -789,10 +809,26 @@ fn apply_windows_version(prefix_path: &Path, version: &str, winearch: &str) -> R
     }
 
     // Best-effort: a failed write here just means the next launch reapplies
-    // a no-op (winetricks itself still skips real work once it's already
-    // set) — never worth failing the whole launch over.
+    // a no-op, never worth failing the whole launch over.
     let _ = fs::write(windows_version_marker_path(prefix_path), version);
     Ok(())
+}
+
+/// Whether Proton has already set up this compat dir: it writes a `version`
+/// file there, and umu uses the compat dir itself as its compat data path.
+fn prefix_is_proton_initialised(prefix_path: &Path) -> bool {
+    prefix_path.join("version").is_file()
+}
+
+/// Proton's real `WINEPREFIX`: the `pfx` subdir when it exists (a directory or
+/// a symlink to one), else the compat dir itself.
+fn proton_wineprefix(prefix_path: &Path) -> PathBuf {
+    let pfx = prefix_path.join("pfx");
+    if pfx.is_dir() {
+        pfx
+    } else {
+        prefix_path.to_path_buf()
+    }
 }
 
 /// Forwards Ctrl+C (and a plain `kill`/SIGTERM on `iprolaunch` itself) into
@@ -899,6 +935,32 @@ fn sunshine_x_display(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proton_initialised_requires_a_version_file() {
+        let dir = windows_version_test_dir("wv-init");
+        fs::create_dir_all(&dir).unwrap();
+        assert!(!prefix_is_proton_initialised(&dir));
+        fs::write(dir.join("version"), "9.0-203").unwrap();
+        assert!(prefix_is_proton_initialised(&dir));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn proton_wineprefix_prefers_pfx_dir_or_symlink() {
+        let dir = windows_version_test_dir("wv-pfx");
+        fs::create_dir_all(dir.join("real")).unwrap();
+        assert_eq!(proton_wineprefix(&dir), dir);
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("pfx")).unwrap();
+        assert_eq!(proton_wineprefix(&dir), dir.join("pfx"));
+        fs::remove_dir_all(&dir).ok();
+
+        let file_dir = windows_version_test_dir("wv-pfx-file");
+        fs::create_dir_all(&file_dir).unwrap();
+        fs::write(file_dir.join("pfx"), "").unwrap();
+        assert_eq!(proton_wineprefix(&file_dir), file_dir);
+        fs::remove_dir_all(&file_dir).ok();
+    }
 
     #[test]
     fn sunshine_x_display_only_fills_a_missing_display_without_gamescope() {
@@ -1242,7 +1304,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(windows_version_marker_path(&dir), "win11").unwrap();
 
-        let result = apply_windows_version(&dir, "win11", "win64");
+        let result = apply_windows_version(&dir, "win11", "win64", "system");
         assert!(result.is_ok(), "should short-circuit, not fail: {result:?}");
 
         fs::remove_dir_all(&dir).ok();
