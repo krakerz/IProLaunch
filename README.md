@@ -228,6 +228,13 @@ For a single game, point the shortcut at `iprolaunch <name-or-slug>` instead.
 
 ## Streaming with Sunshine
 
+Sunshine is expected to run on the same machine as IProLaunch: the virtual
+desktop, the audio sink and the games all live on this host, and `host`
+under `[sunshine]` defaults to `localhost`. Pointing `host` at another
+machine is not a supported setup; its certificate is then verified, and
+Sunshine's default self-signed one is only accepted with
+`insecure_tls = true`.
+
 To stream a game to a Sunshine client:
 
 1. In the TUI's Sunshine tab, use **setup sunshine service** in the "Sunshine

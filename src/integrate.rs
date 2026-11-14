@@ -213,6 +213,7 @@ pub(crate) fn desktop_exec_quote_str(arg: &str) -> String {
 /// newly-added one with nothing to restore on a later `uninstall`.
 pub fn install() -> Result<()> {
     let exe = crate::updater::own_exe()?;
+    ensure_plain_path(&exe)?;
     let dir = applications_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -399,14 +400,36 @@ fn write_backup(path: &Path, entries: &BTreeMap<String, String>) -> Result<()> {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(entries)?;
-    fs::write(path, json).with_context(|| format!("writing {}", path.display()))
+    crate::config::write_atomic(path, json.as_bytes())
+}
+
+/// Rejects a binary path with a control character (a newline would inject
+/// keys into the `.desktop`/service files it is written into).
+pub(crate) fn ensure_plain_path(path: &Path) -> Result<()> {
+    if path.to_string_lossy().chars().any(char::is_control) {
+        bail!(
+            "iprolaunch's own path contains a control character and can't be written into desktop files: {:?}",
+            path
+        );
+    }
+    Ok(())
 }
 
 fn read_backup(path: &Path) -> BTreeMap<String, String> {
-    fs::read_to_string(path)
+    let entries: BTreeMap<String, String> = fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Priors go straight to `xdg-mime default`, so only plain desktop-file ids pass.
+    entries
+        .into_iter()
+        .filter(|(_, prior)| {
+            prior.ends_with(".desktop")
+                && !prior.starts_with('-')
+                && !prior.contains('/')
+                && !prior.chars().any(char::is_control)
+        })
+        .collect()
 }
 
 /// Re-applies whatever was recorded as each mimetype's prior default (via
@@ -639,6 +662,29 @@ mod tests {
         assert_eq!(read_back, entries);
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_backup_drops_unsafe_prior_defaults() {
+        let dir = std::env::temp_dir().join(format!("iprolaunch-backup-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("b.json");
+        fs::write(
+            &file,
+            r#"{"a/x":"ok.desktop","b/x":"-evil.desktop","c/x":"p/q.desktop","d/x":"nodesk","e/x":"a\nb.desktop"}"#,
+        )
+        .unwrap();
+        let entries = read_backup(&file);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries["a/x"], "ok.desktop");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ensure_plain_path_rejects_control_characters() {
+        assert!(ensure_plain_path(Path::new("/opt/my apps/iprolaunch")).is_ok());
+        assert!(ensure_plain_path(Path::new("/opt/a\nExec=evil/iprolaunch")).is_err());
+        assert!(ensure_plain_path(Path::new("/opt/a\tb")).is_err());
     }
 
     #[test]

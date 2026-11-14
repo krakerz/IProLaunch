@@ -421,10 +421,13 @@ fn record_bin_path() {
         return;
     };
     let _ = fs::create_dir_all(dirs.config_dir());
-    let _ = fs::write(
-        dirs.config_dir().join("bin-path"),
-        exe.to_string_lossy().as_bytes(),
-    );
+    let path = dirs.config_dir().join("bin-path");
+    let content = exe.to_string_lossy();
+    // Unchanged content: skip the write that ran on every command.
+    if fs::read(&path).is_ok_and(|old| old == content.as_bytes()) {
+        return;
+    }
+    let _ = config::write_atomic(&path, content.as_bytes());
 }
 
 fn main() -> Result<()> {

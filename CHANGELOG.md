@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [1.48.0] — 2026-11-15
+
+### Added
+- `insecure_tls` under `[sunshine]` to accept a remote Sunshine host's self-signed certificate.
+
+### Changed
+- A Sunshine host other than localhost now needs a trusted certificate unless `insecure_tls = true` is set.
+- Renaming a profile's slug also renames its cached cover.
+- A profile that fails to load is reported in the log instead of silently disappearing from the library.
+
+### Fixed
+- An unreadable `config.toml` is reported as an error instead of being replaced with defaults.
+- A failed game-database refresh no longer delays every launch while offline, and a bad response no longer replaces the cached database.
+- Two launches of the same game in the same second no longer overwrite each other's log.
+- Renaming a prefix folder onto an existing empty folder is refused.
+- A corrupt Steam `shortcuts.vdf` no longer crashes the Steam indicator.
+- A hung compositor or PipeWire no longer freezes the virtual desktop setup; helper commands time out after 5 seconds.
+- An unreadable or malformed Thunar `uca.xml` is left untouched instead of being overwritten, and a backup is kept before the first change.
+
+### Security
+- Releases are signed, and self-update refuses any download whose signature does not match the key built into IProLaunch.
+- Self-update checks the download's SHA-256 against GitHub's, only downloads from this project's release page, and rejects a symlinked binary inside the archive.
+- Self-update and the release check have timeouts and a download size limit.
+- Cover downloads only accept HTTPS URLs to named hosts and reject oversized images.
+- `config.toml`, which holds the SteamGridDB key, is now readable only by its owner.
+- Game IDs and titles from the umu database are validated before use.
+- Input device names are escaped fully in sway commands.
+- Resolution and frame rate requested by a streaming client are bounded.
+- The Steam add-game marker file no longer follows a symlink in the temp directory.
+- TLS and terminal UI libraries updated past all published advisories.
+- The Sunshine service drop-in escapes the binary paths it writes.
+- Integrations refuse to install from a binary path containing control characters.
+
 ## [1.47.1] — 2026-11-06
 
 ### Fixed

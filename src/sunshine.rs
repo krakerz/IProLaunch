@@ -16,15 +16,17 @@
 //! deliberately not used here (see project TODO/NOTES for the scoping
 //! discussion — Basic auth alone is what's implemented for now).
 //!
-//! TLS certificate verification is disabled for every request: Sunshine's
-//! local web UI is served over a self-signed certificate by default, with
-//! no CA a user could install/trust instead.
+//! TLS certificate verification is skipped only for a loopback `sunshine.host`
+//! (Sunshine's web UI is served over a self-signed certificate by default,
+//! with no CA a user could trust instead) or when `sunshine.insecure_tls` is
+//! set; any other host is verified normally, since the Basic-auth admin
+//! credentials go to it.
 //!
 //! Every app gets a `prep-cmd` pointing back at `iprolaunch sunshine prep
 //! do|undo <slug>` (see `vdesktop`), which fits the virtual desktop and the
 //! audio sink to the connecting client.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
@@ -39,12 +41,39 @@ fn base_url(cfg: &Sunshine) -> String {
 
 /// With a timeout: an unreachable `sunshine.host` would otherwise freeze the
 /// TUI (status refresh at startup, add-to-Sunshine) for minutes.
-fn agent() -> Agent {
+fn agent(cfg: &Sunshine) -> Agent {
+    let skip_verify = cfg.insecure_tls || is_loopback_host(&cfg.host);
     Agent::config_builder()
-        .tls_config(TlsConfig::builder().disable_verification(true).build())
+        .tls_config(
+            TlsConfig::builder()
+                .disable_verification(skip_verify)
+                .build(),
+        )
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()
         .new_agent()
+}
+
+/// `localhost`, any 127.0.0.0/8 address or `::1` (bracketed or not).
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Wraps a request error with `what`, adding the `insecure_tls` hint when a
+/// non-loopback host's certificate was rejected.
+fn request_error(cfg: &Sunshine, err: ureq::Error, what: String) -> anyhow::Error {
+    let tls = matches!(err, ureq::Error::Tls(_) | ureq::Error::Rustls(_))
+        || err.to_string().to_lowercase().contains("certificate");
+    let hint = if tls && !cfg.insecure_tls && !is_loopback_host(&cfg.host) {
+        " (TLS certificate not trusted: if you accept the risk on your LAN, set `insecure_tls = true` under `[sunshine]`)"
+    } else {
+        ""
+    };
+    anyhow::Error::from(err).context(format!("{what}{hint}"))
 }
 
 fn basic_auth_header(username: &str, password: &str) -> String {
@@ -58,12 +87,16 @@ fn basic_auth_header(username: &str, password: &str) -> String {
 pub fn login(cfg: &Sunshine, username: &str, password: &str) -> Result<String> {
     let token = basic_auth_header(username, password);
     let url = format!("{}/api/apps", base_url(cfg));
-    match agent().get(&url).header("Authorization", &token).call() {
+    match agent(cfg).get(&url).header("Authorization", &token).call() {
         Ok(_) => Ok(token),
         Err(ureq::Error::StatusCode(401)) => {
             bail!("Sunshine rejected that username/password")
         }
-        Err(err) => Err(err).with_context(|| format!("contacting Sunshine at {url}")),
+        Err(err) => Err(request_error(
+            cfg,
+            err,
+            format!("contacting Sunshine at {url}"),
+        )),
     }
 }
 
@@ -229,13 +262,19 @@ fn find_existing_index_in_apps(apps: &[serde_json::Value], slug: &str) -> Option
 /// after a transient GET error would leave a duplicate entry behind.
 fn fetch_apps(cfg: &Sunshine, auth_token: &str) -> Result<Vec<serde_json::Value>, AddAppError> {
     let url = format!("{}/api/apps", base_url(cfg));
-    let mut response = match agent().get(&url).header("Authorization", auth_token).call() {
+    let mut response = match agent(cfg)
+        .get(&url)
+        .header("Authorization", auth_token)
+        .call()
+    {
         Ok(r) => r,
         Err(ureq::Error::StatusCode(401)) => return Err(AddAppError::AuthExpired),
         Err(err) => {
-            return Err(AddAppError::Other(
-                anyhow::Error::from(err).context(format!("reading Sunshine's app list at {url}")),
-            ));
+            return Err(AddAppError::Other(request_error(
+                cfg,
+                err,
+                format!("reading Sunshine's app list at {url}"),
+            )));
         }
     };
     let list: serde_json::Value = response.body_mut().read_json().map_err(|e| {
@@ -340,16 +379,18 @@ pub fn add_app(
         })
         .map_err(|e| AddAppError::Other(e.into()))?,
     };
-    match agent()
+    match agent(cfg)
         .post(&url)
         .header("Authorization", auth_token)
         .send_json(&payload)
     {
         Ok(_) => Ok(existing_index.is_some()),
         Err(ureq::Error::StatusCode(401)) => Err(AddAppError::AuthExpired),
-        Err(err) => Err(AddAppError::Other(
-            anyhow::Error::from(err).context(format!("adding the app via {url}")),
-        )),
+        Err(err) => Err(AddAppError::Other(request_error(
+            cfg,
+            err,
+            format!("adding the app via {url}"),
+        ))),
     }
 }
 
@@ -363,7 +404,11 @@ fn iprolaunch_slug(cmd: &str) -> Option<&str> {
 /// Slugs of every iprolaunch game already in Sunshine; empty on any failure.
 pub fn slugs_in_sunshine(cfg: &Sunshine, auth_token: &str) -> std::collections::HashSet<String> {
     let url = format!("{}/api/apps", base_url(cfg));
-    let Ok(mut response) = agent().get(&url).header("Authorization", auth_token).call() else {
+    let Ok(mut response) = agent(cfg)
+        .get(&url)
+        .header("Authorization", auth_token)
+        .call()
+    else {
         return Default::default();
     };
     let Ok(list) = response.body_mut().read_json::<AppsListResponse>() else {
@@ -452,7 +497,7 @@ pub fn sync_apps(
             continue;
         }
         app["index"] = serde_json::json!(index);
-        match agent()
+        match agent(&cfg.sunshine)
             .post(&url)
             .header("Authorization", auth_token)
             .send_json(&app)
@@ -483,6 +528,29 @@ pub fn print_sync_report(report: &SyncReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_hosts_are_recognised() {
+        for h in [
+            "localhost",
+            "LOCALHOST",
+            "127.0.0.1",
+            "127.5.6.7",
+            "::1",
+            "[::1]",
+        ] {
+            assert!(is_loopback_host(h), "{h}");
+        }
+        for h in [
+            "192.168.1.5",
+            "example.com",
+            "0.0.0.0",
+            "128.0.0.1",
+            "[2001:db8::1]",
+        ] {
+            assert!(!is_loopback_host(h), "{h}");
+        }
+    }
 
     #[test]
     fn basic_auth_header_base64_encodes_user_colon_pass() {

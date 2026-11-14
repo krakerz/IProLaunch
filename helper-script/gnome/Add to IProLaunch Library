@@ -9,7 +9,7 @@ count=0
 add_one() {
     case "$1" in
         *.[Ee][Xx][Ee]|*.[Bb][Aa][Tt]|*.[Cc][Mm][Dd]|*.[Mm][Ss][Ii])
-            {bin} add "$1" && count=$((count + 1))
+            {bin} add -- "$1" && count=$((count + 1))
             ;;
     esac
 }

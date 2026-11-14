@@ -46,7 +46,7 @@ fn wrapper_contents(name: &str, exe: &Path, extra_flags: &[&str], slug: &str) ->
     exec.push_str(slug);
     format!(
         "[Desktop Entry]\nType=Application\nName={}\nExec={exec}\n",
-        name.replace('\n', " "), // .desktop keys are single-line; a name can't legally contain one
+        name.replace(['\n', '\r'], " "), // .desktop keys are single-line; a name can't legally contain a line break
     )
 }
 
@@ -81,6 +81,7 @@ fn write_wrapper(profile: &Profile, extra_flags: &[&str], slug: &str) -> Result<
     let dir = wrappers_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let exe = crate::updater::own_exe()?;
+    crate::integrate::ensure_plain_path(&exe)?;
     let path = dir.join(format!("{slug}.desktop"));
     let contents = wrapper_contents(profile.display_title(), &exe, extra_flags, slug);
     fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
@@ -98,11 +99,15 @@ fn write_wrapper(profile: &Profile, extra_flags: &[&str], slug: &str) -> Result<
 /// `std::env::temp_dir()` (not a hardcoded `/tmp`) matches Python's
 /// `tempfile.gettempdir()`, which is what that tool actually uses.
 fn touch_add_sentinel() -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+
     let path = std::env::temp_dir().join("addnonsteamgamefile");
+    // O_NOFOLLOW: the shared temp dir must not let a planted symlink redirect this write.
     let file = fs::OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&path)
         .with_context(|| format!("creating sentinel {}", path.display()))?;
     #[cfg(unix)]
@@ -226,6 +231,13 @@ fn read_cstr(bytes: &[u8], pos: &mut usize) -> Option<String> {
 /// best-effort convenience scan (see `slugs_in_steam`'s doc comment), never
 /// something that should be able to crash the TUI over a real user's file.
 fn parse_object(bytes: &[u8], pos: &mut usize) -> Vec<(String, VdfValue)> {
+    parse_object_at(bytes, pos, 0)
+}
+
+/// Real `shortcuts.vdf` files nest only a few levels; deeper means corrupt.
+const MAX_VDF_DEPTH: u32 = 16;
+
+fn parse_object_at(bytes: &[u8], pos: &mut usize, depth: u32) -> Vec<(String, VdfValue)> {
     let mut entries = Vec::new();
     while *pos < bytes.len() {
         let tag = bytes[*pos];
@@ -237,7 +249,8 @@ fn parse_object(bytes: &[u8], pos: &mut usize) -> Vec<(String, VdfValue)> {
             break;
         };
         match tag {
-            0x00 => entries.push((key, VdfValue::Obj(parse_object(bytes, pos)))),
+            0x00 if depth >= MAX_VDF_DEPTH => break, // too deep: stop like an unknown tag
+            0x00 => entries.push((key, VdfValue::Obj(parse_object_at(bytes, pos, depth + 1)))),
             0x01 => {
                 let Some(s) = read_cstr(bytes, pos) else {
                     break;
@@ -489,6 +502,13 @@ mod tests {
         bytes.push(0x08); // close "0"
         bytes.push(0x08); // close "shortcuts"
         bytes
+    }
+
+    #[test]
+    fn parse_object_survives_absurdly_deep_nesting() {
+        let bytes = [0u8, 0u8].repeat(100_000);
+        let mut pos = 0;
+        let _ = parse_object(&bytes, &mut pos);
     }
 
     #[test]

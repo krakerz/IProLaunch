@@ -103,6 +103,23 @@ jobs:
           EOF
           tar -czf "$bundle.tar.gz" "$bundle"
 
+      # The self-updater refuses an archive without a valid signature, so an
+      # unsigned release must never be drafted.
+      - name: Sign release bundle
+        if: steps.tag.outputs.exists == 'false'
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          test -n "$RELEASE_SIGNING_KEY" || { echo "RELEASE_SIGNING_KEY secret is not set"; exit 1; }
+          archive="iprolaunch-v${{ steps.version.outputs.version }}.tar.gz"
+          key="$RUNNER_TEMP/release-signing.pem"
+          ( umask 077; printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key" )
+          openssl pkeyutl -sign -inkey "$key" -rawin -in "$archive" -out "$archive.sig"
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/release-signing.pub"
+          rm -f "$key"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/release-signing.pub" -rawin -in "$archive" -sigfile "$archive.sig"
+          test "$(stat -c %s "$archive.sig")" = 64
+
       - name: Draft release
         if: steps.tag.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
@@ -111,4 +128,6 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
           body_path: release-notes.md
-          files: iprolaunch-v${{ steps.version.outputs.version }}.tar.gz
+          files: |
+            iprolaunch-v${{ steps.version.outputs.version }}.tar.gz
+            iprolaunch-v${{ steps.version.outputs.version }}.tar.gz.sig

@@ -10,8 +10,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -44,13 +45,8 @@ fn runtime_dir() -> PathBuf {
 }
 
 fn current_uid() -> u32 {
-    Command::new("id")
-        .arg("-u")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(1000)
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
 }
 
 fn state_dir() -> PathBuf {
@@ -176,13 +172,79 @@ fn stop_child(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// How long a one-shot helper (`swaymsg`, `pactl`, `hyprctl`, ...) may run before it counts as hung.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn run_output(cmd: &mut Command) -> io::Result<Output> {
+    run_with_timeout(cmd, HELPER_TIMEOUT)
+}
+
+fn run_status(cmd: &mut Command) -> io::Result<ExitStatus> {
+    run_output(cmd).map(|o| o.status)
+}
+
+/// Like `Command::output`, but kills and reaps the child once `timeout`
+/// passes, so a hung compositor or PipeWire can't freeze the caller.
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> io::Result<Output> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // Drained on threads so a full pipe can't block the child.
+    let drain = |pipe: Option<_>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _: Result<_, _> = Read::read_to_end(&mut pipe, &mut buf);
+            }
+            buf
+        })
+    };
+    let out_thread = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let err_thread = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // A grandchild holding the pipes open would block the join; the threads end on their own.
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("`{program}` timed out after {}s", timeout.as_secs_f32()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    Ok(Output {
+        status,
+        stdout: out_thread.join().unwrap_or_default(),
+        stderr: err_thread.join().unwrap_or_default(),
+    })
+}
+
 fn swaymsg_json(sock: &Path, kind: &str) -> Result<Value> {
-    let out = Command::new("swaymsg")
-        .arg("-s")
-        .arg(sock)
-        .args(["-r", "-t", kind])
-        .output()
-        .context("running swaymsg")?;
+    let out = run_output(
+        Command::new("swaymsg")
+            .arg("-s")
+            .arg(sock)
+            .args(["-r", "-t", kind]),
+    )
+    .context("running swaymsg")?;
     if !out.status.success() {
         bail!(
             "swaymsg -t {kind} failed: {}",
@@ -193,11 +255,7 @@ fn swaymsg_json(sock: &Path, kind: &str) -> Result<Value> {
 }
 
 fn swaymsg(sock: &Path, command: &str) -> Result<()> {
-    let out = Command::new("swaymsg")
-        .arg("-s")
-        .arg(sock)
-        .arg(command)
-        .output()
+    let out = run_output(Command::new("swaymsg").arg("-s").arg(sock).arg(command))
         .context("running swaymsg")?;
     if !out.status.success() {
         bail!(
@@ -443,9 +501,7 @@ fn is_stream_sink(name: &str, stream_sink: &str) -> bool {
 
 impl HostAudioGuard {
     fn keep_default(&mut self, stream_sink: &str) {
-        let Some(current) = Command::new("pactl")
-            .arg("get-default-sink")
-            .output()
+        let Some(current) = run_output(Command::new("pactl").arg("get-default-sink"))
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -457,9 +513,7 @@ impl HostAudioGuard {
             return;
         }
         if let Some(host) = &self.host_default {
-            let ok = Command::new("pactl")
-                .args(["set-default-sink", host])
-                .status()
+            let ok = run_status(Command::new("pactl").args(["set-default-sink", host]))
                 .is_ok_and(|s| s.success());
             if !ok {
                 // That sink is gone (unplugged); let the system pick again.
@@ -644,10 +698,7 @@ fn unload_leftover_sink(cfg: &Sunshine, sunshine_pid: u32, idle_since: &mut Opti
 }
 
 fn pactl_json(args: &[&str]) -> Result<Value> {
-    let out = Command::new("pactl")
-        .args(["-f", "json"])
-        .args(args)
-        .output()
+    let out = run_output(Command::new("pactl").args(["-f", "json"]).args(args))
         .context("running pactl")?;
     if !out.status.success() {
         bail!(
@@ -676,10 +727,12 @@ fn route_stream_audio(sunshine_pid: u32, sink_name: &str) -> Result<()> {
     for input in parse_sink_inputs(&pactl_json(&["list", "sink-inputs"])?) {
         let ours = input.marked || input.pid.is_some_and(|p| descends_from(p, sunshine_pid));
         if ours && input.sink != sink_index {
-            Command::new("pactl")
-                .args(["move-sink-input", &input.index.to_string(), sink_name])
-                .status()
-                .context("running pactl move-sink-input")?;
+            run_status(Command::new("pactl").args([
+                "move-sink-input",
+                &input.index.to_string(),
+                sink_name,
+            ]))
+            .context("running pactl move-sink-input")?;
         }
     }
     Ok(())
@@ -803,7 +856,10 @@ impl InputWatcher {
             if self.enabled.contains(&id) || !is_sunshine_device(&id, &name, &cfg.input_match) {
                 continue;
             }
-            let quoted = format!("\"{}\"", id.replace('"', "\\\""));
+            let Some(quoted) = sway_quote(&id) else {
+                tracing::warn!("skipping input device with an unsafe identifier: {id:?}");
+                continue;
+            };
             if swaymsg(&sock, &format!("input {quoted} events enabled")).is_ok() {
                 if kind == "pointer" {
                     let _ = swaymsg(&sock, &format!("input {quoted} accel_profile flat"));
@@ -856,10 +912,7 @@ impl InputWatcher {
         } else {
             match_names.to_vec()
         };
-        let out = hyprctl(sig)
-            .args(["devices", "-j"])
-            .output()
-            .context("running hyprctl")?;
+        let out = run_output(hyprctl(sig).args(["devices", "-j"])).context("running hyprctl")?;
         let json: Value = serde_json::from_slice(&out.stdout).context("parsing hyprctl devices")?;
         names.extend(
             ["mice", "keyboards", "tablets", "touch"]
@@ -888,7 +941,10 @@ impl InputWatcher {
             if self.host_disabled.contains(&id) || !is_sunshine_device(&id, &name, match_names) {
                 continue;
             }
-            let quoted = format!("\"{}\"", id.replace('"', "\\\""));
+            let Some(quoted) = sway_quote(&id) else {
+                tracing::warn!("skipping input device with an unsafe identifier: {id:?}");
+                continue;
+            };
             swaymsg(sock, &format!("input {quoted} events disabled"))?;
             self.host_disabled.insert(id);
         }
@@ -954,7 +1010,7 @@ fn set_host_input(host: &HostDesktop, match_names: &[String], enabled: bool) -> 
             } else {
                 match_names.to_vec()
             };
-            if let Ok(out) = hyprctl(sig).args(["devices", "-j"]).output()
+            if let Ok(out) = run_output(hyprctl(sig).args(["devices", "-j"]))
                 && let Ok(json) = serde_json::from_slice::<Value>(&out.stdout)
             {
                 names.extend(
@@ -977,7 +1033,10 @@ fn set_host_input(host: &HostDesktop, match_names: &[String], enabled: bool) -> 
             let state = if enabled { "enabled" } else { "disabled" };
             for (id, name, _) in sway_inputs(sock)? {
                 if is_sunshine_device(&id, &name, match_names) {
-                    let quoted = format!("\"{}\"", id.replace('"', "\\\""));
+                    let Some(quoted) = sway_quote(&id) else {
+                        tracing::warn!("skipping input device with an unsafe identifier: {id:?}");
+                        continue;
+                    };
                     swaymsg(sock, &format!("input {quoted} events {state}"))?;
                 }
             }
@@ -1011,12 +1070,13 @@ fn set_host_input(host: &HostDesktop, match_names: &[String], enabled: bool) -> 
 /// Sets a KWin input device's `enabled`; `Ok(false)` if busctl refused.
 fn kde_set_enabled(sys: &str, enabled: bool) -> Result<bool> {
     let path = format!("/org/kde/KWin/InputDevice/{sys}");
-    let status = Command::new("busctl")
-        .args(["--user", "set-property", "org.kde.KWin", &path])
-        .args(["org.kde.KWin.InputDevice", "enabled", "b"])
-        .arg(if enabled { "true" } else { "false" })
-        .status()
-        .context("running busctl")?;
+    let status = run_status(
+        Command::new("busctl")
+            .args(["--user", "set-property", "org.kde.KWin", &path])
+            .args(["org.kde.KWin.InputDevice", "enabled", "b"])
+            .arg(if enabled { "true" } else { "false" }),
+    )
+    .context("running busctl")?;
     Ok(status.success())
 }
 
@@ -1027,16 +1087,43 @@ fn hyprctl(signature: &str) -> Command {
     cmd
 }
 
+/// Quotes a sway device identifier for an `input` command; `None` for a
+/// control character. `;` and `,` stay: sway doesn't split inside quotes, and
+/// real device names contain commas ("Wacom Co.,Ltd.").
+fn sway_quote(id: &str) -> Option<String> {
+    if id.chars().any(char::is_control) {
+        return None;
+    }
+    Some(format!(
+        "\"{}\"",
+        id.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
+}
+
+/// A device name fits the unquoted `device[{name}]:enabled` keyword only
+/// without brackets or control characters.
+fn is_safe_hyprland_name(name: &str) -> bool {
+    !name
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '[' | ']'))
+}
+
 /// Hyprland 0.56+ is Lua-configured (`keyword` is rejected there); older
 /// builds only have `keyword`.
 fn hyprland_set_enabled(sig: &str, name: &str, enabled: bool) -> Result<()> {
+    if name.chars().any(char::is_control) {
+        tracing::warn!("skipping input device with an unsafe name: {name:?}");
+        return Ok(());
+    }
     let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
     let value = if enabled { "true" } else { "false" };
     let lua = format!("hl.device({{ name = \"{escaped}\", enabled = {value} }})");
     if hyprctl_ok(sig, &["eval", &lua]) {
         return Ok(());
     }
-    if hyprctl_ok(sig, &["keyword", &format!("device[{name}]:enabled"), value]) {
+    if is_safe_hyprland_name(name)
+        && hyprctl_ok(sig, &["keyword", &format!("device[{name}]:enabled"), value])
+    {
         return Ok(());
     }
     let verb = if enabled { "enable" } else { "disable" };
@@ -1045,7 +1132,7 @@ fn hyprland_set_enabled(sig: &str, name: &str, enabled: bool) -> Result<()> {
 
 /// hyprctl exits 0 even on a rejected command, so judge by its reply text.
 fn hyprctl_ok(sig: &str, args: &[&str]) -> bool {
-    hyprctl(sig).args(args).output().is_ok_and(|o| {
+    run_output(hyprctl(sig).args(args)).is_ok_and(|o| {
         let text = String::from_utf8_lossy(&o.stdout).to_ascii_lowercase();
         o.status.success()
             && !["error", "can't", "invalid", "unknown"]
@@ -1055,17 +1142,15 @@ fn hyprctl_ok(sig: &str, args: &[&str]) -> bool {
 }
 
 fn busctl_get(path: &str, interface: &str, property: &str) -> Result<String> {
-    let out = Command::new("busctl")
-        .args([
-            "--user",
-            "get-property",
-            "org.kde.KWin",
-            path,
-            interface,
-            property,
-        ])
-        .output()
-        .context("running busctl")?;
+    let out = run_output(Command::new("busctl").args([
+        "--user",
+        "get-property",
+        "org.kde.KWin",
+        path,
+        interface,
+        property,
+    ]))
+    .context("running busctl")?;
     if !out.status.success() {
         bail!(
             "busctl get-property {property} failed: {}",
@@ -1085,19 +1170,24 @@ fn parse_busctl_strings(raw: &str) -> Vec<String> {
 }
 
 fn client_mode_from_env() -> Option<(u32, u32, u32)> {
-    let var = |k: &str| {
-        std::env::var(k)
-            .ok()?
-            .trim()
+    let var = |k: &str| std::env::var(k).ok();
+    parse_client_mode(
+        var("SUNSHINE_CLIENT_WIDTH")?.as_str(),
+        var("SUNSHINE_CLIENT_HEIGHT")?.as_str(),
+        var("SUNSHINE_CLIENT_FPS")?.as_str(),
+    )
+}
+
+/// The remote client picks these, so anything outside sane bounds is treated
+/// like a missing value.
+fn parse_client_mode(width: &str, height: &str, fps: &str) -> Option<(u32, u32, u32)> {
+    let num = |s: &str, max: u32| {
+        s.trim()
             .parse::<u32>()
             .ok()
-            .filter(|v| *v > 0)
+            .filter(|v| (1..=max).contains(v))
     };
-    Some((
-        var("SUNSHINE_CLIENT_WIDTH")?,
-        var("SUNSHINE_CLIENT_HEIGHT")?,
-        var("SUNSHINE_CLIENT_FPS")?,
-    ))
+    Some((num(width, 16384)?, num(height, 16384)?, num(fps, 1000)?))
 }
 
 /// Channel count for the stream's sink: the configured layout, else the
@@ -1175,26 +1265,28 @@ fn unload_sink(cfg: &Sunshine) {
         // pactl without JSON output: fall back to the id saved at load time.
         Err(_) => fs::read_to_string(sink_module_file())
             .map(|id| vec![id.trim().to_string()])
-            .unwrap_or_default(),
+            .unwrap_or_default()
+            .into_iter()
+            // Only a plain module number may reach `pactl unload-module`.
+            .filter(|id| id.parse::<u64>().is_ok())
+            .collect(),
     };
     for id in ids.iter().filter(|id| !id.is_empty()) {
-        let _ = Command::new("pactl").args(["unload-module", id]).status();
+        let _ = run_status(Command::new("pactl").args(["unload-module", id]));
     }
     let _ = fs::remove_file(sink_module_file());
 }
 
 fn load_sink(cfg: &Sunshine, channels: u32) -> Result<()> {
     unload_sink(cfg);
-    let out = Command::new("pactl")
-        .args([
-            "load-module",
-            "module-null-sink",
-            &format!("sink_name={}", cfg.audio_sink),
-            &format!("channels={channels}"),
-            &format!("sink_properties=device.description={}", cfg.audio_sink),
-        ])
-        .output()
-        .context("running pactl (is pipewire-pulse running?)")?;
+    let out = run_output(Command::new("pactl").args([
+        "load-module",
+        "module-null-sink",
+        &format!("sink_name={}", cfg.audio_sink),
+        &format!("channels={channels}"),
+        &format!("sink_properties=device.description={}", cfg.audio_sink),
+    ]))
+    .context("running pactl (is pipewire-pulse running?)")?;
     if !out.status.success() {
         bail!(
             "pactl load-module failed: {}",
@@ -1252,23 +1344,46 @@ const SUNSHINE_UNITS: [&str; 2] = [
 
 fn find_sunshine_unit() -> Option<&'static str> {
     SUNSHINE_UNITS.into_iter().find(|unit| {
-        Command::new("systemctl")
-            .args(["--user", "cat", unit])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+        run_status(
+            Command::new("systemctl")
+                .args(["--user", "cat", unit])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .is_ok_and(|s| s.success())
     })
 }
 
-pub fn override_conf(bin: &Path, sunshine_bin: &str) -> String {
-    format!(
+/// Quotes one systemd `ExecStart=` word: control characters are refused, and
+/// `\`, `"`, `%` and `$` are escaped so they stay literal.
+fn systemd_quote(text: &str) -> Result<String> {
+    if text.chars().any(char::is_control) {
+        bail!("{text:?} contains a control character and can't go into a systemd unit");
+    }
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '%' => out.push_str("%%"),
+            '$' => out.push_str("$$"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Ok(out)
+}
+
+pub fn override_conf(bin: &Path, sunshine_bin: &str) -> Result<String> {
+    let bin = systemd_quote(&bin.to_string_lossy())?;
+    let sunshine_bin = systemd_quote(sunshine_bin)?;
+    Ok(format!(
         "# Written by iprolaunch: runs Sunshine inside its headless virtual desktop.\n\
          [Service]\n\
          ExecStart=\n\
-         ExecStart=\"{}\" sunshine service --sunshine \"{sunshine_bin}\"\n",
-        bin.display()
-    )
+         ExecStart={bin} sunshine service --sunshine {sunshine_bin}\n"
+    ))
 }
 
 /// WirePlumber drop-in telling it not to remember the stream sink as the
@@ -1371,10 +1486,9 @@ pub fn service_status() -> String {
         return "Sunshine service not found".to_string();
     };
     let ours = is_installed(unit);
-    let active = Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", unit])
-        .status()
-        .is_ok_and(|s| s.success());
+    let active =
+        run_status(Command::new("systemctl").args(["--user", "is-active", "--quiet", unit]))
+            .is_ok_and(|s| s.success());
     format!(
         "{} ({})",
         if ours { "installed" } else { "not installed" },
@@ -1458,10 +1572,9 @@ pub fn restart_after_update() {
         return;
     };
     let ours = is_installed(unit);
-    let active = Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", unit])
-        .status()
-        .is_ok_and(|s| s.success());
+    let active =
+        run_status(Command::new("systemctl").args(["--user", "is-active", "--quiet", unit]))
+            .is_ok_and(|s| s.success());
     if !ours || !active {
         return;
     }
@@ -1485,7 +1598,7 @@ pub fn install_service(cfg: &Config) -> Result<()> {
     fs::create_dir_all(&dropin)?;
     undo_legacy_override(&dropin)?;
     let path = dropin.join(OUR_DROPIN);
-    crate::config::write_atomic(&path, override_conf(&bin, &sunshine_bin).as_bytes())?;
+    crate::config::write_atomic(&path, override_conf(&bin, &sunshine_bin)?.as_bytes())?;
     Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .status()
@@ -1610,6 +1723,54 @@ fn which(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_with_timeout_kills_a_hung_child_quickly() {
+        let start = Instant::now();
+        let err = run_with_timeout(Command::new("sleep").arg("5"), Duration::from_millis(200))
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("sleep"));
+        assert!(start.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn run_with_timeout_captures_output() {
+        let out = run_with_timeout(Command::new("echo").arg("hi"), Duration::from_secs(5)).unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+    }
+
+    #[test]
+    fn sway_quote_escapes_or_rejects() {
+        assert_eq!(sway_quote("1:2:Mouse").as_deref(), Some("\"1:2:Mouse\""));
+        assert_eq!(sway_quote("a\"b").as_deref(), Some("\"a\\\"b\""));
+        assert_eq!(sway_quote("end\\").as_deref(), Some("\"end\\\\\""));
+        assert_eq!(sway_quote("a;b").as_deref(), Some("\"a;b\""));
+        assert_eq!(sway_quote("Co.,Ltd.").as_deref(), Some("\"Co.,Ltd.\""));
+        assert_eq!(sway_quote("a\nb"), None);
+    }
+
+    #[test]
+    fn hyprland_names_reject_syntax_characters() {
+        assert!(is_safe_hyprland_name("logitech-gaming-mouse"));
+        assert!(is_safe_hyprland_name("wacom-co.,ltd.-pen"));
+        for bad in ["a[b", "a]b", "a\nb"] {
+            assert!(!is_safe_hyprland_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn client_mode_is_bounded() {
+        assert_eq!(
+            parse_client_mode("1920", "1080", "60"),
+            Some((1920, 1080, 60))
+        );
+        assert_eq!(parse_client_mode("0", "1080", "60"), None);
+        assert_eq!(parse_client_mode("16385", "1080", "60"), None);
+        assert_eq!(parse_client_mode("1920", "1080", "1001"), None);
+        assert_eq!(parse_client_mode("x", "1080", "60"), None);
+    }
 
     #[test]
     fn wireplumber_rule_matches_stream_prop() {
@@ -1856,7 +2017,20 @@ mod tests {
 
     #[test]
     fn override_conf_clears_then_sets_exec_start() {
-        let text = override_conf(Path::new("/opt/iprolaunch"), "/usr/bin/sunshine");
+        let text = override_conf(Path::new("/opt/iprolaunch"), "/usr/bin/sunshine").unwrap();
         assert!(text.contains("ExecStart=\nExecStart=\"/opt/iprolaunch\" sunshine service"));
+    }
+
+    #[test]
+    fn systemd_quote_escapes_or_rejects() {
+        assert_eq!(
+            systemd_quote("/opt/iprolaunch").unwrap(),
+            "\"/opt/iprolaunch\""
+        );
+        assert_eq!(systemd_quote("/my apps/x").unwrap(), "\"/my apps/x\"");
+        assert_eq!(systemd_quote("/a%b").unwrap(), "\"/a%%b\"");
+        assert_eq!(systemd_quote("/a$b").unwrap(), "\"/a$$b\"");
+        assert_eq!(systemd_quote("a\"b\\c").unwrap(), "\"a\\\"b\\\\c\"");
+        assert!(systemd_quote("/a\nExecStart=x").is_err());
     }
 }

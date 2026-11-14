@@ -301,13 +301,19 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
         }
         None => match gamedb::lookup_gameid(&gameid_query, &target) {
             gamedb::GameIdMatch::Found(id) => {
-                eprintln!("iprolaunch: matched GAMEID {id} for \"{gameid_query}\"");
+                eprintln!(
+                    "iprolaunch: matched GAMEID {} for \"{gameid_query}\"",
+                    strip_control(&id)
+                );
                 Some(id)
             }
             gamedb::GameIdMatch::Ambiguous(ids) => {
                 eprintln!(
                     "iprolaunch: \"{gameid_query}\" matches several umu-database games ({}); using umu-default",
-                    ids.join(", ")
+                    ids.iter()
+                        .map(|id| strip_control(id))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
                 None
             }
@@ -534,6 +540,12 @@ pub fn run(cfg: &Config, target: &Path, opts: RunOptions) -> Result<()> {
         bail!("umu-run exited with {status}");
     }
     Ok(())
+}
+
+/// Drops control characters from text that came from the remote umu-database
+/// before it reaches the terminal.
+fn strip_control(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// `~/`-expanded, whitespace-trimmed, canonical form of a target path — the
@@ -810,7 +822,10 @@ fn apply_windows_version(
 
     // Best-effort: a failed write here just means the next launch reapplies
     // a no-op, never worth failing the whole launch over.
-    let _ = fs::write(windows_version_marker_path(prefix_path), version);
+    let marker = windows_version_marker_path(prefix_path);
+    if let Err(err) = fs::write(&marker, version) {
+        tracing::warn!("couldn't write {}: {err}", marker.display());
+    }
     Ok(())
 }
 
@@ -935,6 +950,11 @@ fn sunshine_x_display(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_control_removes_escapes_and_newlines() {
+        assert_eq!(strip_control("umu-1\x1b[31m\n\r\t"), "umu-1[31m");
+    }
 
     #[test]
     fn proton_initialised_requires_a_version_file() {
