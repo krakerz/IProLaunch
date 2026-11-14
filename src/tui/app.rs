@@ -630,6 +630,8 @@ pub enum Mode {
         latest: String,
         asset_name: String,
         asset_url: String,
+        digest: Option<String>,
+        signature_url: Option<String>,
     },
 }
 

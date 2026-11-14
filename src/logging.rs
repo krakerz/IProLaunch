@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -42,7 +43,7 @@ impl LogSession {
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
         let stamp = timestamp();
-        let path = dir.join(format!("{slug}-{stamp}.log"));
+        let path = reserve_log_path(&dir, slug, &stamp)?;
 
         Ok(Self {
             path,
@@ -104,6 +105,9 @@ fn is_noise_line(line: &str) -> bool {
         || line.contains("skipping destruction (fork without exec?)")
 }
 
+/// Logs larger than this are left unfiltered rather than read into memory.
+const MAX_STRIP_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Rewrites `path` in place with `is_noise_line` matches stripped out.
 /// Best-effort: any read/write failure just leaves the file exactly as the
 /// child process wrote it — this is a cosmetic cleanup pass, never worth
@@ -121,6 +125,9 @@ fn is_noise_line(line: &str) -> bool {
 /// old fd, and truncating under them leaves a NUL-filled gap on their next
 /// write.
 fn strip_noise(path: &Path) {
+    if fs::metadata(path).is_ok_and(|m| m.len() > MAX_STRIP_BYTES) {
+        return;
+    }
     let Ok(raw) = fs::read(path) else {
         return;
     };
@@ -136,6 +143,24 @@ fn strip_noise(path: &Path) {
     if dropped {
         let _ = crate::config::write_atomic(path, &filtered);
     }
+}
+
+/// Creates `<slug>-<stamp>.log` exclusively, trying `-2`, `-3`… when a same-second launch took it.
+fn reserve_log_path(dir: &Path, slug: &str, stamp: &str) -> Result<PathBuf> {
+    for n in 1u32.. {
+        let name = if n == 1 {
+            format!("{slug}-{stamp}.log")
+        } else {
+            format!("{slug}-{stamp}-{n}.log")
+        };
+        let path = dir.join(name);
+        match File::options().write(true).create_new(true).open(&path) {
+            Ok(_) => return Ok(path),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err).with_context(|| format!("creating {}", path.display())),
+        }
+    }
+    unreachable!("the retry counter does not overflow")
 }
 
 fn timestamp() -> String {
@@ -209,6 +234,41 @@ fn starts_with_date(s: &str) -> bool {
 mod tests {
     use super::*;
     use crate::config::{Config, PrefixMode};
+
+    #[test]
+    fn same_second_launches_get_distinct_suffixed_logs_that_prune_still_owns() {
+        let tmp = std::env::temp_dir().join(format!("iprolaunch-reserve-{}", std::process::id()));
+        fs::create_dir_all(&tmp).unwrap();
+        let stamp = "2026-01-01T00-00-00+00-00";
+
+        let a = reserve_log_path(&tmp, "game", stamp).unwrap();
+        let b = reserve_log_path(&tmp, "game", stamp).unwrap();
+        let c = reserve_log_path(&tmp, "game", stamp).unwrap();
+        assert_eq!(a.file_name().unwrap(), "game-2026-01-01T00-00-00+00-00.log");
+        assert_eq!(
+            b.file_name().unwrap(),
+            "game-2026-01-01T00-00-00+00-00-2.log"
+        );
+        assert_eq!(
+            c.file_name().unwrap(),
+            "game-2026-01-01T00-00-00+00-00-3.log"
+        );
+
+        prune(&tmp, "game", 1).unwrap();
+        assert_eq!(
+            fs::read_dir(&tmp).unwrap().count(),
+            1,
+            "suffixed logs are pruned"
+        );
+
+        let d = reserve_log_path(&tmp, "game", "2026-02-02T00-00-00+00-00").unwrap();
+        let _ = d;
+        let e = reserve_log_path(&tmp, "game", "2026-02-02T00-00-00+00-00").unwrap();
+        rename_slug_logs(&tmp, "game", "renamed");
+        assert!(tmp.join("renamed-2026-02-02T00-00-00+00-00-2.log").exists());
+        let _ = e;
+        fs::remove_dir_all(&tmp).unwrap();
+    }
 
     #[test]
     fn prunes_down_to_keep_count_scoped_by_slug() {

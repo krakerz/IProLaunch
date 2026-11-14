@@ -230,12 +230,16 @@ fn check_for_update(app: &mut App) {
             latest,
             asset_name,
             asset_url,
+            digest,
+            signature_url,
         }) => {
             app.mode = Mode::ConfirmUpdate {
                 current,
                 latest,
                 asset_name,
                 asset_url,
+                digest,
+                signature_url,
             };
             return;
         }
@@ -250,7 +254,11 @@ fn check_for_update(app: &mut App) {
 /// installs. Anything else cancels without downloading anything.
 pub fn confirm_update_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
     let Mode::ConfirmUpdate {
-        latest, asset_url, ..
+        latest,
+        asset_url,
+        digest,
+        signature_url,
+        ..
     } = &app.mode
     else {
         return;
@@ -263,6 +271,8 @@ pub fn confirm_update_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
 
     let latest = latest.clone();
     let asset_url = asset_url.clone();
+    let digest = digest.clone();
+    let signature_url = signature_url.clone();
     app.mode = Mode::Normal;
 
     if suspend(terminal).is_err() {
@@ -270,7 +280,8 @@ pub fn confirm_update_key(app: &mut App, code: KeyCode, terminal: &mut Term) {
         return;
     }
 
-    let result = crate::updater::apply_update(&asset_url);
+    let result =
+        crate::updater::apply_update(&asset_url, digest.as_deref(), signature_url.as_deref());
     if let Err(err) = &result {
         println!("Error: {err:#}");
     }

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -421,6 +422,10 @@ impl Default for GameDb {
 pub struct Sunshine {
     pub host: String,
     pub port: u16,
+    /// Skip TLS certificate verification for a non-loopback `host` (loopback
+    /// always skips it, for Sunshine's self-signed certificate).
+    #[serde(default)]
+    pub insecure_tls: bool,
     /// Remembered only so a re-login (after `auth_token` goes stale) doesn't
     /// need it retyped — never the password itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -534,6 +539,7 @@ impl Default for Sunshine {
         Self {
             host: "localhost".to_string(),
             port: 47990,
+            insecure_tls: false,
             username: None,
             auth_token: None,
             gamescope: true,
@@ -654,13 +660,17 @@ impl Config {
     /// Loads `config.toml`, writing out the documented defaults on first run.
     pub fn load_or_init() -> Result<Self> {
         let path = Self::path()?;
-        if !path.exists() {
-            let cfg = Self::default();
-            cfg.save()?;
-            return Ok(cfg);
-        }
-        let raw =
-            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let cfg = Self::default();
+                cfg.save()?;
+                return Ok(cfg);
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("reading {}", path.display()));
+            }
+        };
         toml::from_str(&raw).with_context(|| config_parse_error_context(&path))
     }
 
@@ -670,7 +680,7 @@ impl Config {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         let raw = toml::to_string_pretty(self)?;
-        write_atomic(&path, raw.as_bytes())
+        write_atomic_private(&path, raw.as_bytes())
     }
 
     /// Resolves the log directory, applying the single-mode path override.
@@ -1033,8 +1043,12 @@ impl Profile {
                 continue;
             }
             let slug = entry.file_name().to_string_lossy().into_owned();
-            if let Ok(profile) = Self::load(&slug) {
-                out.push((slug, profile));
+            match Self::load(&slug) {
+                Ok(profile) => out.push((slug, profile)),
+                Err(err) => tracing::warn!(
+                    "skipping profile {}: {err:#}",
+                    dir.join(&slug).join("profile.toml").display()
+                ),
             }
         }
         Ok(out)
@@ -1045,13 +1059,31 @@ impl Profile {
 /// a truncated file behind (an empty `config.toml` fails every command).
 /// Follows a symlinked target (dotfile setups) and keeps its permissions.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_impl(path, bytes, false)
+}
+
+/// Like `write_atomic`, but the result is always mode 0600 (files holding secrets).
+pub(crate) fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_impl(path, bytes, true)
+}
+
+fn write_atomic_impl(path: &Path, bytes: &[u8], private: bool) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let tmp = target.with_file_name(format!(".{name}.tmp"));
     let res = (|| -> std::io::Result<()> {
-        let mut f = fs::File::create(&tmp)?;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        if private {
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
         std::io::Write::write_all(&mut f, bytes)?;
-        if let Ok(meta) = fs::metadata(&target) {
+        if private {
+            f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        } else if let Ok(meta) = fs::metadata(&target) {
             f.set_permissions(meta.permissions())?;
         }
         f.sync_all()?;
@@ -1645,5 +1677,43 @@ mod tests {
             time_parts.iter().all(|p| p.len() == 2),
             "HH/MM/SS should be zero-padded: {stamp}"
         );
+    }
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("iprolaunch-config-{tag}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn write_atomic_private_creates_and_tightens_to_0600() {
+        let dir = scratch_dir("private");
+        let fresh = dir.join("new.toml");
+        write_atomic_private(&fresh, b"a").unwrap();
+        assert_eq!(mode_of(&fresh), 0o600);
+
+        let old = dir.join("old.toml");
+        fs::write(&old, b"x").unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomic_private(&old, b"b").unwrap();
+        assert_eq!(mode_of(&old), 0o600);
+        assert_eq!(fs::read(&old).unwrap(), b"b");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_atomic_keeps_an_existing_files_mode() {
+        let dir = scratch_dir("plain");
+        let old = dir.join("a.desktop");
+        fs::write(&old, b"x").unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomic(&old, b"y").unwrap();
+        assert_eq!(mode_of(&old), 0o644);
+        fs::remove_dir_all(&dir).ok();
     }
 }

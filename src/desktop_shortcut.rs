@@ -183,6 +183,7 @@ fn remove_menu_files() -> Result<()> {
 /// Creates or rewrites `slug`'s launcher entry, pointing at this binary.
 pub fn add(profile: &Profile, slug: &str, icon: &str) -> Result<Written> {
     let exe = crate::updater::own_exe()?.canonicalize()?;
+    crate::integrate::ensure_plain_path(&exe)?;
     let contents = entry_contents(&exe, slug, profile.display_title(), icon);
     let written = write_entry(&shortcuts_dir()?, slug, &contents)?;
     write_menu_files()?;

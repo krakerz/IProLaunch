@@ -68,6 +68,7 @@ fn agent() -> &'static ureq::Agent {
     static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()
+            .https_only(true)
             .timeout_global(Some(std::time::Duration::from_secs(30)))
             .build()
             .new_agent()
@@ -191,19 +192,65 @@ pub fn cached_cover(slug: &str) -> Option<PathBuf> {
     cover_path(slug).ok().filter(|p| p.is_file())
 }
 
-/// PNG bytes as-is; anything else (Steam serves JPEG) is re-encoded as PNG.
+const MAX_COVER_DIMENSION: u32 = 8192;
+const MAX_COVER_ALLOC: u64 = 256 * 1024 * 1024;
+
+fn cover_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_COVER_DIMENSION);
+    limits.max_image_height = Some(MAX_COVER_DIMENSION);
+    limits.max_alloc = Some(MAX_COVER_ALLOC);
+    limits
+}
+
+fn cover_reader(bytes: &[u8]) -> Result<image::ImageReader<std::io::Cursor<&[u8]>>> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .context("detecting the cover image format")?;
+    reader.limits(cover_limits());
+    Ok(reader)
+}
+
+/// PNG bytes as-is (after a size check); anything else (Steam serves JPEG) is re-encoded as PNG.
 fn to_png(bytes: Vec<u8>) -> Result<Vec<u8>> {
     if bytes.starts_with(b"\x89PNG") {
+        // Dimensions only, under the same limits; a bad or oversized PNG is rejected.
+        let mut reader = cover_reader(&bytes)?;
+        reader.set_format(image::ImageFormat::Png);
+        reader
+            .into_decoder()
+            .context("reading the cover PNG's header")?;
         return Ok(bytes);
     }
-    let img = image::load_from_memory(&bytes).context("decoding the cover image")?;
+    let img = cover_reader(&bytes)?
+        .decode()
+        .context("decoding the cover image")?;
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png)
         .context("converting the cover to PNG")?;
     Ok(out.into_inner())
 }
 
+/// Cover URLs come from remote JSON: only plain https to a named host.
+fn is_allowed_cover_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    if authority.starts_with('[') {
+        return false; // IPv6 literal
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    !(host.is_empty()
+        || host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::Ipv4Addr>().is_ok())
+}
+
 fn download(url: &str) -> Result<Vec<u8>> {
+    if !is_allowed_cover_url(url) {
+        bail!("refusing to download a cover from {url}");
+    }
     agent()
         .get(url)
         .call()
@@ -284,6 +331,19 @@ pub fn fetch_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cover_urls_must_be_https_to_a_named_host() {
+        assert!(is_allowed_cover_url("https://cdn.example.com/a/b.png"));
+        assert!(is_allowed_cover_url("https://cdn.example.com:8443/a.png"));
+        assert!(!is_allowed_cover_url("http://cdn.example.com/a.png"));
+        assert!(!is_allowed_cover_url("https://localhost/a.png"));
+        assert!(!is_allowed_cover_url("https://LOCALHOST:80/a.png"));
+        assert!(!is_allowed_cover_url("https://127.0.0.1/a.png"));
+        assert!(!is_allowed_cover_url("https://user@10.0.0.5:81/a.png"));
+        assert!(!is_allowed_cover_url("https://[::1]/a.png"));
+        assert!(!is_allowed_cover_url("ftp://cdn.example.com/a.png"));
+    }
 
     fn profile(name: &str, title: Option<&str>) -> Profile {
         Profile {

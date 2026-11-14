@@ -35,6 +35,7 @@ const XFCE_UNIQUE_ID: &str = "com.iprolaunch.add-to-library";
 /// failing should be loud).
 pub fn install(de: Option<DesktopEnv>) -> Result<()> {
     let exe = crate::updater::own_exe()?;
+    integrate::ensure_plain_path(&exe)?;
     match de {
         Some(de) => install_one(de, &exe),
         None => run_all(&exe, install_one),
@@ -249,11 +250,23 @@ fn system_uca_xml() -> Option<String> {
 /// whatever the user already has configured there.
 fn install_xfce(exe: &std::path::Path) -> Result<()> {
     let path = thunar_uca_path()?;
-    let existing = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(_) => system_uca_xml().unwrap_or_default(),
+    let (existing, user_file_existed) = match fs::read_to_string(&path) {
+        Ok(content) => (content, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (system_uca_xml().unwrap_or_default(), false)
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    let updated = upsert_uca_action(&existing, XFCE_UNIQUE_ID, &xfce_action_xml(exe));
+    let updated = upsert_uca_action(&existing, XFCE_UNIQUE_ID, &xfce_action_xml(exe))?;
+    if user_file_existed {
+        // Kept once, before the first rewrite, so a bad merge can be undone by hand.
+        let backup = path.with_file_name("uca.xml.iprolaunch-bak");
+        if !backup.exists() {
+            fs::copy(&path, &backup).with_context(|| {
+                format!("backing up {} to {}", path.display(), backup.display())
+            })?;
+        }
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -315,8 +328,9 @@ fn remove_uca_action(content: &str, unique_id: &str) -> (String, bool) {
 /// after the binary moved updates it in place instead of duplicating it),
 /// then inserts the fresh `action_xml` just before the closing `</actions>`
 /// — or, if `content` doesn't have one yet (no `uca.xml` existed), wraps it
-/// in a fresh minimal document.
-fn upsert_uca_action(content: &str, unique_id: &str, action_xml: &str) -> String {
+/// in a fresh minimal document. Non-empty content with no `</actions>` is an
+/// error rather than being overwritten.
+fn upsert_uca_action(content: &str, unique_id: &str, action_xml: &str) -> Result<String> {
     let (without_ours, _) = remove_uca_action(content, unique_id);
     match without_ours.rfind("</actions>") {
         Some(pos) => {
@@ -326,13 +340,12 @@ fn upsert_uca_action(content: &str, unique_id: &str, action_xml: &str) -> String
             let mut out = without_ours[..pos].to_string();
             out.push_str(action_xml);
             out.push_str(&without_ours[pos..]);
-            out
+            Ok(out)
         }
-        None => {
-            format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<actions>\n{action_xml}</actions>\n"
-            )
-        }
+        None if without_ours.trim().is_empty() => Ok(format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<actions>\n{action_xml}</actions>\n"
+        )),
+        None => bail!("uca.xml is malformed: no </actions>; left untouched"),
     }
 }
 
@@ -356,7 +369,7 @@ mod tests {
     #[test]
     fn gnome_script_contents_substitutes_the_binary_path() {
         let contents = gnome_script_contents(std::path::Path::new("/opt/iprolaunch/iprolaunch"));
-        assert!(contents.contains("'/opt/iprolaunch/iprolaunch' add \"$1\""));
+        assert!(contents.contains("'/opt/iprolaunch/iprolaunch' add -- \"$1\""));
         assert!(!contents.contains("{bin}"));
     }
 
@@ -376,7 +389,7 @@ mod tests {
 
     #[test]
     fn upsert_creates_a_fresh_document_when_none_existed() {
-        let out = upsert_uca_action("", "my-id", "<action>X</action>");
+        let out = upsert_uca_action("", "my-id", "<action>X</action>").unwrap();
         assert!(out.contains("<?xml"));
         assert!(out.contains("<actions>"));
         assert!(out.contains("<action>X</action>"));
@@ -386,7 +399,7 @@ mod tests {
     #[test]
     fn upsert_inserts_before_the_closing_actions_tag_leaving_others_intact() {
         let existing = "<?xml version=\"1.0\"?>\n<actions>\n<action><name>Other</name><unique-id>other</unique-id></action>\n</actions>\n";
-        let out = upsert_uca_action(existing, "my-id", "<action>Mine</action>");
+        let out = upsert_uca_action(existing, "my-id", "<action>Mine</action>").unwrap();
         assert!(out.contains("<action><name>Other</name><unique-id>other</unique-id></action>"));
         assert!(out.contains("<action>Mine</action>"));
         // Ours comes before the closing tag, after the other action.
@@ -400,10 +413,18 @@ mod tests {
             existing,
             "my-id",
             "<action><unique-id>my-id</unique-id><command>new</command></action>",
-        );
+        )
+        .unwrap();
         assert_eq!(out.matches("<action>").count(), 1);
         assert!(out.contains("new"));
         assert!(!out.contains("old"));
+    }
+
+    #[test]
+    fn upsert_refuses_non_empty_content_without_a_closing_actions_tag() {
+        let err = upsert_uca_action("<actions>\n<action>half", "my-id", "<action>X</action>")
+            .unwrap_err();
+        assert!(err.to_string().contains("malformed"));
     }
 
     #[test]

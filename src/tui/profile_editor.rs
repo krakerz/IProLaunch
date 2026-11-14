@@ -365,6 +365,14 @@ pub fn confirm_rename_slug_key(app: &mut App, code: KeyCode) {
     );
     app.mode = Mode::Normal;
 
+    // `rename` silently succeeds onto an empty directory, so refuse any existing destination.
+    if new_prefix_dir.symlink_metadata().is_ok() {
+        app.status = Some(format!(
+            "{} already exists — nothing changed.",
+            new_prefix_dir.display()
+        ));
+        return;
+    }
     if let Err(err) = std::fs::rename(&old_prefix_dir, &new_prefix_dir) {
         app.status = Some(format!(
             "couldn't rename prefix dir: {err} — nothing changed."
@@ -413,6 +421,13 @@ fn perform_slug_rename(app: &mut App, slug: &str, candidate: &str) -> bool {
     crate::logging::rename_slug_logs(&new_dir.join("logs"), slug, candidate);
     if let Ok(log_dir) = app.cfg.log_dir() {
         crate::logging::rename_slug_logs(&log_dir, slug, candidate);
+    }
+    // The cover cache is keyed by slug; best-effort, a missing cover is fine.
+    if let Ok(covers) = crate::covers::covers_dir() {
+        let _ = std::fs::rename(
+            covers.join(format!("{slug}.png")),
+            covers.join(format!("{candidate}.png")),
+        );
     }
 
     if let Some(entry) = app.profiles.iter_mut().find(|(s, _)| s == slug) {

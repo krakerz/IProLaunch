@@ -602,6 +602,13 @@ pub fn confirm_delete_key(app: &mut App, code: KeyCode) {
 /// Removes `~/.config/iprolaunch/profiles/<slug>/` entirely — the exe
 /// itself is never touched, only IProLaunch's own settings/history for it.
 fn delete_profile(app: &mut App, slug: &str, name: &str) {
+    // An empty or path-like slug would delete the profiles root or escape it.
+    if slug.is_empty() || slug == "." || slug == ".." || slug.contains(['/', '\0']) {
+        app.status = Some(format!(
+            "Refusing to delete \"{name}\": invalid profile folder name."
+        ));
+        return;
+    }
     let dir = match Profile::profiles_dir() {
         Ok(dir) => dir.join(slug),
         Err(err) => {

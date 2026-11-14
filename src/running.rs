@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -210,21 +209,26 @@ pub(crate) fn matching_pids_for_launch(launch_id: &str) -> Vec<u32> {
 /// `matching_pids_for_launch`'s doc comment for why that, rather than a
 /// single pid, process group, or a shared `WINEPREFIX`, is what actually
 /// reaches — and *only* reaches — the sandboxed tree `umu-run` creates for
-/// this specific launch). Shells out to the system `kill` rather than
-/// pulling in a signal-handling crate — this project is Linux-only already
-/// (see the project CLAUDE.md's Target-gated code section), and `kill` is
-/// universal there.
+/// this specific launch). Sends SIGTERM via `libc::kill` directly.
 pub fn terminate(launch_id: &str) -> Result<()> {
     let pids = matching_pids_for_launch(launch_id);
     if pids.is_empty() {
         bail!("nothing running against launch {launch_id}");
     }
-    let status = Command::new("kill")
-        .args(pids.iter().map(u32::to_string))
-        .status()
-        .context("failed to run `kill`")?;
-    if !status.success() {
-        bail!("`kill` exited with {status}");
+    let mut failed = Vec::new();
+    for pid in pids {
+        // Never 0 or negative: kill(0) / kill(-1) would signal whole process groups.
+        let Some(raw) = libc::pid_t::try_from(pid).ok().filter(|p| *p > 0) else {
+            failed.push(format!("{pid}: invalid pid"));
+            continue;
+        };
+        // SAFETY: kill takes plain integers and has no memory preconditions.
+        if unsafe { libc::kill(raw, libc::SIGTERM) } != 0 {
+            failed.push(format!("{pid}: {}", std::io::Error::last_os_error()));
+        }
+    }
+    if !failed.is_empty() {
+        bail!("failed to terminate: {}", failed.join(", "));
     }
     Ok(())
 }
@@ -232,7 +236,7 @@ pub fn terminate(launch_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Stdio;
+    use std::process::{Command, Stdio};
 
     /// Spawns a real, short-lived process carrying a fake env var, so
     /// `matching_pids_for_*`/`terminate` are exercised against an actual pid

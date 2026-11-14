@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::config::project_dirs;
 
@@ -46,15 +46,16 @@ fn refresh_path_if_stale(path: &Path, interval_days: u32) -> Result<()> {
         return Ok(());
     }
 
-    let body: String = ureq::get(SOURCE_URL)
-        .config()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .build()
-        .call()
-        .context("fetching umu-database.csv")?
-        .body_mut()
-        .read_to_string()
-        .context("reading response body")?;
+    let body = match fetch_csv() {
+        Ok(body) => body,
+        Err(err) => {
+            // Bump the old cache's mtime so an offline launch doesn't re-wait the timeout every time.
+            if let Ok(file) = fs::OpenOptions::new().write(true).open(path) {
+                file.set_modified(SystemTime::now()).ok();
+            }
+            return Err(err);
+        }
+    };
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -64,6 +65,36 @@ fn refresh_path_if_stale(path: &Path, interval_days: u32) -> Result<()> {
     let tmp = path.with_extension("csv.tmp");
     fs::write(&tmp, &body).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
+    Ok(())
+}
+
+/// Smallest body accepted as a real database; the genuine CSV is far larger.
+const MIN_CSV_BYTES: usize = 1024;
+
+fn fetch_csv() -> Result<String> {
+    let body: String = ureq::get(SOURCE_URL)
+        .config()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .build()
+        .call()
+        .context("fetching umu-database.csv")?
+        .body_mut()
+        .read_to_string()
+        .context("reading response body")?;
+    validate_csv(&body)?;
+    Ok(body)
+}
+
+fn validate_csv(body: &str) -> Result<()> {
+    if body.len() < MIN_CSV_BYTES {
+        bail!(
+            "umu-database.csv response is too small ({} bytes)",
+            body.len()
+        );
+    }
+    if !body.lines().next().is_some_and(|l| l.contains("TITLE")) {
+        bail!("umu-database.csv response has no TITLE header");
+    }
     Ok(())
 }
 
@@ -107,6 +138,9 @@ fn lookup_gameid_in(path: &Path, query: &str, target: &Path) -> GameIdMatch {
         else {
             continue;
         };
+        if !is_valid_umu_id(umu_id) {
+            continue;
+        }
 
         let bucket = if title.eq_ignore_ascii_case(query) {
             &mut title_rows
@@ -127,6 +161,15 @@ fn lookup_gameid_in(path: &Path, query: &str, target: &Path) -> GameIdMatch {
         title_rows
     };
     resolve_tier(&rows)
+}
+
+/// The id becomes the child's `GAMEID` env var, so the remote CSV only gets plain tokens.
+fn is_valid_umu_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// Same title across stores usually shares one UMU_ID; only distinct IDs
@@ -191,6 +234,9 @@ fn search_in(path: &Path, query: &str) -> Vec<GameDbEntry> {
         else {
             continue;
         };
+        if !is_valid_umu_id(umu_id) {
+            continue;
+        }
         let acronym = record.get(4).unwrap_or("");
         let hit = [title, acronym, umu_id]
             .iter()
@@ -230,6 +276,24 @@ fn path_ends_with(target_lower: &str, exe_string_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn umu_ids_are_restricted_to_plain_tokens() {
+        assert!(is_valid_umu_id("umu-271590"));
+        assert!(is_valid_umu_id("a.b_c-d"));
+        assert!(!is_valid_umu_id(""));
+        assert!(!is_valid_umu_id(&"a".repeat(65)));
+        assert!(!is_valid_umu_id("umu 1"));
+        assert!(!is_valid_umu_id("umu;rm"));
+        assert!(!is_valid_umu_id("umu\n1"));
+    }
+
+    #[test]
+    fn validate_csv_rejects_tiny_or_headerless_bodies() {
+        assert!(validate_csv("TITLE,STORE\n").is_err());
+        assert!(validate_csv(&"x".repeat(2048)).is_err());
+        assert!(validate_csv(&format!("TITLE,STORE\n{}", "a,b\n".repeat(400))).is_ok());
+    }
 
     const SAMPLE_CSV: &str = "TITLE,STORE,CODENAME,UMU_ID,COMMON ACRONYM (Optional),NOTE (Optional),EXE_STRINGS (Optional)
 Grand Theft Auto V,egs,9d2d0eb64d5c44529cece33fe2a46482,umu-271590,gtav,,

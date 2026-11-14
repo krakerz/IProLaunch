@@ -22,9 +22,11 @@ update_interval_days = 7
 [winedlloverride]
 
 [sunshine]
-# Sunshine web UI / REST API address
+# Sunshine web UI / REST API address (Sunshine is expected to run on this same machine)
 host = "localhost"
 port = 47990
+# Skip TLS certificate verification for a non-localhost host (Sunshine's certificate is self-signed); only enable on a LAN you trust
+insecure_tls = false
 # Run Sunshine games in fullscreen gamescope with the game's window stretched to fill it (a profile can turn this off)
 gamescope = true
 # Resolution mode: "match-client" (default) or "fixed"
